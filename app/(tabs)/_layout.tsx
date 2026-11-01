@@ -12,7 +12,7 @@ export default function TabsLayout() {
       headerShown: false, tabBarPosition: isTablet ? 'left' : 'bottom', tabBarVariant: isTablet ? 'material' : 'uikit', tabBarLabelPosition: 'below-icon',
       tabBarActiveTintColor: colors.primary, tabBarInactiveTintColor: colors.textMuted,
       tabBarStyle: { backgroundColor: 'rgba(255,255,255,0.72)', borderTopWidth: 0, borderRightWidth: 0, ...(isTablet ? { width: 96 } : {}) },
-      sceneStyle: { backgroundColor: 'transparent' },
+      sceneStyle: { backgroundColor: colors.bg },
     } as any}>
       <Tabs.Screen name="index" options={{ title: '내 교재', tabBarIcon: icon('library-outline', 'library') }} />
       <Tabs.Screen name="admin" options={{ title: '관리자', tabBarIcon: icon('shield-outline', 'shield'), href: role === 'admin' ? undefined : null }} />

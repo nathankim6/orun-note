@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useLayout } from '@/theme';
 import { Badge, Button, Card, Chip, Dialog, Empty, IconButton, Input, Muted, Row, Sheet, T, ProgressBar, ListItem } from '@/components/ui';
 import { PageHeader } from '@/components/Header';
+import { GlassBackground } from '@/components/Glass';
 import { Logo } from '@/components/Logo';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { useInkStore } from '@/store/ink';
@@ -52,7 +53,7 @@ export default function Library() {
   const open = (d: Doc) => { openTab(d.id); router.push(`/viewer/${d.id}`); };
   const toggleSel = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+    <GlassBackground>
       <PageHeader title="내 교재" subtitle={`${label || (role === 'admin' ? '관리자' : '학생')}${student ? ` · ${student.school_name} ${student.grade_name}` : ''} · 받은 교재 ${Object.keys(localByMaterial).length} · 대기 ${pending.length}`} right={<Row gap={0}><IconButton icon="add-circle" size={26} color={colors.primary} onPress={doImport} label="내 PDF 가져오기" /><IconButton icon="refresh" onPress={refresh} label="새로고침" /><IconButton icon={select ? 'checkmark-done' : 'checkbox-outline'} active={select} onPress={() => { setSelect(!select); setSelected([]); }} /></Row>} />
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 90 }} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
         <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, marginBottom: 12 }}><Ionicons name="search" size={18} color={colors.textFaint} /><TextInput value={q} onChangeText={setQ} placeholder="교재 제목으로 찾기" placeholderTextColor={colors.textFaint} style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, color: colors.text }} /></View>
@@ -107,6 +108,6 @@ export default function Library() {
       </Sheet>
       <Sheet visible={!!rename} onClose={() => setRename(null)} title="이름 변경" height={260}><Input value={renameText} onChangeText={setRenameText} autoFocus /><Row><Button title="저장" style={{ flex: 1 }} onPress={() => { if (rename) update(rename.id, { title: renameText.trim() || rename.title }); setRename(null); }} />{COVER_COLORS.slice(0, 6).map((c) => <Pressable key={c} onPress={() => rename && update(rename.id, { coverColor: c })} style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: c }} />)}</Row></Sheet>
       <Dialog visible={confirmDel} title="기기에서 삭제할까요?" message="이 기기의 파일과 필기가 삭제됩니다. 배정된 교재는 다시 받을 수 있지만 필기는 복구되지 않습니다." onClose={() => setConfirmDel(false)} actions={[{ label: '취소', onPress: () => setConfirmDel(false) }, { label: '삭제', variant: 'danger', onPress: async () => { for (const id of selected) { const d = docs[id]; if (d) { await deleteDocFiles(d); useInkStore.getState().clearPackage(d.id + ':'); remove(id); } } setSelected([]); setSelect(false); setConfirmDel(false); showToast('삭제했어요'); } }]} />
-    </View>
+    </GlassBackground>
   );
 }

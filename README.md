@@ -2,8 +2,10 @@
 
 접속 코드 기반 PDF 교재 배포 + 필기 앱 (iPad · Galaxy Tab). Expo / React Native 단일 코드베이스 + Supabase(스토리지·Edge Function).
 
-- 학생: 선생님이 준 접속 코드로 입장 → 배정된 교재 다운로드(기기 내 암호화) → 필기
-- 관리자(관리자 코드): 교재 업로드, 접속 코드 생성/비활성화, 코드별 교재 배정, 접속 기록
+- 학생: Google 로그인 + 옳은영어 숙제 시스템(orunhomework.com) 학생 코드 1회 연결 → 배정된 교재 다운로드(기기 내 암호화) → 필기. 연결된 Google 계정 변경은 관리자 승인 필요
+- 관리자(관리자 코드 또는 등록된 Google 계정): 교재 업로드, 전체/학교/반/학생 단위 배정, 학생 연결 상태·승인 요청 처리, 접속 기록
+- 학교·반·학생 목록은 orunhomework.com Supabase에서 실시간으로 읽음(복사 없음)
+- Google OAuth: GCP 프로젝트 `orunnote`, Supabase Auth Google provider, 앱 스킴 `orunnote://`
 - 서버: `supabase/migrations/0001_init.sql` + `supabase/functions/docs` (ADMIN_CODE 시크릿)
 
 핵심 기능

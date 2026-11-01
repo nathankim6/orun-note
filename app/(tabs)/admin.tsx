@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useLayout } from '@/theme';
 import { Badge, Button, Card, Chip, Dialog, Empty, IconButton, Input, Muted, Row, Sheet, T, Toggle, ProgressBar, ListItem } from '@/components/ui';
 import { PageHeader } from '@/components/Header';
+import { GlassBackground } from '@/components/Glass';
 import { useSession } from '@/store/session';
 import { useDocsStore } from '@/store/docs';
 import { api, Material, Roster, Assignment, HwStudent } from '@/lib/api';
@@ -35,7 +36,7 @@ export default function Admin() {
   const bySchool = useMemo(() => { const map = new Map<string, { school: { id: string; name: string }; grades: { grade: { id: string; name: string }; students: HwStudent[] }[] }>(); for (const sc of roster?.schools ?? []) map.set(sc.id, { school: sc, grades: (roster?.grades ?? []).filter((g) => g.school_id === sc.id).map((g) => ({ grade: g, students: filteredStudents.filter((s) => s.grade_id === g.id) })) }); return Array.from(map.values()); }, [roster, filteredStudents]);
   const Seg = () => <Row style={{ marginBottom: 12, flexWrap: 'wrap' }}>{([['materials', '교재', 'book-outline'], ['students', '학생 · 반', 'people-outline'], ['requests', pendingCount ? `승인 요청 ${pendingCount}` : '승인 요청', 'mail-unread-outline'], ['log', '기록 · 설정', 'time-outline']] as const).map(([k, l, i]) => <Chip key={k} label={l} icon={i} active={tab === k} onPress={() => setTab(k)} color={k === 'requests' && pendingCount ? colors.accent : undefined} />)}</Row>;
   return (
-    <View style={{ flex: 1 }}>
+    <GlassBackground>
       <PageHeader title="관리자" subtitle={`교재 ${materials.length} · 학생 ${roster?.students.length ?? '-'}명 (옳은영어 숙제 시스템 실시간) · 연결 ${roster?.links.length ?? '-'}`} right={<Row gap={0}>{tab === 'materials' && <IconButton icon="cloud-upload" size={24} color={colors.primary} onPress={pick} label="교재 업로드" />}<IconButton icon="refresh" onPress={load} /></Row>} />
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 80, maxWidth: isTablet ? 960 : undefined, width: '100%', alignSelf: 'center' }} refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
         <Seg />
@@ -115,6 +116,6 @@ export default function Admin() {
       </Sheet>
       <Sheet visible={!!editTitle} onClose={() => setEditTitle(null)} title="교재 제목 변경" height={240}><Input value={titleText} onChangeText={setTitleText} autoFocus /><Button title="저장" onPress={async () => { if (!editTitle) return; try { await api.materials.rename(c, editTitle.id, titleText.trim() || editTitle.title); setEditTitle(null); load(); } catch (e: any) { showToast(e?.message); } }} /></Sheet>
       <Dialog visible={!!confirm} title={confirm?.title ?? ' '} message={confirm?.message} onClose={() => setConfirm(null)} actions={[{ label: '취소', onPress: () => setConfirm(null) }, { label: '확인', variant: 'danger', onPress: () => { const f = confirm?.onYes; setConfirm(null); f?.(); } }]} />
-    </View>
+    </GlassBackground>
   );
 }

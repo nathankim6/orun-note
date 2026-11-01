@@ -4,6 +4,7 @@ import Constants from 'expo-constants';
 import { useTheme, useLayout } from '@/theme';
 import { Card, Chip, ListItem, Muted, Row, SectionHeader, T, Toggle, Button, Dialog } from '@/components/ui';
 import { PageHeader } from '@/components/Header';
+import { GlassBackground } from '@/components/Glass';
 import { useSettingsStore, ViewerPrefs } from '@/store/settings';
 import { useDocsStore } from '@/store/docs';
 import { useInkStore } from '@/store/ink';
@@ -20,7 +21,7 @@ export default function Settings() {
   const strokes = Object.values(inkPages).reduce((a, p) => a + p.strokes.length, 0);
   const Item = ({ k, title, desc }: { k: keyof ViewerPrefs; title: string; desc: string }) => <Row justify="space-between" style={{ paddingVertical: 10 }}><View style={{ flex: 1, paddingRight: 12 }}><T variant="bodyBold">{title}</T><Muted variant="caption">{desc}</Muted></View><Toggle value={!!s.viewer[k]} onChange={(v) => s.setViewer({ [k]: v } as any)} /></Row>;
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+    <GlassBackground>
       <PageHeader title="설정" />
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60, maxWidth: isTablet ? 760 : undefined, width: '100%', alignSelf: 'center' }}>
         <SectionHeader title="접속 정보" />
@@ -58,6 +59,6 @@ export default function Settings() {
       </ScrollView>
       <Dialog visible={confirmOut} title="로그아웃할까요?" message="로그인 화면으로 돌아갑니다." onClose={() => setConfirmOut(false)} actions={[{ label: '취소', onPress: () => setConfirmOut(false) }, { label: '로그아웃', variant: 'primary', onPress: () => { setConfirmOut(false); session.signOut(); } }]} />
       <Dialog visible={confirm} title="모든 필기를 삭제할까요?" message="모든 문서의 필기와 버전 기록이 삭제됩니다. 되돌릴 수 없습니다." onClose={() => setConfirm(false)} actions={[{ label: '취소', onPress: () => setConfirm(false) }, { label: '삭제', variant: 'danger', onPress: () => { useInkStore.setState({ pages: {} }); setConfirm(false); showToast('모든 필기를 삭제했어요'); } }]} />
-    </View>
+    </GlassBackground>
   );
 }
