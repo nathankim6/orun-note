@@ -31,7 +31,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
   const eraserR = Math.max(8, cfg.width * 3);
   const isDrawingTool = ['pen', 'pencil', 'highlighter', 'fountain', 'brush'].includes(cfg.tool);
   // Finger input draws only when the user enabled it; stylus (Apple Pencil / S Pen) and mouse always draw.
-  const allowPointer = (pointerType: any) => Platform.OS === 'web' || fingerDraw || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE;
+  // Finger input never draws: touch is reserved for pinch-zoom and page scrolling. Only stylus (Apple Pencil / S Pen) draws; mouse is allowed for web/desktop.
+  const allowPointer = (pointerType: any) => Platform.OS === 'web' || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE;
   const rejected = useRef(false);
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);

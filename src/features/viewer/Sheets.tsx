@@ -16,7 +16,6 @@ export function SettingsSheet({ visible, onClose, layout, setLayout }: { visible
       <Row style={{ marginTop: 8, flexWrap: 'wrap' }} gap={8}>{([['vertical', '세로 페이지', 'phone-portrait-outline'], ['horizontal', '가로 페이지', 'phone-landscape-outline'], ['continuous', '연속 스크롤', 'reorder-four-outline'], ['twoPage', '두 페이지', 'book-outline']] as const).map(([k, l, i]) => <Pressable key={k} onPress={() => setLayout(k)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1.5, borderColor: layout === k ? colors.primary : colors.border }}><Ionicons name={i} size={16} color={layout === k ? colors.primary : colors.textMuted} /><Text style={{ color: layout === k ? colors.primary : colors.text, fontWeight: '600', fontSize: 13 }}>{l}</Text></Pressable>)}</Row>
       <Item k="twoPageStartOdd" title="두 페이지 보기: 홀수 페이지부터" desc="끄면 짝수 페이지부터 나란히 보여요" />
       <Muted variant="label" style={{ marginTop: 14 }}>필기</Muted>
-      <Item k="fingerDraw" title="손가락 필기" desc="끄면 펜슬/스타일러스로만 필기하고 손가락은 스크롤·확대에 사용" />
       <Item k="strokeSmoothing" title="획 보정" desc="손떨림을 줄여 부드러운 선으로 그려요" />
       <Item k="lineSnap" title="직선 보정" desc="끝점에서 1.5초 머무르면 직선으로 바뀌고, 거의 직선인 획도 보정" />
       <Item k="penAutoReturn" title="펜 자동 복귀" desc="도형·텍스트 입력 후 자동으로 펜으로 돌아가요" />

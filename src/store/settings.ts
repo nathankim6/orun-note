@@ -22,4 +22,4 @@ export const useSettingsStore = create<SettingsState>()(persist((set) => ({
   setTheme: (theme) => set({ theme }), setLanguage: (language) => set({ language }), setCountry: (country) => set({ country }),
   setNotification: (k, v) => set((s) => ({ notifications: { ...s.notifications, [k]: v } })), setViewer: (p) => set((s) => ({ viewer: { ...s.viewer, ...p } })), resetViewer: () => set({ viewer: defaultViewerPrefs }),
   setTutorialDone: (tutorialDone) => set({ tutorialDone }), setViewerGuideDone: (viewerGuideDone) => set({ viewerGuideDone }), setOfflineAudio: (offlineAudio) => set({ offlineAudio }),
-}), { ...persistOpts<SettingsState>('settings'), version: 3, migrate: (state: any, version) => { if (version < 2 && state?.viewer) state.viewer.fingerDraw = false; if (version < 3 && state?.viewer) { state.viewer.eraserReturnToPen = false; state.viewer.lineSnap = true; } return state; } }));
+}), { ...persistOpts<SettingsState>('settings'), version: 4, migrate: (state: any, version) => { if (state?.viewer) state.viewer.fingerDraw = false; if (version < 3 && state?.viewer) { state.viewer.eraserReturnToPen = false; state.viewer.lineSnap = true; } return state; } }));

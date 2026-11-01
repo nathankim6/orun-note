@@ -35,7 +35,6 @@ export default function Settings() {
         <Card>
           <Muted variant="label">기본 레이아웃</Muted>
           <Row style={{ marginTop: 8, flexWrap: 'wrap' }}>{([['vertical', '세로 페이지'], ['horizontal', '가로 페이지'], ['continuous', '연속 스크롤'], ['twoPage', '두 페이지']] as const).map(([k, l]) => <Chip key={k} label={l} active={s.viewer.defaultLayoutMode === k} onPress={() => s.setViewer({ defaultLayoutMode: k })} />)}</Row>
-          <Item k="fingerDraw" title="손가락 필기" desc="끄면 펜슬/스타일러스로만 필기하고 손가락은 스크롤·확대" />
           <Item k="strokeSmoothing" title="획 보정" desc="부드러운 곡선으로 그려요" />
           <Item k="lineSnap" title="직선 보정" desc="끝점에서 1.5초 머무르면 직선으로" />
           <Item k="penAutoReturn" title="펜 자동 복귀" desc="도형·텍스트 후 펜으로 복귀" />

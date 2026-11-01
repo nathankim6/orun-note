@@ -60,7 +60,7 @@ export default function Viewer() {
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = cfg.tool !== 'hand';
-  const scrollOK = cfg.tool === 'hand' || !prefs.fingerDraw || Platform.OS === 'web'; // with finger drawing off, touch pans/pinches and only the stylus draws
+  const scrollOK = true; // finger touch always pans/pinches/turns pages; only the stylus draws
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>

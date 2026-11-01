@@ -57,7 +57,6 @@ export function Toolbar({ cfg, onCfg, onUndo, onRedo, canUndo, canRedo, onClear,
         <View style={{ flex: 1, minWidth: 8 }} />
         {/* right end: quick toggles */}
         <Pressable accessibilityLabel="펜 자동 복귀" onPress={() => settings.setViewer({ penAutoReturn: !viewer.penAutoReturn })} style={[styles.toggleBtn, viewer.penAutoReturn && { backgroundColor: colors.primarySoft, borderColor: colors.primary }]}><MaterialCommunityIcons name="undo-variant" size={14} color={viewer.penAutoReturn ? colors.primary : colors.textMuted} /><Text style={{ fontSize: 10, fontWeight: '600', color: viewer.penAutoReturn ? colors.primary : colors.textMuted }}>펜 복귀</Text></Pressable>
-        <Pressable accessibilityLabel="손가락 필기" onPress={() => settings.setViewer({ fingerDraw: !viewer.fingerDraw })} style={[styles.toggleBtn, viewer.fingerDraw && { backgroundColor: colors.primarySoft, borderColor: colors.primary }]}><MaterialCommunityIcons name="gesture-tap" size={14} color={viewer.fingerDraw ? colors.primary : colors.textMuted} /><Text style={{ fontSize: 10, fontWeight: '600', color: viewer.fingerDraw ? colors.primary : colors.textMuted }}>손가락 필기</Text></Pressable>
       </ScrollView>
       {panel && (
         <View style={{ borderTopWidth: 1, borderTopColor: colors.border, padding: 12, maxWidth: 560 }}>
