@@ -10,7 +10,16 @@ type Native = {
   getPageText(uri: string, index: number): Promise<string>; getOutline(uri: string): Promise<PdfOutlineItem[]>;
 };
 let impl: Native;
-if (Platform.OS === 'web') { impl = require('./src/web').default as Native; } else { impl = requireNativeModule<Native>('PdfRenderer'); }
+if (Platform.OS === 'web') { impl = require('./src/web').default as Native; }
+else {
+  try { impl = requireNativeModule<Native>('PdfRenderer'); }
+  catch (e) {
+    // Native module missing from this build: fail per call instead of crashing at startup.
+    const missing = () => Promise.reject(new Error('PDF 네이티브 모듈이 이 빌드에 포함되지 않았습니다. 앱을 다시 빌드해 주세요.'));
+    impl = { importFile: missing, deleteFile: missing, fileExists: async () => false, clearCaches: async () => {}, getInfo: missing, renderPage: missing, getPageText: missing, getOutline: missing } as unknown as Native;
+    console.error('PdfRenderer native module unavailable', e);
+  }
+}
 
 export const PdfRenderer = {
   /** Encrypts and stores a picked PDF inside app-private storage. Returns the stored (encrypted) URI. */

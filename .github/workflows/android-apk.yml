@@ -30,6 +30,8 @@ jobs:
             keytool -genkeypair -v -keystore ~/.keys/paperly.jks -storepass paperly-local -keypass paperly-local -alias paperly -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Paperly, OU=Personal, O=Paperly, L=Seoul, C=KR"
             echo "STORE_PASS=paperly-local" >> $GITHUB_ENV; echo "KEY_ALIAS=paperly" >> $GITHUB_ENV; echo "KEY_PASS=paperly-local" >> $GITHUB_ENV
           fi
+      - name: Verify local native module is present
+        run: test -f modules/pdf-renderer/android/build.gradle && test -f modules/pdf-renderer/ios/PdfRendererModule.swift
       - name: Build signed release APK
         working-directory: android
         run: |

@@ -39,7 +39,7 @@ jobs:
       - name: Set build number from run number
         run: node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.ios.buildNumber=String(${{ github.run_number }});fs.writeFileSync('app.json',JSON.stringify(j,null,2));console.log('buildNumber',j.expo.ios.buildNumber)"
       - run: npx expo prebuild --platform ios --no-install
-      - run: cd ios && pod install
+      - run: cd ios && pod install && grep -n PdfRenderer Podfile.lock
       - name: Import signing assets
         env:
           P12: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
