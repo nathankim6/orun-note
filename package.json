@@ -32,7 +32,6 @@
   "devDependencies": {
     "@types/react": "~19.3.0",
     "babel-preset-expo": "^58.0.23",
-    "lightningcss-darwin-arm64": "^1.33.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -41,5 +40,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "optionalDependencies": {
+    "lightningcss-darwin-arm64": "^1.33.0"
+  }
 }
