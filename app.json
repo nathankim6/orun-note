@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "옳은Note",
+    "name": "Paperly",
     "slug": "paperly",
     "version": "1.1.0",
     "orientation": "default",
@@ -55,7 +55,13 @@
           "imageWidth": 220
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      [
+        "./plugins/withAppDisplayName.js",
+        {
+          "name": "옳은Note"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false
