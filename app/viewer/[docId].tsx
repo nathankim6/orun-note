@@ -11,6 +11,7 @@ import { useDocsStore } from '@/store/docs';
 import { inkKey, useInkStore } from '@/store/ink';
 import { useSettingsStore } from '@/store/settings';
 import { PdfPage } from '@/features/viewer/PdfPage';
+import { ZoomView, ZoomHandle } from '@/features/viewer/ZoomView';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
 import { Toolbar } from '@/features/viewer/Toolbar';
 import { ToolConfig, toolDefaults } from '@/features/viewer/ink';
@@ -31,7 +32,10 @@ export default function Viewer() {
 
   const [pageIndex, setPageIndex] = useState(doc?.lastPage ?? 0);
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
+  useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
   const [layout, setLayout] = useState(prefs.defaultLayoutMode); const [zoom, setZoom] = useState(1); const [fullscreen, setFullscreen] = useState(false);
+  // Paged layouts zoom with a focal-anchored transform (ZoomView); `tzoom` mirrors its scale for the % label and sharper re-render.
+  const [tzoom, setTzoom] = useState(1); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
   const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#1B1B1F', width: 2, shape: 'rectangle', opacity: 1 }); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
@@ -50,7 +54,7 @@ export default function Viewer() {
   const twoPage = layout === 'twoPage' && availW > 700;
   const pageAt = (i: number) => doc.pages[i] ?? doc.pages[0];
   const baseScaleFor = (i: number) => { const p = pageAt(i); if (layout === 'continuous') return (availW - 24) / p.width; if (twoPage) return Math.min((availW - 36) / 2 / p.width, (availH - 16) / p.height); return Math.min((availW - 16) / p.width, (availH - 16) / p.height); };
-  const sizeFor = (i: number) => { const p = pageAt(i); const s = baseScaleFor(i) * zoom; return { s, w: p.width * s, h: p.height * s }; };
+  const sizeFor = (i: number) => { const p = pageAt(i); const s = baseScaleFor(i) * (layout === 'continuous' ? zoom : 1); return { s, w: p.width * s, h: p.height * s }; };
   const contHeights = doc.pages.map((_, i) => sizeFor(i).h + 12); const contOffset = (i: number) => contHeights.slice(0, i).reduce((a, b) => a + b, 0);
 
   const goto = (i: number) => { i = Math.max(0, Math.min(doc.pageCount - 1, i)); setPageIndex(i); if (layout === 'continuous') scrollRef.current?.scrollTo({ y: contOffset(i), animated: true }); else if (twoPage) scrollRef.current?.scrollTo({ x: Math.floor(i / 2) * availW, animated: true }); else scrollRef.current?.scrollTo(layout === 'horizontal' ? { x: i * availW, animated: true } : { y: i * availH, animated: true }); };
@@ -60,18 +64,29 @@ export default function Viewer() {
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = cfg.tool !== 'hand';
-  const scrollOK = true; // finger touch always pans/pinches/turns pages; only the stylus draws
+  const scrollOK = !tzoomed; // finger touch pans/pinches/turns pages; while zoomed in, the ZoomView pan owns the finger
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>
-      <PdfPage uri={uri} index={pi} width={w} height={h} />
+      <PdfPage uri={uri} index={pi} width={w} height={h} renderScale={layout === 'continuous' ? 1 : renderScale} />
       <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
-        onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
+        onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' && layout === 'continuous' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
     </View>); };
 
-  const pinch = useMemo(() => Gesture.Pinch().runOnJS(true).onUpdate((e) => setZoom((z) => Math.max(0.6, Math.min(4, e.scale > 1 ? z + (e.scale - 1) * 0.06 : z - (1 - e.scale) * 0.06)))), []);
+  // Continuous layout reflows page widths on zoom; keep the content under the fingers fixed by correcting the scroll offset.
+  const pinchStart = useRef({ zoom: 1, y: 0, fy: 0 });
+  const pinch = useMemo(() => Gesture.Pinch().runOnJS(true)
+    .onStart((e) => { pinchStart.current = { zoom, y: contScroll.current, fy: e.focalY }; })
+    .onUpdate((e) => { const z = Math.max(0.6, Math.min(4, pinchStart.current.zoom * e.scale)); setZoom(z); const ratio = z / pinchStart.current.zoom; const y = (pinchStart.current.y + pinchStart.current.fy) * ratio - pinchStart.current.fy; scrollRef.current?.scrollTo({ y: Math.max(0, y), animated: false }); }), [zoom]);
+  const zoomKey = twoPage ? 'pair' + Math.floor((pageIndex + (prefs.twoPageStartOdd ? 0 : 1)) / 2) : String(pageIndex);
+  const zoomBy = (d: number) => { if (layout === 'continuous') setZoom((z) => Math.max(0.6, Math.min(4, z + d))); else zoomRefs.current[zoomKey]?.zoomTo(tzoom + d); };
+  const resetZoom = () => { if (layout === 'continuous') setZoom(1); else zoomRefs.current[zoomKey]?.reset(); };
+  const zoomPct = layout === 'continuous' ? zoom : tzoom;
+  const wrapZoom = (key: string, w: number, h: number, node: React.ReactNode) => (
+    <ZoomView key={key} ref={(r) => { zoomRefs.current[key] = r; }} width={twoPage ? availW : availW} height={availH} contentWidth={w} contentHeight={h} maxScale={5}
+      onScaleChange={(sc) => setTzoom(Math.round(sc * 100) / 100)} onScaleSettled={(sc) => setRenderScale(Math.min(3, Math.max(1, Math.ceil(sc))))} onZoomedChange={setTzoomed}>{node}</ZoomView>);
   const pages = Array.from({ length: doc.pageCount }, (_, i) => i);
   const pageInk = ink.pages[inkKey(doc.id, cycle, String(pageIndex))];
 
@@ -95,25 +110,21 @@ export default function Viewer() {
         </View>)}
       <View style={{ flex: 1, flexDirection: 'row' }}>
         {leftTab && isTablet && <LeftPanel tab={leftTab} setTab={setLeftTab} width={leftW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={goto} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} />}
-        <GestureDetector gesture={pinch}>
-          <View style={{ flex: 1 }} collapsable={false}>
+        <View style={{ flex: 1 }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
             : layout === 'continuous' ? (
-              <ScrollView ref={scrollRef} scrollEnabled={scrollOK} onScroll={onScrollEnd} scrollEventThrottle={120} contentContainerStyle={{ alignItems: 'center', paddingVertical: 8, gap: 12 }} contentOffset={{ x: 0, y: contOffset(pageIndex) }}>{pages.map(renderPage)}</ScrollView>
+              <GestureDetector gesture={pinch}><ScrollView ref={scrollRef} scrollEnabled={scrollOK} onScroll={(e) => { contScroll.current = e.nativeEvent.contentOffset.y; onScrollEnd(e); }} scrollEventThrottle={60} contentContainerStyle={{ alignItems: 'center', paddingVertical: 8, gap: 12 }} contentOffset={{ x: 0, y: contOffset(pageIndex) }}>{pages.map(renderPage)}</ScrollView></GestureDetector>
             ) : twoPage ? (
               <ScrollView ref={scrollRef} horizontal pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={{ x: Math.floor(pageIndex / 2) * availW, y: 0 }} showsHorizontalScrollIndicator={false}>
-                {Array.from({ length: Math.ceil((doc.pageCount + (prefs.twoPageStartOdd ? 0 : 1)) / 2) }, (_, pair) => <View key={pair} style={{ width: availW, height: availH, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>{renderPage(prefs.twoPageStartOdd ? pair * 2 : pair * 2 - 1)}{renderPage(prefs.twoPageStartOdd ? pair * 2 + 1 : pair * 2)}</View>)}
+                {Array.from({ length: Math.ceil((doc.pageCount + (prefs.twoPageStartOdd ? 0 : 1)) / 2) }, (_, pair) => wrapZoom('pair' + pair, sizeFor(0).w * 2 + 8, sizeFor(0).h, <View style={{ width: sizeFor(0).w * 2 + 8, height: sizeFor(0).h, flexDirection: 'row', gap: 8 }}>{renderPage(prefs.twoPageStartOdd ? pair * 2 : pair * 2 - 1)}{renderPage(prefs.twoPageStartOdd ? pair * 2 + 1 : pair * 2)}</View>))}
               </ScrollView>
             ) : (
               <ScrollView ref={scrollRef} horizontal={layout === 'horizontal'} pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={layout === 'horizontal' ? { x: pageIndex * availW, y: 0 } : { x: 0, y: pageIndex * availH }} showsHorizontalScrollIndicator={false} showsVerticalScrollIndicator={false}>
-                {pages.map((i) => { const { w, h } = sizeFor(i); const content = Math.abs(i - pageIndex) <= 1 ? renderPage(i) : <View style={{ width: w, height: h, backgroundColor: '#fff' }} />; return zoom > 1 ? (
-                  <ScrollView key={i} horizontal style={{ width: availW, height: availH }} contentContainerStyle={{ minWidth: availW, alignItems: 'flex-start' }}><ScrollView contentContainerStyle={{ minHeight: availH, padding: 8, alignItems: 'center', justifyContent: 'center', minWidth: availW }}>{content}</ScrollView></ScrollView>
-                ) : <View key={i} style={{ width: availW, height: availH, alignItems: 'center', justifyContent: 'center' }}>{content}</View>; })}
+                {pages.map((i) => { const { w, h } = sizeFor(i); const content = Math.abs(i - pageIndex) <= 1 ? renderPage(i) : <View style={{ width: w, height: h, backgroundColor: '#fff' }} />; return wrapZoom(String(i), w, h, content); })}
               </ScrollView>
             )}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
-          </View>
-        </GestureDetector>
+        </View>
       </View>
       <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />
@@ -121,8 +132,8 @@ export default function Viewer() {
         <IconButton icon="chevron-forward" size={18} onPress={() => goto(pageIndex + 1)} disabled={pageIndex >= doc.pageCount - 1} label="다음 페이지" />
         <View style={{ flex: 1, height: 4, backgroundColor: colors.surfaceAlt, borderRadius: 2, marginHorizontal: 8 }}><View style={{ width: `${((pageIndex + 1) / doc.pageCount) * 100}%`, height: 4, backgroundColor: colors.primary, borderRadius: 2 }} /></View>
         <IconButton icon={doc.bookmarks.includes(pageIndex) ? 'bookmark' : 'bookmark-outline'} size={18} active={doc.bookmarks.includes(pageIndex)} onPress={() => store.toggleBookmark(doc.id, pageIndex)} label="북마크" />
-        <Pressable onPress={() => setZoom(1)} style={{ paddingHorizontal: 6 }}><Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>{Math.round(zoom * 100)}%</Text></Pressable>
-        <IconButton icon="remove-circle-outline" size={18} onPress={() => setZoom((z) => Math.max(0.6, z - 0.25))} /><IconButton icon="add-circle-outline" size={18} onPress={() => setZoom((z) => Math.min(4, z + 0.25))} />
+        <Pressable onPress={resetZoom} style={{ paddingHorizontal: 6 }}><Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>{Math.round(zoomPct * 100)}%</Text></Pressable>
+        <IconButton icon="remove-circle-outline" size={18} onPress={() => zoomBy(-0.25)} /><IconButton icon="add-circle-outline" size={18} onPress={() => zoomBy(0.25)} />
       </View>
 
       {!isTablet && leftTab && <Sheet visible onClose={() => setLeftTab(null)} height="80%"><View style={{ height: winH * 0.7, marginHorizontal: -16 }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Sheet>}

@@ -15,8 +15,9 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
   useEffect(() => { if (!uri) return; let alive = true; const key = `${uri}|${index}|${px}`; if (!cache.has(key)) cache.set(key, enqueue(() => PdfRenderer.renderPage(uri, index, px))); cache.get(key)!.then((u) => alive && setSrc(u)).catch(() => alive && setErr(true)); return () => { alive = false; }; }, [uri, index, px]);
   return { src, err };
 }
-export function PdfPage({ uri, index, width, height }: { uri: string | null; index: number; width: number; height: number }) {
-  const { colors } = useTheme(); const { src, err } = usePageImage(uri, index, width);
+export function PdfPage({ uri, index, width, height, renderScale = 1 }: { uri: string | null; index: number; width: number; height: number; renderScale?: number }) {
+  // renderScale > 1 asks the native renderer for a sharper bitmap while the page is zoomed in via transform.
+  const { colors } = useTheme(); const { src, err } = usePageImage(uri, index, width * renderScale);
   return (
     <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
       {src ? <Image source={{ uri: src }} style={{ width, height }} resizeMode="stretch" fadeDuration={0} /> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
