@@ -11,6 +11,8 @@ enum PdfRendererError: Error { case cannotOpen(String); case badPage(Int); case 
 /// with ThisDeviceOnly accessibility so it is never exported with backups.
 public class PdfRendererModule: Module {
   private var cache: [String: PDFDocument] = [:]
+  /// PDFKit and the document cache are not thread-safe; every native call is serialized on this queue.
+  private let queue = DispatchQueue(label: "com.paperly.study.pdf", qos: .userInitiated)
   private let keyTag = "com.paperly.study.pdfkey"
 
   // MARK: - Key management
@@ -54,37 +56,47 @@ public class PdfRendererModule: Module {
     Name("PdfRenderer")
 
     /// Copies a picked PDF into encrypted app storage and returns the stored URI. The source is left untouched (caller deletes temp copies).
-    AsyncFunction("importFile") { (srcUri: String, id: String) -> [String: Any] in
+    AsyncFunction("importFile") { (srcUri: String, id: String) throws -> [String: Any] in
+      try self.queue.sync { () throws -> [String: Any] in
       let data = try Data(contentsOf: self.url(from: srcUri))
       guard PDFDocument(data: data) != nil else { throw PdfRendererError.cannotOpen(srcUri) }
       let out = try self.storeDir().appendingPathComponent("\(id).pdfenc")
       try self.encrypt(data).write(to: out, options: [.atomic, .completeFileProtection])
       var v = URLResourceValues(); v.isExcludedFromBackup = true; var o = out; try? o.setResourceValues(v)
       return ["uri": out.absoluteString, "size": data.count]
+      }
     }
     AsyncFunction("deleteFile") { (uri: String) in
+      self.queue.sync {
       self.cache.removeValue(forKey: uri)
       try? FileManager.default.removeItem(at: self.url(from: uri))
       let pages = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("pdf-pages", isDirectory: true)
       let prefix = "\(abs(uri.hashValue))-"
       if let items = try? FileManager.default.contentsOfDirectory(at: pages, includingPropertiesForKeys: nil) { for f in items where f.lastPathComponent.hasPrefix(prefix) { try? FileManager.default.removeItem(at: f) } }
+      }
     }
-    AsyncFunction("fileExists") { (uri: String) -> Bool in FileManager.default.fileExists(atPath: self.url(from: uri).path) }
+    AsyncFunction("fileExists") { (uri: String) throws -> Bool in
+      try self.queue.sync { () throws -> Bool in FileManager.default.fileExists(atPath: self.url(from: uri).path) }
     AsyncFunction("clearCaches") {
+      self.queue.sync {
       self.cache.removeAll()
       let pages = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("pdf-pages", isDirectory: true)
       try? FileManager.default.removeItem(at: pages)
+      }
     }
 
-    AsyncFunction("getInfo") { (uri: String) -> [String: Any] in
+    AsyncFunction("getInfo") { (uri: String) throws -> [String: Any] in
+      try self.queue.sync { () throws -> [String: Any] in
       let doc = try self.document(uri)
       var pages: [[String: Double]] = []
       for i in 0..<doc.pageCount { guard let p = doc.page(at: i) else { continue }; let s = self.pageSize(p); pages.append(["width": Double(s.width), "height": Double(s.height)]) }
       let title = (doc.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String) ?? ""
       return ["pageCount": doc.pageCount, "pages": pages, "title": title]
+      }
     }
 
-    AsyncFunction("renderPage") { (uri: String, index: Int, width: Int) -> String in
+    AsyncFunction("renderPage") { (uri: String, index: Int, width: Int) throws -> String in
+      try self.queue.sync { () throws -> String in
       let doc = try self.document(uri)
       guard let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
       let size = self.pageSize(page); let scale = CGFloat(width) / size.width
@@ -100,15 +112,19 @@ public class PdfRendererModule: Module {
       let out = dir.appendingPathComponent("\(abs(uri.hashValue))-\(index)-\(width).png")
       if !FileManager.default.fileExists(atPath: out.path) { guard let data = image.pngData() else { throw PdfRendererError.badPage(index) }; try data.write(to: out, options: [.atomic, .completeFileProtection]) }
       return out.absoluteString
+      }
     }
 
-    AsyncFunction("getPageText") { (uri: String, index: Int) -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
+    AsyncFunction("getPageText") { (uri: String, index: Int) throws -> String in
+      try self.queue.sync { () throws -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
 
-    AsyncFunction("getOutline") { (uri: String) -> [[String: Any]] in
+    AsyncFunction("getOutline") { (uri: String) throws -> [[String: Any]] in
+      try self.queue.sync { () throws -> [[String: Any]] in
       let doc = try self.document(uri); var out: [[String: Any]] = []
       func walk(_ node: PDFOutline, _ level: Int) { for i in 0..<node.numberOfChildren { guard let child = node.child(at: i) else { continue }; let idx = child.destination?.page.flatMap { doc.index(for: $0) } ?? 0; out.append(["title": child.label ?? "", "pageIndex": idx, "level": level]); walk(child, level + 1) } }
       if let root = doc.outlineRoot { walk(root, 0) }
       return out
+      }
     }
   }
 }

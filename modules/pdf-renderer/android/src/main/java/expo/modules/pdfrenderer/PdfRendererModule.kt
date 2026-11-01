@@ -24,6 +24,7 @@ import kotlin.math.roundToInt
  * the key is a non-exportable Android Keystore key. Decrypted copies exist only in the private cache while rendering.
  */
 class PdfRendererModule : Module() {
+  companion object { /** PdfRenderer and the decrypt cache are not thread-safe across concurrent calls. */ val LOCK = Any() }
   private val alias = "com.paperly.study.pdfkey"
   private val ctx get() = appContext.reactContext ?: throw IllegalStateException("No context")
 
@@ -50,16 +51,16 @@ class PdfRendererModule : Module() {
     if (!out.exists() || out.length() == 0L) { val plain = decrypt(f.readBytes()); FileOutputStream(out).use { it.write(plain) } }
     return out
   }
-  private fun <T> withRenderer(uri: String, block: (PdfRenderer) -> T): T {
+  private fun <T> withRenderer(uri: String, block: (PdfRenderer) -> T): T = synchronized(LOCK) {
     val pfd = ParcelFileDescriptor.open(plainFile(uri), ParcelFileDescriptor.MODE_READ_ONLY)
     val renderer = PdfRenderer(pfd)
-    try { return block(renderer) } finally { renderer.close(); pfd.close() }
+    try { block(renderer) } finally { renderer.close(); pfd.close() }
   }
 
   override fun definition() = ModuleDefinition {
     Name("PdfRenderer")
 
-    AsyncFunction("importFile") { srcUri: String, id: String ->
+    AsyncFunction("importFile") { srcUri: String, id: String -> synchronized(LOCK) {
       val src = Uri.parse(srcUri)
       val bytes = if (src.scheme == "content") ctx.contentResolver.openInputStream(src)!!.use { it.readBytes() } else fileFor(srcUri).readBytes()
       // validate it is a PDF before storing
@@ -68,7 +69,7 @@ class PdfRendererModule : Module() {
       val out = File(storeDir(), "$id.pdfenc")
       FileOutputStream(out).use { it.write(encrypt(bytes)) }
       mapOf("uri" to "file://${out.absolutePath}", "size" to bytes.size)
-    }
+    } }
     AsyncFunction("deleteFile") { uri: String ->
       fileFor(uri).delete()
       File(decDir(), "${uri.hashCode().toUInt()}.pdf").delete()

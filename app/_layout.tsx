@@ -11,6 +11,17 @@ import { useContentProtection } from '@/lib/security';
 import { Logo } from '@/components/Logo';
 import { useEffect } from 'react';
 
+const ErrorUtilsAny = (globalThis as any).ErrorUtils;
+if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
+  (globalThis as any).__paperlyErrorHandlerInstalled = true;
+  const prev = ErrorUtilsAny.getGlobalHandler?.();
+  ErrorUtilsAny.setGlobalHandler((err: any, isFatal?: boolean) => {
+    try { useDocsStore.getState().showToast('오류: ' + (err?.message ?? String(err)).slice(0, 140)); } catch {}
+    if (!isFatal && prev) prev(err, isFatal); // non-fatal: keep default logging; fatal: swallow instead of killing the app
+    console.error('Unhandled JS error', err);
+  });
+}
+
 export default function RootLayout() {
   const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const { hidden, attempts } = useContentProtection(); const showToast = useDocsStore((s) => s.showToast);
   useEffect(() => { if (attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [attempts]);
