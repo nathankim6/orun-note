@@ -133,7 +133,7 @@ export function Sheet({ visible, onClose, children, title, height }: { visible: 
       <Pressable style={[styles.backdrop, { backgroundColor: colors.overlay }]} onPress={onClose} />
       <View style={[styles.sheet, { backgroundColor: colors.surface, maxHeight: (height as any) ?? '85%' }]}>
         <View style={[styles.handle, { backgroundColor: colors.border }]} />
-        {title && <Row justify="space-between" style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.sm }}><T variant="h3">{title}</T><IconButton icon="close" onPress={onClose} /></Row>}
+        {!!title && <Row justify="space-between" style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.sm }}><T variant="h3">{title}</T><IconButton icon="close" onPress={onClose} /></Row>}
         <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}>{children}</ScrollView>
       </View>
     </Modal>

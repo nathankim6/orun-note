@@ -74,15 +74,15 @@ export default function Admin() {
         <Input label="코드 (비우면 6자리 자동 생성)" placeholder="숫자 4~12자리" keyboardType="number-pad" value={newCode?.code ?? ''} onChangeText={(t) => setNewCode((n) => n && { ...n, code: t.replace(/\D/g, '') })} />
         <Button title="만들기" onPress={async () => { try { const r = await api.codes.create(code!, newCode?.label ?? '', newCode?.code || undefined); showToast(`코드 ${r.code.code} 생성`); setNewCode(null); load(); setAssignFor(r.code); } catch (e: any) { showToast(e?.message); } }} />
       </Sheet>
-      <Sheet visible={!!assignFor} onClose={() => setAssignFor(null)} title={assignFor ? `${assignFor.code} · ${assignFor.label || '이름 없음'}에 보일 교재` : ''}>
+      <Sheet visible={!!assignFor} onClose={() => setAssignFor(null)} title={assignFor ? `${assignFor.code} · ${assignFor.label || '이름 없음'}에 보일 교재` : undefined}>
         {materials.length === 0 ? <Empty title="올린 교재가 없어요" /> : materials.map((m) => { const on = !!assignFor && codeMaterials(assignFor.id).includes(m.id); return <ListItem key={m.id} icon="document-text-outline" title={m.title} subtitle={`${m.pages ? m.pages + 'p · ' : ''}${fmtBytes(m.size)}`} right={<Toggle value={on} onChange={(v) => assignFor && toggleAssign(assignFor, m, v)} />} />; })}
         <Row style={{ marginTop: 10 }}><Button small variant="secondary" title="전체 배정" onPress={async () => { if (!assignFor) return; await api.assignBulk(code!, assignFor.id, materials.map((m) => m.id)); load(); }} /><Button small variant="ghost" title="전체 해제" onPress={async () => { if (!assignFor) return; await api.assignBulk(code!, assignFor.id, []); load(); }} /></Row>
       </Sheet>
-      <Sheet visible={!!assignMat} onClose={() => setAssignMat(null)} title={assignMat ? `'${assignMat.title}'을 볼 수 있는 코드` : ''}>
+      <Sheet visible={!!assignMat} onClose={() => setAssignMat(null)} title={assignMat ? `'${assignMat.title}'을 볼 수 있는 코드` : undefined}>
         {codes.length === 0 ? <Empty title="접속 코드가 없어요" /> : codes.map((c) => <ListItem key={c.id} icon="key-outline" title={`${c.code} · ${c.label || '이름 없음'}`} subtitle={c.active ? '활성' : '비활성'} right={<Toggle value={!!assignMat && codeMaterials(c.id).includes(assignMat.id)} onChange={(v) => assignMat && toggleAssign(c, assignMat, v)} />} />)}
       </Sheet>
       <Sheet visible={!!editTitle} onClose={() => setEditTitle(null)} title="교재 제목 변경" height={240}><Input value={titleText} onChangeText={setTitleText} autoFocus /><Button title="저장" onPress={async () => { if (!editTitle) return; try { await api.materials.rename(code!, editTitle.id, titleText.trim() || editTitle.title); setEditTitle(null); load(); } catch (e: any) { showToast(e?.message); } }} /></Sheet>
-      <Dialog visible={!!confirm} title={confirm?.title ?? ''} message={confirm?.message} onClose={() => setConfirm(null)} actions={[{ label: '취소', onPress: () => setConfirm(null) }, { label: '삭제', variant: 'danger', onPress: () => { const f = confirm?.onYes; setConfirm(null); f?.(); } }]} />
+      <Dialog visible={!!confirm} title={confirm?.title ?? ' '} message={confirm?.message} onClose={() => setConfirm(null)} actions={[{ label: '취소', onPress: () => setConfirm(null) }, { label: '삭제', variant: 'danger', onPress: () => { const f = confirm?.onYes; setConfirm(null); f?.(); } }]} />
     </View>
   );
 }

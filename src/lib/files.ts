@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
+import { api } from './api';
 import { Doc } from '@/data/types';
 
 // --- web (preview only): keep PDF bytes in IndexedDB so documents survive reloads. Native builds never use this path;
@@ -48,7 +49,6 @@ export async function clearPageCache() { await PdfRenderer.clearCaches(); }
 
 /** Downloads a material through a short-lived signed URL and stores it encrypted like any other document. */
 export async function downloadMaterial(code: string, materialId: string, title: string, onProgress?: (p: number) => void): Promise<Doc> {
-  const { api } = await import('./api');
   const r = await api.download(code, materialId);
   if (Platform.OS === 'web') { const res = await fetch(r.url); if (!res.ok) throw new Error('다운로드 실패 ' + res.status); const blob = await res.blob(); const url = URL.createObjectURL(blob); return importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); }
   const tmp = `${FileSystem.cacheDirectory}dl-${materialId}.pdf`;
@@ -60,7 +60,6 @@ export async function downloadMaterial(code: string, materialId: string, title: 
 }
 /** Admin: uploads a local PDF to the shared bucket and registers it as a material. */
 export async function uploadMaterial(code: string, picked: { uri: string; name: string; size: number; file?: File }, title: string, onProgress?: (p: number) => void) {
-  const { api } = await import('./api');
   if (picked.size > 50 * 1024 * 1024) throw new Error('파일이 50MB를 넘습니다 (무료 서버 한도). PDF를 압축하거나 나눠서 올려 주세요.');
   const info = await PdfRenderer.getInfo(picked.uri).catch(() => ({ pageCount: 0 }));
   const u = await api.materials.uploadUrl(code, title, picked.name);
