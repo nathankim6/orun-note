@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator } from 'react-native';
+import { Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,13 +45,13 @@ export default function Viewer() {
   const prevPage = useRef(pageIndex);
   useEffect(() => { if (doc && prevPage.current !== pageIndex) { ink.snapshot(inkKey(doc.id, cycle, String(prevPage.current))); prevPage.current = pageIndex; } }, [pageIndex]);
 
+  const zoomKeyRef = useRef('0');
   // Paged layouts: one pinch recognizer over the whole viewport (so the paging ScrollView never competes), forwarded to the visible page's ZoomView.
   const pagedPinch = useMemo(() => Gesture.Pinch().runOnJS(true)
     .onStart((e) => { setPinching(true); zoomRefs.current[zoomKeyRef.current]?.pinchBegin(e.focalX, e.focalY); })
     .onUpdate((e) => { zoomRefs.current[zoomKeyRef.current]?.pinchUpdate(e.scale, e.focalX, e.focalY); })
     .onEnd(() => { zoomRefs.current[zoomKeyRef.current]?.pinchEnd(); setPinching(false); })
     .onFinalize(() => setPinching(false)), []);
-  const zoomKeyRef = useRef('0');
   // Continuous layout reflows page widths on zoom; keep the content under the fingers fixed by correcting the scroll offset.
   const pinchStart = useRef({ zoom: 1, y: 0, fy: 0 });
   const pinch = useMemo(() => Gesture.Pinch().runOnJS(true)
@@ -118,6 +118,8 @@ export default function Viewer() {
         </View>)}
       <View style={{ flex: 1, flexDirection: 'row' }}>
         {leftTab && isTablet && <LeftPanel tab={leftTab} setTab={setLeftTab} width={leftW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={goto} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} />}
+        {/* Narrow screens (phones / split view): the same panel as a modal sheet so the ≡ button always shows the page grid */}
+        {leftTab && !isTablet && <Modal visible transparent animationType="slide" onRequestClose={() => setLeftTab(null)}><Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }} onPress={() => setLeftTab(null)} /><View style={{ height: '70%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Modal>}
         <View style={{ flex: 1 }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
             : layout === 'continuous' ? (
