@@ -10,17 +10,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: maxim-lobanov/setup-xcode@v1
-        with: { xcode-version: latest-stable }
+        with: { xcode-version: '26.2' }
       - run: xcodebuild -version && swift --version
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Relax Swift 6 strict-concurrency in expo-modules-jsi (Xcode 26.3 regression)
+        run: sed -i '' 's/swiftLanguageModes: \[.v6\]/swiftLanguageModes: [.v5]/' node_modules/expo-modules-jsi/apple/Package.swift && grep -n swiftLanguageModes node_modules/expo-modules-jsi/apple/Package.swift
       - run: npx expo prebuild --platform ios --no-install
       - run: cd ios && pod install
       - name: Build for iOS Simulator (no signing)
         run: |
           cd ios
-          xcodebuild -workspace Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | xcpretty || xcodebuild -workspace Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -workspace Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
   testflight:
     # Signed App Store/TestFlight build. Requires secrets:
     #   IOS_DIST_CERT_P12_BASE64, IOS_DIST_CERT_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64,
@@ -31,11 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: maxim-lobanov/setup-xcode@v1
-        with: { xcode-version: latest-stable }
+        with: { xcode-version: '26.2' }
       - run: xcodebuild -version && swift --version
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Relax Swift 6 strict-concurrency in expo-modules-jsi (Xcode 26.3 regression)
+        run: sed -i '' 's/swiftLanguageModes: \[.v6\]/swiftLanguageModes: [.v5]/' node_modules/expo-modules-jsi/apple/Package.swift && grep -n swiftLanguageModes node_modules/expo-modules-jsi/apple/Package.swift
       - run: npx expo prebuild --platform ios --no-install
       - run: cd ios && pod install
       - name: Import signing assets
