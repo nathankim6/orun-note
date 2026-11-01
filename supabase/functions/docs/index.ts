@@ -1,43 +1,108 @@
-// 옳은Docs API. One function, action-based JSON POST. Codes are the credential; the admin code lives in the ADMIN_CODE secret.
+// 옳은Note API. One function, action-based JSON POST.
+// Identity: a Google account (Supabase Auth JWT in `token`) linked to an orunhomework.com student code, or the ADMIN_CODE.
+// Students, classes (grades) and schools are read live from the orunhomework.com Supabase project (HW_URL / HW_KEY secrets).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const ADMIN_CODE = Deno.env.get("ADMIN_CODE") ?? "";
+const HW_URL = Deno.env.get("HW_URL") ?? ""; const HW_KEY = Deno.env.get("HW_KEY") ?? "";
 const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
 const BUCKET = "materials";
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const fail = (message: string, status = 400) => json({ ok: false, error: message }, status);
-const normCode = (c: unknown) => String(c ?? "").replace(/\D/g, "").slice(0, 12);
+const normStudentCode = (c: unknown) => String(c ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
 
-async function resolveCode(code: string) {
-  if (!code) return null;
-  if (ADMIN_CODE && code === ADMIN_CODE) return { role: "admin" as const, id: null, label: "관리자" };
-  const { data } = await supa.from("access_codes").select("id,label,active").eq("code", code).maybeSingle();
-  if (!data || !data.active) return null;
-  supa.from("access_codes").update({ last_used_at: new Date().toISOString() }).eq("id", data.id).then(() => {});
-  return { role: "user" as const, id: data.id as string, label: data.label as string };
+// ---- orunhomework.com (live roster) ----
+async function hw(path: string) {
+  if (!HW_URL || !HW_KEY) throw new Error("숙제 서버 연동 설정(HW_URL/HW_KEY)이 없습니다");
+  const r = await fetch(`${HW_URL}/rest/v1/${path}`, { headers: { apikey: HW_KEY, Authorization: `Bearer ${HW_KEY}` } });
+  if (!r.ok) throw new Error(`숙제 서버 응답 오류 ${r.status}`);
+  return r.json();
+}
+type HwStudent = { id: string; name: string; code: string; code_active: boolean; grade_id: string | null; grade_name: string; school_id: string | null; school_name: string };
+const STUDENT_SELECT = "id,name,grade_id,access_code_id,access_codes:access_code_id(code,is_active),grades:grade_id(id,name,school_id,schools:school_id(id,name))";
+function shapeStudent(s: any): HwStudent { return { id: s.id, name: s.name ?? "", code: s.access_codes?.code ?? "", code_active: !!s.access_codes?.is_active, grade_id: s.grades?.id ?? s.grade_id ?? null, grade_name: s.grades?.name ?? "", school_id: s.grades?.schools?.id ?? s.grades?.school_id ?? null, school_name: s.grades?.schools?.name ?? "" }; }
+async function hwStudentByCode(code: string): Promise<HwStudent | null> {
+  const codes = await hw(`access_codes?select=id,code,is_active&code=eq.${encodeURIComponent(code)}&limit=1`); if (!codes.length) return null;
+  const rows = await hw(`students?select=${encodeURIComponent(STUDENT_SELECT)}&access_code_id=eq.${codes[0].id}&limit=1`); if (!rows.length) return null;
+  return shapeStudent(rows[0]);
+}
+async function hwStudentById(id: string): Promise<HwStudent | null> {
+  const rows = await hw(`students?select=${encodeURIComponent(STUDENT_SELECT)}&id=eq.${id}&limit=1`); return rows.length ? shapeStudent(rows[0]) : null;
+}
+async function hwRoster() {
+  const [schools, grades, students] = await Promise.all([hw("schools?select=id,name&order=name.asc"), hw("grades?select=id,name,school_id&order=name.asc"), hw(`students?select=${encodeURIComponent(STUDENT_SELECT)}&order=name.asc`)]);
+  return { schools, grades, students: students.map(shapeStudent) };
+}
+
+// ---- identity ----
+type Who = { role: "admin"; email?: string; label: string } | { role: "student"; email: string; student: HwStudent; label: string };
+async function emailFromToken(token: string): Promise<{ email: string; uid: string } | null> {
+  if (!token) return null; const { data, error } = await supa.auth.getUser(token); if (error || !data.user?.email) return null; return { email: normEmail(data.user.email), uid: data.user.id };
+}
+async function resolve(body: any): Promise<{ who: Who | null; authed?: { email: string; uid: string } | null; reason?: string }> {
+  if (ADMIN_CODE && String(body.code ?? "").replace(/\D/g, "") === ADMIN_CODE) return { who: { role: "admin", label: "관리자" } };
+  const authed = await emailFromToken(String(body.token ?? "")); if (!authed) return { who: null, authed: null, reason: "로그인이 필요합니다" };
+  const { data: adm } = await supa.from("admin_emails").select("email,label").eq("email", authed.email).maybeSingle(); if (adm) return { who: { role: "admin", email: authed.email, label: adm.label || "관리자" }, authed };
+  const { data: link } = await supa.from("student_links").select("*").eq("email", authed.email).maybeSingle(); if (!link) return { who: null, authed, reason: "unlinked" };
+  const st = await hwStudentById(link.student_id); if (!st) return { who: null, authed, reason: "학생 정보가 숙제 시스템에서 삭제되었습니다" };
+  if (!st.code_active) return { who: null, authed, reason: "학생 코드가 비활성화되었습니다" };
+  supa.from("student_links").update({ last_seen_at: new Date().toISOString(), student_name: st.name, student_code: st.code, auth_user_id: authed.uid }).eq("student_id", st.id).then(() => {});
+  return { who: { role: "student", email: authed.email, student: st, label: st.name }, authed };
+}
+async function materialsFor(st: HwStudent) {
+  const ors = [`target_type.eq.all`]; if (st.school_id) ors.push(`and(target_type.eq.school,target_id.eq.${st.school_id})`); if (st.grade_id) ors.push(`and(target_type.eq.grade,target_id.eq.${st.grade_id})`); ors.push(`and(target_type.eq.student,target_id.eq.${st.id})`);
+  const { data } = await supa.from("assignments").select("material:materials(*)").or(ors.join(","));
+  const seen = new Set<string>(); return (data ?? []).map((r: any) => r.material).filter((m: any) => m && m.ready && !seen.has(m.id) && seen.add(m.id));
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return fail("POST only", 405);
   let body: any; try { body = await req.json(); } catch { return fail("invalid json"); }
-  const action = String(body.action ?? ""); const code = normCode(body.code);
-  const who = await resolveCode(code);
-  supa.from("access_log").insert({ code: code.slice(0, 12), action, ok: !!who }).then(() => {});
-  if (!who) return fail("유효하지 않은 코드입니다", 401);
-
+  const action = String(body.action ?? "");
   try {
+    const r = await resolve(body); const who = r.who;
+    supa.from("access_log").insert({ code: (who?.role === "student" ? who.student.code : who?.role === "admin" ? "admin" : (r.authed?.email ?? "-")).slice(0, 40), action, ok: !!who }).then(() => {});
+
+    // ---- actions available to a signed-in Google user that is not linked yet ----
+    if (action === "auth.me") {
+      if (!r.authed && !who) return fail(r.reason ?? "로그인이 필요합니다", 401);
+      if (!who) { // signed in but not linked (or blocked)
+        const { data: pending } = r.authed ? await supa.from("email_change_requests").select("id,status,student_name,created_at").eq("new_email", r.authed.email).eq("status", "pending").maybeSingle() : { data: null };
+        return json({ ok: true, role: "none", email: r.authed?.email, reason: r.reason, pendingRequest: pending ?? null });
+      }
+      if (who.role === "admin") return json({ ok: true, role: "admin", email: who.email, label: who.label });
+      return json({ ok: true, role: "student", email: who.email, label: who.label, student: who.student, materials: await materialsFor(who.student) });
+    }
+    if (action === "auth.link") {
+      if (!r.authed) return fail("Google 로그인이 필요합니다", 401);
+      if (who && who.role === "student") return json({ ok: true, role: "student", student: who.student, label: who.label, materials: await materialsFor(who.student) });
+      const code = normStudentCode(body.studentCode); if (code.length < 3) return fail("학생 코드를 입력하세요");
+      const st = await hwStudentByCode(code); if (!st) return fail("학생 코드를 찾을 수 없습니다. 옳은영어 숙제 시스템의 학생 코드를 확인하세요", 404);
+      if (!st.code_active) return fail("비활성화된 학생 코드입니다", 403);
+      const { data: existing } = await supa.from("student_links").select("*").eq("student_id", st.id).maybeSingle();
+      if (existing && existing.email !== r.authed.email) {
+        // Already bound to a different Google account: needs admin approval.
+        const { data: dup } = await supa.from("email_change_requests").select("id").eq("student_id", st.id).eq("new_email", r.authed.email).eq("status", "pending").maybeSingle();
+        if (!dup) await supa.from("email_change_requests").insert({ student_id: st.id, student_code: st.code, student_name: st.name, old_email: existing.email, new_email: r.authed.email });
+        return json({ ok: true, role: "pending", message: `이 학생 코드는 이미 다른 Google 계정(${existing.email.replace(/(.{2}).+(@.+)/, "$1***$2")})에 연결되어 있어요. 관리자 승인 후 이 계정으로 로그인할 수 있습니다.`, student: { name: st.name, grade_name: st.grade_name, school_name: st.school_name } });
+      }
+      const { error } = await supa.from("student_links").upsert({ student_id: st.id, student_code: st.code, student_name: st.name, email: r.authed.email, auth_user_id: r.authed.uid, last_seen_at: new Date().toISOString() }, { onConflict: "student_id" }); if (error) return fail(error.message.includes("student_links_email_key") ? "이 Google 계정은 이미 다른 학생에 연결되어 있어요" : error.message);
+      return json({ ok: true, role: "student", student: st, label: st.name, materials: await materialsFor(st) });
+    }
+    if (!who) return fail(r.reason === "unlinked" ? "학생 코드 연결이 필요합니다" : (r.reason ?? "로그인이 필요합니다"), 401);
+
     switch (action) {
       case "verify": return json({ ok: true, role: who.role, label: who.label });
       case "list": {
         if (who.role === "admin") { const { data } = await supa.from("materials").select("*").order("created_at", { ascending: false }); return json({ ok: true, materials: data ?? [] }); }
-        const { data } = await supa.from("code_materials").select("material:materials(*)").eq("code_id", who.id);
-        return json({ ok: true, materials: (data ?? []).map((r: any) => r.material).filter((m: any) => m && m.ready) });
+        return json({ ok: true, materials: await materialsFor(who.student), student: who.student });
       }
       case "download": {
         const id = String(body.materialId ?? "");
-        if (who.role !== "admin") { const { data: ok } = await supa.from("code_materials").select("material_id").eq("code_id", who.id).eq("material_id", id).maybeSingle(); if (!ok) return fail("이 교재에 대한 권한이 없습니다", 403); }
+        if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
         const { data: m } = await supa.from("materials").select("storage_path,title,file_name").eq("id", id).maybeSingle(); if (!m) return fail("교재를 찾을 수 없습니다", 404);
         const { data: s, error } = await supa.storage.from(BUCKET).createSignedUrl(m.storage_path, 600); if (error || !s) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
         return json({ ok: true, url: s.signedUrl, title: m.title, fileName: m.file_name });
@@ -45,31 +110,28 @@ Deno.serve(async (req) => {
     }
     if (who.role !== "admin") return fail("관리자 전용 기능입니다", 403);
     switch (action) {
-      case "codes.list": {
-        const { data: codes } = await supa.from("access_codes").select("*").order("created_at", { ascending: false });
-        const { data: links } = await supa.from("code_materials").select("code_id,material_id");
-        return json({ ok: true, codes: codes ?? [], links: links ?? [] });
+      case "roster": { // live from orunhomework + link status + pending requests
+        const [roster, { data: links }, { data: reqs }, { data: assigns }] = await Promise.all([hwRoster(), supa.from("student_links").select("student_id,email,linked_at,last_seen_at"), supa.from("email_change_requests").select("*").eq("status", "pending").order("created_at", { ascending: false }), supa.from("assignments").select("id,material_id,target_type,target_id")]);
+        return json({ ok: true, ...roster, links: links ?? [], requests: reqs ?? [], assignments: assigns ?? [] });
       }
-      case "codes.create": {
-        let c = normCode(body.newCode); if (!c) { do { c = String(Math.floor(100000 + Math.random() * 900000)); } while (c === ADMIN_CODE); }
-        if (c === ADMIN_CODE) return fail("관리자 코드와 같은 코드는 만들 수 없습니다");
-        const { data, error } = await supa.from("access_codes").insert({ code: c, label: String(body.label ?? "") }).select().single(); if (error) return fail(error.message.includes("duplicate") ? "이미 있는 코드입니다" : error.message);
-        return json({ ok: true, code: data });
+      case "assign.set": { // replace all targets for a material: targets = [{type, id}]
+        const mid = String(body.materialId ?? ""); const targets: { type: string; id: string | null }[] = Array.isArray(body.targets) ? body.targets : [];
+        await supa.from("assignments").delete().eq("material_id", mid);
+        if (targets.length) { const { error } = await supa.from("assignments").insert(targets.map((t) => ({ material_id: mid, target_type: t.type, target_id: t.type === "all" ? null : t.id }))); if (error) return fail(error.message); }
+        const { data } = await supa.from("assignments").select("id,material_id,target_type,target_id").eq("material_id", mid); return json({ ok: true, assignments: data ?? [] });
       }
-      case "codes.update": { const patch: any = {}; if (typeof body.active === "boolean") patch.active = body.active; if (typeof body.label === "string") patch.label = body.label; const { data, error } = await supa.from("access_codes").update(patch).eq("id", String(body.id)).select().single(); if (error) return fail(error.message); return json({ ok: true, code: data }); }
-      case "codes.delete": { const { error } = await supa.from("access_codes").delete().eq("id", String(body.id)); if (error) return fail(error.message); return json({ ok: true }); }
-      case "assign": {
-        const codeId = String(body.codeId), materialId = String(body.materialId);
-        if (body.assigned) { const { error } = await supa.from("code_materials").upsert({ code_id: codeId, material_id: materialId }); if (error) return fail(error.message); }
-        else { const { error } = await supa.from("code_materials").delete().eq("code_id", codeId).eq("material_id", materialId); if (error) return fail(error.message); }
-        return json({ ok: true });
-      }
-      case "assign.bulk": { // set the full list of material ids for a code
-        const codeId = String(body.codeId); const ids: string[] = Array.isArray(body.materialIds) ? body.materialIds.map(String) : [];
-        await supa.from("code_materials").delete().eq("code_id", codeId);
-        if (ids.length) { const { error } = await supa.from("code_materials").insert(ids.map((material_id) => ({ code_id: codeId, material_id }))); if (error) return fail(error.message); }
-        return json({ ok: true });
-      }
+      case "assign.toggle": { const mid = String(body.materialId ?? ""); const type = String(body.type); const id = type === "all" ? null : String(body.id); const on = !!body.on;
+        if (on) { const { error } = await supa.from("assignments").upsert({ material_id: mid, target_type: type, target_id: id }, { onConflict: "material_id,target_type,target_id", ignoreDuplicates: true }); if (error) return fail(error.message); }
+        else { let q = supa.from("assignments").delete().eq("material_id", mid).eq("target_type", type); q = id ? q.eq("target_id", id) : q.is("target_id", null); const { error } = await q; if (error) return fail(error.message); }
+        return json({ ok: true }); }
+      case "requests.decide": { const id = String(body.id); const approve = !!body.approve;
+        const { data: rq } = await supa.from("email_change_requests").select("*").eq("id", id).eq("status", "pending").maybeSingle(); if (!rq) return fail("요청을 찾을 수 없습니다", 404);
+        if (approve) { const { error } = await supa.from("student_links").update({ email: rq.new_email, auth_user_id: null }).eq("student_id", rq.student_id); if (error) return fail(error.message.includes("student_links_email_key") ? "이 Google 계정은 이미 다른 학생에 연결되어 있어요" : error.message); }
+        await supa.from("email_change_requests").update({ status: approve ? "approved" : "rejected", decided_at: new Date().toISOString() }).eq("id", id); return json({ ok: true }); }
+      case "links.unlink": { const { error } = await supa.from("student_links").delete().eq("student_id", String(body.studentId)); if (error) return fail(error.message); return json({ ok: true }); }
+      case "admins.list": { const { data } = await supa.from("admin_emails").select("*").order("created_at"); return json({ ok: true, admins: data ?? [] }); }
+      case "admins.add": { const e = normEmail(body.email); if (!/^[^@]+@[^@]+\.[^@]+$/.test(e)) return fail("이메일 형식이 아닙니다"); const { error } = await supa.from("admin_emails").upsert({ email: e, label: String(body.label ?? "") }); if (error) return fail(error.message); return json({ ok: true }); }
+      case "admins.remove": { const { error } = await supa.from("admin_emails").delete().eq("email", normEmail(body.email)); if (error) return fail(error.message); return json({ ok: true }); }
       case "materials.uploadUrl": {
         const title = String(body.title ?? "").trim() || "제목 없음"; const fileName = String(body.fileName ?? "file.pdf");
         const id = crypto.randomUUID(); const path = `${id}.pdf`;
@@ -84,8 +146,9 @@ Deno.serve(async (req) => {
         if (m) await supa.storage.from(BUCKET).remove([m.storage_path]);
         const { error } = await supa.from("materials").delete().eq("id", String(body.id)); if (error) return fail(error.message); return json({ ok: true });
       }
-      case "stats": { const [{ count: c }, { count: m }, { data: log }] = await Promise.all([supa.from("access_codes").select("*", { count: "exact", head: true }), supa.from("materials").select("*", { count: "exact", head: true }), supa.from("access_log").select("code,action,ok,at").order("at", { ascending: false }).limit(50)]); return json({ ok: true, codes: c ?? 0, materials: m ?? 0, log: log ?? [] }); }
+      case "stats": { const [{ count: l }, { count: m }, { count: p }, { data: log }] = await Promise.all([supa.from("student_links").select("*", { count: "exact", head: true }), supa.from("materials").select("*", { count: "exact", head: true }), supa.from("email_change_requests").select("*", { count: "exact", head: true }).eq("status", "pending"), supa.from("access_log").select("code,action,ok,at").order("at", { ascending: false }).limit(60)]);
+        return json({ ok: true, linked: l ?? 0, materials: m ?? 0, pending: p ?? 0, log: log ?? [] }); }
     }
-    return fail("unknown action " + action, 404);
-  } catch (e) { return fail("server error: " + (e as Error).message, 500); }
+    return fail("알 수 없는 action: " + action, 404);
+  } catch (e) { return fail((e as Error).message ?? "server error", 500); }
 });

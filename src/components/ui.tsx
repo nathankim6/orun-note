@@ -2,6 +2,7 @@ import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle, TextStyle, StyleProp, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, radius, spacing, type } from '@/theme';
+import { glass } from '@/theme';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -25,11 +26,10 @@ export function Muted(props: Omit<React.ComponentProps<typeof T>, 'color'>) {
   return <T {...props} color={colors.textMuted} />;
 }
 
-export function Card({ children, style, onPress, padded = true }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; onPress?: () => void; padded?: boolean }) {
-  const { colors } = useTheme();
-  const base = [{ backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border }, padded && { padding: spacing.lg }, style];
-  if (onPress) return <Pressable onPress={onPress} style={({ pressed }) => [base, pressed && { opacity: 0.85 }]}>{children}</Pressable>;
-  return <View style={base}>{children}</View>;
+export function Card({ children, style, onPress, padded = true }: { children: React.ReactNode; style?: any; onPress?: () => void; padded?: boolean }) {
+  const { colors, dark } = useTheme();
+  const body = <View style={[{ borderRadius: radius.xl, overflow: 'hidden', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, padding: padded ? spacing.lg : 0 }, !dark && glass.shadow, style]}>{children}</View>;
+  return onPress ? <Pressable onPress={onPress} style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1, transform: [{ scale: pressed ? 0.995 : 1 }] })}>{body}</Pressable> : body;
 }
 
 export function Button({ title, onPress, variant = 'primary', icon, disabled, loading, style, small }: { title: string; onPress?: () => void; variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'outline'; icon?: IoniconName; disabled?: boolean; loading?: boolean; style?: StyleProp<ViewStyle>; small?: boolean }) {
@@ -131,7 +131,7 @@ export function Sheet({ visible, onClose, children, title, height }: { visible: 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={[styles.backdrop, { backgroundColor: colors.overlay }]} onPress={onClose} />
-      <View style={[styles.sheet, { backgroundColor: colors.surface, maxHeight: (height as any) ?? '85%' }]}>
+      <View style={[styles.sheet, { backgroundColor: 'rgba(255,255,255,0.92)', maxHeight: (height as any) ?? '85%', borderTopLeftRadius: 28, borderTopRightRadius: 28 }]}>
         <View style={[styles.handle, { backgroundColor: colors.border }]} />
         {!!title && <Row justify="space-between" style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.sm }}><T variant="h3">{title}</T><IconButton icon="close" onPress={onClose} /></Row>}
         <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}>{children}</ScrollView>

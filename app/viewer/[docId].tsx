@@ -91,7 +91,7 @@ export default function Viewer() {
   const pageInk = ink.pages[inkKey(doc.id, cycle, String(pageIndex))];
 
   return (
-    <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E7E0', paddingTop: insets.top }}>
+    <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E6EDF7', paddingTop: insets.top }}>
       {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
       {tabsH > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: tabsH, backgroundColor: colors.surfaceAlt }} contentContainerStyle={{ alignItems: 'flex-end' }}>
@@ -99,7 +99,7 @@ export default function Viewer() {
           <Pressable onPress={() => setSheet('tabs')} style={{ paddingHorizontal: 10, height: 30, justifyContent: 'center' }}><Ionicons name="add" size={18} color={colors.textMuted} /></Pressable>
         </ScrollView>)}
       {!fullscreen && (
-        <View style={{ height: headerH, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6 }}>
+        <View style={{ height: headerH, backgroundColor: 'rgba(255,255,255,0.6)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6 }}>
           <IconButton icon="menu-outline" active={!!leftTab} onPress={() => setLeftTab(leftTab ? null : 'pages')} label="좌측 패널" />
           <Pressable onPress={() => setSheet('cycle')} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: colors.surfaceAlt }}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{cycle}회독</Text><Ionicons name="chevron-down" size={12} color={colors.textMuted} /></Pressable>
           <Pressable onPress={() => setSheet('info')} style={{ flex: 1, marginLeft: 8 }}><Text numberOfLines={1} style={{ fontWeight: '700', color: colors.text, fontSize: 14 }}>{doc.title}</Text></Pressable>
@@ -126,7 +126,7 @@ export default function Viewer() {
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
         </View>
       </View>
-      <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
+      <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: 'rgba(255,255,255,0.72)', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />
         <Pressable onPress={() => setSheet('goto')} style={{ paddingHorizontal: 8 }}><Text style={{ fontWeight: '700', color: colors.text, fontSize: 13 }}>{pageIndex + 1} <Text style={{ color: colors.textMuted, fontWeight: '500' }}>/ {doc.pageCount}</Text></Text></Pressable>
         <IconButton icon="chevron-forward" size={18} onPress={() => goto(pageIndex + 1)} disabled={pageIndex >= doc.pageCount - 1} label="다음 페이지" />

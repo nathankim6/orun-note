@@ -10,6 +10,8 @@ import { useSession } from '@/store/session';
 import { Toast, T } from '@/components/ui';
 import { useContentProtection } from '@/lib/security';
 import { Logo } from '@/components/Logo';
+import { supabase } from '@/lib/supabase';
+import { GlassBackground } from '@/components/Glass';
 
 const ErrorUtilsAny = (globalThis as any).ErrorUtils;
 if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
@@ -24,23 +26,24 @@ if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
 
 export default function RootLayout() {
   const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const { hidden, attempts } = useContentProtection(); const showToast = useDocsStore((s) => s.showToast);
-  const { code, hydrated, revalidate } = useSession(); const segments = useSegments(); const router = useRouter();
+  const { role, hydrated, refreshMe } = useSession(); const segments = useSegments(); const router = useRouter();
   useEffect(() => { if (attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [attempts]);
-  useEffect(() => { if (hydrated && code) revalidate(); }, [hydrated]);
-  useEffect(() => { if (!hydrated) return; const inAuth = segments[0] === '(auth)'; if (!code && !inAuth) router.replace('/(auth)/code'); else if (code && inAuth) router.replace('/(tabs)'); }, [hydrated, code, segments.join('/')]);
+  useEffect(() => { if (!hydrated) return; refreshMe(); const { data } = supabase.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' || ev === 'TOKEN_REFRESHED' || ev === 'SIGNED_OUT') refreshMe(); }); return () => data.subscription.unsubscribe(); }, [hydrated]);
+  useEffect(() => { if (!hydrated) return; const inAuth = segments[0] === '(auth)'; const inCallback = segments[0] === 'auth'; if (inCallback) return; if (!role && !inAuth) router.replace('/(auth)/code'); else if (role && inAuth) router.replace('/(tabs)'); }, [hydrated, role, segments[0]]);
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <GlassBackground>
           <StatusBar style={dark ? 'light' : 'dark'} />
-          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: 'transparent' } }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="viewer/[docId]" options={{ animation: 'fade', gestureEnabled: false }} />
+            <Stack.Screen name="auth/callback" />
           </Stack>
           <Toast message={toast} />
           {hidden && <View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}><Logo size={48} /><T variant="caption" color={colors.textMuted} style={{ marginTop: 12 }}>콘텐츠 보호를 위해 화면을 가렸어요</T></View>}
-        </View>
+        </GlassBackground>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

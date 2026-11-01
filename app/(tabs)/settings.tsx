@@ -25,8 +25,8 @@ export default function Settings() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60, maxWidth: isTablet ? 760 : undefined, width: '100%', alignSelf: 'center' }}>
         <SectionHeader title="접속 정보" />
         <Card padded={false} style={{ paddingHorizontal: 14 }}>
-          <ListItem icon="key-outline" title={session.role === 'admin' ? '관리자 모드' : session.label || '학생'} subtitle={`코드 ${session.code ?? '-'}${session.verifiedAt ? ' · 확인 ' + fmtDate(session.verifiedAt, { time: true }) : ''}`} />
-          <ListItem icon="log-out-outline" title="코드 변경 / 나가기" subtitle="받아둔 교재와 필기는 기기에 남지만 코드를 다시 입력해야 열 수 있어요" onPress={() => setConfirmOut(true)} />
+          <ListItem icon={session.role === 'admin' ? 'shield-checkmark-outline' : 'person-circle-outline'} title={session.role === 'admin' ? '관리자 모드' : `${session.label || '학생'}${session.student ? ` · ${session.student.school_name} ${session.student.grade_name}` : ''}`} subtitle={`${session.email ?? (session.adminCode ? '관리자 코드로 입장' : '-')}${session.student ? ` · 학생 코드 ${session.student.code}` : ''}${session.verifiedAt ? ' · 확인 ' + fmtDate(session.verifiedAt, { time: true }) : ''}`} />
+          <ListItem icon="log-out-outline" title="로그아웃" subtitle="받아둔 교재와 필기는 기기에 남지만 다시 로그인해야 열 수 있어요. Google 계정 변경은 관리자 승인이 필요해요" onPress={() => setConfirmOut(true)} />
         </Card>
         <SectionHeader title="테마" />
         <Row>{([['system', '시스템 설정'], ['light', '라이트'], ['dark', '다크']] as const).map(([k, l]) => <Chip key={k} label={l} active={s.theme === k} onPress={() => s.setTheme(k)} />)}</Row>
@@ -56,7 +56,7 @@ export default function Settings() {
           <ListItem icon="code-slash-outline" title="PDF 엔진" value="iOS PDFKit · Android PdfRenderer · Web pdf.js" />
         </Card>
       </ScrollView>
-      <Dialog visible={confirmOut} title="코드를 변경할까요?" message="접속 코드 입력 화면으로 돌아갑니다." onClose={() => setConfirmOut(false)} actions={[{ label: '취소', onPress: () => setConfirmOut(false) }, { label: '나가기', variant: 'primary', onPress: () => { setConfirmOut(false); session.signOut(); } }]} />
+      <Dialog visible={confirmOut} title="로그아웃할까요?" message="로그인 화면으로 돌아갑니다." onClose={() => setConfirmOut(false)} actions={[{ label: '취소', onPress: () => setConfirmOut(false) }, { label: '로그아웃', variant: 'primary', onPress: () => { setConfirmOut(false); session.signOut(); } }]} />
       <Dialog visible={confirm} title="모든 필기를 삭제할까요?" message="모든 문서의 필기와 버전 기록이 삭제됩니다. 되돌릴 수 없습니다." onClose={() => setConfirm(false)} actions={[{ label: '취소', onPress: () => setConfirm(false) }, { label: '삭제', variant: 'danger', onPress: () => { useInkStore.setState({ pages: {} }); setConfirm(false); showToast('모든 필기를 삭제했어요'); } }]} />
     </View>
   );

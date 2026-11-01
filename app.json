@@ -2,10 +2,10 @@
   "expo": {
     "name": "Paperly",
     "slug": "paperly",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
-    "scheme": "paperly",
+    "scheme": "orunnote",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -61,7 +61,8 @@
         {
           "name": "옳은Note"
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": false

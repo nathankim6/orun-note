@@ -17,12 +17,14 @@ export type ThemeColors = {
   overlay: string; paper: string; inkDefault: string;
 };
 
+// Light glass theme: airy sky/cream gradient background, translucent white surfaces, navy text, lighthouse-yellow accent (ORUN brand).
 export const lightColors: ThemeColors = {
-  bg: '#F6F5F0', surface: '#FFFFFF', surfaceAlt: '#EFEDE6', text: '#1B1B1F', textMuted: '#5F6368', textFaint: '#9AA0A6',
-  border: '#E3E1D9', primary: palette.teal, primaryText: '#FFFFFF', primarySoft: palette.tealLight, accent: palette.amber,
+  bg: '#EEF3FA', surface: 'rgba(255,255,255,0.72)', surfaceAlt: 'rgba(255,255,255,0.55)', text: '#172033', textMuted: '#5B6578', textFaint: '#9AA4B5',
+  border: 'rgba(255,255,255,0.75)', primary: '#2F6FED', primaryText: '#FFFFFF', primarySoft: 'rgba(47,111,237,0.12)', accent: '#F5C542',
   danger: palette.red, dangerSoft: palette.redLight, success: palette.green, successSoft: palette.greenLight, info: palette.blue, infoSoft: palette.blueLight,
-  overlay: 'rgba(20,20,25,0.45)', paper: '#FFFFFF', inkDefault: '#1B1B1F',
+  overlay: 'rgba(23,32,51,0.35)', paper: '#FFFFFF', inkDefault: '#172033',
 };
+export const glass = { bgGradient: ['#F3F7FF', '#EAF1FB', '#FDF6E3'] as const, blobA: 'rgba(47,111,237,0.18)', blobB: 'rgba(245,197,66,0.22)', blobC: 'rgba(120,200,255,0.20)', shadow: { shadowColor: '#1B3B7A', shadowOpacity: 0.10, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 6 } };
 export const darkColors: ThemeColors = {
   bg: '#121315', surface: '#1C1D21', surfaceAlt: '#26282E', text: '#F2F2F4', textMuted: '#B3B6BD', textFaint: '#7C8089',
   border: '#2F3137', primary: '#2FA8A5', primaryText: '#071615', primarySoft: '#173634', accent: '#F0A64B',
