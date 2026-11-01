@@ -32,10 +32,10 @@ export default function Viewer() {
 
   const [pageIndex, setPageIndex] = useState(doc?.lastPage ?? 0);
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
-  useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
   const [layout, setLayout] = useState(prefs.defaultLayoutMode); const [zoom, setZoom] = useState(1); const [fullscreen, setFullscreen] = useState(false);
   // Paged layouts zoom with a focal-anchored transform (ZoomView); `tzoom` mirrors its scale for the % label and sharper re-render.
   const [tzoom, setTzoom] = useState(1); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
+  useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
   const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#1B1B1F', width: 2, shape: 'rectangle', opacity: 1 }); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
