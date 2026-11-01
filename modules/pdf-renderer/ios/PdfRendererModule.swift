@@ -77,6 +77,7 @@ public class PdfRendererModule: Module {
     }
     AsyncFunction("fileExists") { (uri: String) throws -> Bool in
       try self.queue.sync { () throws -> Bool in FileManager.default.fileExists(atPath: self.url(from: uri).path) }
+    }
     AsyncFunction("clearCaches") {
       self.queue.sync {
       self.cache.removeAll()
@@ -117,6 +118,7 @@ public class PdfRendererModule: Module {
 
     AsyncFunction("getPageText") { (uri: String, index: Int) throws -> String in
       try self.queue.sync { () throws -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
+    }
 
     AsyncFunction("getOutline") { (uri: String) throws -> [[String: Any]] in
       try self.queue.sync { () throws -> [[String: Any]] in
