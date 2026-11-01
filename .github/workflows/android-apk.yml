@@ -1,0 +1,48 @@
+name: Android APK (Galaxy Tab sideload)
+on:
+  push: { branches: [main] }
+  workflow_dispatch: {}
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Prebuild native Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Create release keystore (kept only as a CI artifact; reuse it for updates)
+        run: |
+          mkdir -p ~/.keys
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > ~/.keys/paperly.jks
+            echo "STORE_PASS=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASS=${{ secrets.ANDROID_KEY_PASSWORD }}" >> $GITHUB_ENV
+          else
+            keytool -genkeypair -v -keystore ~/.keys/paperly.jks -storepass paperly-local -keypass paperly-local -alias paperly -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Paperly, OU=Personal, O=Paperly, L=Seoul, C=KR"
+            echo "STORE_PASS=paperly-local" >> $GITHUB_ENV; echo "KEY_ALIAS=paperly" >> $GITHUB_ENV; echo "KEY_PASS=paperly-local" >> $GITHUB_ENV
+          fi
+      - name: Build signed release APK
+        working-directory: android
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file=$HOME/.keys/paperly.jks \
+            -Pandroid.injected.signing.store.password=$STORE_PASS \
+            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$KEY_PASS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paperly-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+      - uses: actions/upload-artifact@v4
+        if: ${{ env.STORE_PASS == 'paperly-local' }}
+        with:
+          name: generated-keystore-keep-private
+          path: ~/.keys/paperly.jks
