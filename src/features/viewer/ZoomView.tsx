@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS, cancelAnimation } from 'react-native-reanimated';
 
-export type ZoomHandle = { zoomTo: (scale: number, fx?: number, fy?: number) => void; reset: () => void };
+export type ZoomHandle = { zoomTo: (scale: number, fx?: number, fy?: number) => void; reset: () => void; pinchBegin: (fx: number, fy: number) => void; pinchUpdate: (scale: number, fx: number, fy: number) => void; pinchEnd: () => void; getScale: () => number };
 type Props = {
   width: number; height: number; // viewport size
   contentWidth: number; contentHeight: number; // unscaled content size (centered in the viewport when smaller)
@@ -50,18 +50,18 @@ export const ZoomView = forwardRef<ZoomHandle, Props>(function ZoomView({ width,
     scale.value = withTiming(s1, { duration: 220 }); tx.value = withTiming(clamp(nx, b.minX, b.maxX), { duration: 220 }); ty.value = withTiming(clamp(ny, b.minY, b.maxY), { duration: 220 });
     const z = s1 > 1.001; if (zoomed.value !== z) { zoomed.value = z; zoomedChange(z); } report(s1); settled(s1);
   };
-  useImperativeHandle(ref, () => ({ zoomTo: zoomToJS, reset: () => zoomToJS(1) }), [width, height, contentWidth, contentHeight]);
+  const pinchBeginJS = (fx: number, fy: number) => { cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(scale); startScale.value = scale.value; startTx.value = tx.value; startTy.value = ty.value; startFx.value = fx; startFy.value = fy; };
+  const pinchUpdateJS = (sc: number, fx: number, fy: number) => {
+    const s = clamp(startScale.value * sc, minScale * 0.85, maxScale * 1.1);
+    // Keep the content point that was under the initial focal point under the current focal point (GoodNotes behaviour):
+    // zooming happens around the fingers and moving both fingers pans the page at the same time.
+    tx.value = fx - (startFx.value - startTx.value) * (s / startScale.value);
+    ty.value = fy - (startFy.value - startTy.value) * (s / startScale.value);
+    scale.value = s; report(s);
+  };
+  const pinchEndJS = () => { const s = clamp(scale.value, minScale, maxScale); scale.value = withTiming(s, { duration: 160 }); const b = bounds(s); tx.value = withTiming(clamp(tx.value, b.minX, b.maxX), { duration: 160 }); ty.value = withTiming(clamp(ty.value, b.minY, b.maxY), { duration: 160 }); const z = s > 1.001; if (zoomed.value !== z) { zoomed.value = z; zoomedChange(z); } report(s); settled(s); };
+  useImperativeHandle(ref, () => ({ zoomTo: zoomToJS, reset: () => zoomToJS(1), pinchBegin: pinchBeginJS, pinchUpdate: pinchUpdateJS, pinchEnd: pinchEndJS, getScale: () => scale.value }), [width, height, contentWidth, contentHeight]);
 
-  const pinch = Gesture.Pinch()
-    .onStart((e) => { cancelAnimation(tx); cancelAnimation(ty); startScale.value = scale.value; startTx.value = tx.value; startTy.value = ty.value; startFx.value = e.focalX; startFy.value = e.focalY; })
-    .onUpdate((e) => {
-      const s = clamp(startScale.value * e.scale, minScale * 0.7, maxScale * 1.15); // small overshoot, springs back on end
-      // Keep the content point that was under the initial focal point under the current focal point.
-      tx.value = e.focalX - (startFx.value - startTx.value) * (s / startScale.value);
-      ty.value = e.focalY - (startFy.value - startTy.value) * (s / startScale.value);
-      scale.value = s; runOnJS(report)(s);
-    })
-    .onEnd(() => { const s = clamp(scale.value, minScale, maxScale); scale.value = withTiming(s, { duration: 160 }); settle(s); runOnJS(report)(s); });
 
   // One-finger pan moves the zoomed content. Not active at 1x (the paging ScrollView handles swipes) and never for the stylus.
   const pan = Gesture.Pan().manualActivation(true).minPointers(1).maxPointers(2)
@@ -75,12 +75,14 @@ export const ZoomView = forwardRef<ZoomHandle, Props>(function ZoomView({ width,
     .onTouchesDown((e, st) => { const pt = (e.changedTouches[0] as any)?.pointerType; if (pt === PointerType.STYLUS) st.fail(); })
     .onEnd((e) => { runOnJS(zoomToJS)(scale.value > 1.001 ? 1 : 2.2, e.x, e.y); });
 
-  const gesture = Gesture.Simultaneous(pinch, pan, doubleTap);
-  const style = useAnimatedStyle(() => ({ transform: [{ translateX: tx.value }, { translateY: ty.value }, { scale: scale.value }] }));
+  const gesture = Gesture.Simultaneous(pan, doubleTap);
+  // RN scales around the view center by default. Compensate so that (tx, ty) describe where the content's top-left
+  // corner lands on screen, which is what the focal-point math above assumes. This avoids relying on transformOrigin.
+  const style = useAnimatedStyle(() => ({ transform: [{ translateX: tx.value + ((scale.value - 1) * contentWidth) / 2 }, { translateY: ty.value + ((scale.value - 1) * contentHeight) / 2 }, { scale: scale.value }] }));
   return (
     <GestureDetector gesture={gesture}>
       <Animated.View style={{ width, height, overflow: 'hidden' }} collapsable={false}>
-        <Animated.View style={[{ width: contentWidth, height: contentHeight, transformOrigin: 'top left' as any }, style]}>{children}</Animated.View>
+        <Animated.View style={[{ width: contentWidth, height: contentHeight }, style]}>{children}</Animated.View>
       </Animated.View>
     </GestureDetector>
   );

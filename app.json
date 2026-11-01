@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Paperly",
-    "slug": "paperly",
+    "slug": "orun-note",
     "version": "1.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
@@ -37,7 +37,9 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "옳은Note",
+      "shortName": "옳은Note"
     },
     "plugins": [
       [

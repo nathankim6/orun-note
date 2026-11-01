@@ -34,17 +34,29 @@ export default function Viewer() {
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
   const [layout, setLayout] = useState(prefs.defaultLayoutMode); const [zoom, setZoom] = useState(1); const [fullscreen, setFullscreen] = useState(false);
   // Paged layouts zoom with a focal-anchored transform (ZoomView); `tzoom` mirrors its scale for the % label and sharper re-render.
-  const [tzoom, setTzoom] = useState(1); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
+  const [tzoom, setTzoom] = useState(1); const [pinching, setPinching] = useState(false); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
   useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
   const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#1B1B1F', width: 2, shape: 'rectangle', opacity: 1 }); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
-  const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => { const next = { ...c, ...p }; if (p.tool && p.tool !== c.tool) Object.assign(next, toolDefaults(p.tool, next)); if (p.color) setRecentColors((r) => Array.from(new Set([p.color!, ...r])).slice(0, 6)); if (['pen', 'pencil', 'highlighter', 'fountain', 'brush'].includes(next.tool)) prevPen.current = next; return next; }), []);
+  const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => { const next = { ...c, ...p }; if (p.tool && p.tool !== c.tool) Object.assign(next, toolDefaults(p.tool, next)); if (p.color) setRecentColors((r) => Array.from(new Set([p.color!, ...r])).slice(0, 6)); if (['pen', 'highlighter'].includes(next.tool)) prevPen.current = next; return next; }), []);
 
   useEffect(() => { if (doc) store.touch(doc.id, pageIndex); }, [pageIndex, doc?.id]);
   const prevPage = useRef(pageIndex);
   useEffect(() => { if (doc && prevPage.current !== pageIndex) { ink.snapshot(inkKey(doc.id, cycle, String(prevPage.current))); prevPage.current = pageIndex; } }, [pageIndex]);
 
+  // Paged layouts: one pinch recognizer over the whole viewport (so the paging ScrollView never competes), forwarded to the visible page's ZoomView.
+  const pagedPinch = useMemo(() => Gesture.Pinch().runOnJS(true)
+    .onStart((e) => { setPinching(true); zoomRefs.current[zoomKeyRef.current]?.pinchBegin(e.focalX, e.focalY); })
+    .onUpdate((e) => { zoomRefs.current[zoomKeyRef.current]?.pinchUpdate(e.scale, e.focalX, e.focalY); })
+    .onEnd(() => { zoomRefs.current[zoomKeyRef.current]?.pinchEnd(); setPinching(false); })
+    .onFinalize(() => setPinching(false)), []);
+  const zoomKeyRef = useRef('0');
+  // Continuous layout reflows page widths on zoom; keep the content under the fingers fixed by correcting the scroll offset.
+  const pinchStart = useRef({ zoom: 1, y: 0, fy: 0 });
+  const pinch = useMemo(() => Gesture.Pinch().runOnJS(true)
+    .onStart((e) => { pinchStart.current = { zoom, y: contScroll.current, fy: e.focalY }; })
+    .onUpdate((e) => { const z = Math.max(0.6, Math.min(4, pinchStart.current.zoom * e.scale)); setZoom(z); const ratio = z / pinchStart.current.zoom; const y = (pinchStart.current.y + pinchStart.current.fy) * ratio - pinchStart.current.fy; scrollRef.current?.scrollTo({ y: Math.max(0, y), animated: false }); }), [zoom]);
   if (!doc) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}><T>문서를 찾을 수 없어요</T><Button title="돌아가기" style={{ marginTop: 12 }} onPress={() => router.replace('/(tabs)')} /></View>;
   if (missing) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: 24 }}><Ionicons name="document-lock-outline" size={48} color={colors.textFaint} /><T variant="h3" style={{ marginTop: 12 }}>PDF 파일을 찾을 수 없어요</T><Muted center style={{ marginTop: 6 }}>원본 파일이 삭제되었거나 (웹) 브라우저 저장소가 비워졌어요. 다시 가져와 주세요.</Muted><Button title="내 서재로" style={{ marginTop: 16 }} onPress={() => router.replace('/(tabs)')} /></View>;
 
@@ -64,7 +76,7 @@ export default function Viewer() {
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = cfg.tool !== 'hand';
-  const scrollOK = !tzoomed; // finger touch pans/pinches/turns pages; while zoomed in, the ZoomView pan owns the finger
+  const scrollOK = !tzoomed && !pinching; // finger swipes turn pages; while pinching or zoomed in, the ZoomView owns the fingers
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>
@@ -75,12 +87,8 @@ export default function Viewer() {
         onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' && layout === 'continuous' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
     </View>); };
 
-  // Continuous layout reflows page widths on zoom; keep the content under the fingers fixed by correcting the scroll offset.
-  const pinchStart = useRef({ zoom: 1, y: 0, fy: 0 });
-  const pinch = useMemo(() => Gesture.Pinch().runOnJS(true)
-    .onStart((e) => { pinchStart.current = { zoom, y: contScroll.current, fy: e.focalY }; })
-    .onUpdate((e) => { const z = Math.max(0.6, Math.min(4, pinchStart.current.zoom * e.scale)); setZoom(z); const ratio = z / pinchStart.current.zoom; const y = (pinchStart.current.y + pinchStart.current.fy) * ratio - pinchStart.current.fy; scrollRef.current?.scrollTo({ y: Math.max(0, y), animated: false }); }), [zoom]);
   const zoomKey = twoPage ? 'pair' + Math.floor((pageIndex + (prefs.twoPageStartOdd ? 0 : 1)) / 2) : String(pageIndex);
+  zoomKeyRef.current = zoomKey;
   const zoomBy = (d: number) => { if (layout === 'continuous') setZoom((z) => Math.max(0.6, Math.min(4, z + d))); else zoomRefs.current[zoomKey]?.zoomTo(tzoom + d); };
   const resetZoom = () => { if (layout === 'continuous') setZoom(1); else zoomRefs.current[zoomKey]?.reset(); };
   const zoomPct = layout === 'continuous' ? zoom : tzoom;
@@ -92,7 +100,7 @@ export default function Viewer() {
 
   return (
     <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E6EDF7', paddingTop: insets.top }}>
-      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
+      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
       {tabsH > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: tabsH, backgroundColor: colors.surfaceAlt }} contentContainerStyle={{ alignItems: 'flex-end' }}>
           {store.openTabs.map((id) => { const d = store.docs[id]; const active = id === docId; return <Pressable key={id} onPress={() => { store.setActiveTab(id); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 30, backgroundColor: active ? colors.surface : 'transparent', borderTopLeftRadius: 8, borderTopRightRadius: 8, maxWidth: 220 }}><Text numberOfLines={1} style={{ fontSize: 12, fontWeight: active ? '700' : '500', color: active ? colors.text : colors.textMuted, flexShrink: 1 }}>{d?.title ?? id}</Text><Pressable hitSlop={6} onPress={() => { store.closeTab(id); if (store.openTabs.length <= 1) exit(); }}><Ionicons name="close" size={14} color={colors.textMuted} /></Pressable></Pressable>; })}
@@ -115,13 +123,13 @@ export default function Viewer() {
             : layout === 'continuous' ? (
               <GestureDetector gesture={pinch}><ScrollView ref={scrollRef} scrollEnabled={scrollOK} onScroll={(e) => { contScroll.current = e.nativeEvent.contentOffset.y; onScrollEnd(e); }} scrollEventThrottle={60} contentContainerStyle={{ alignItems: 'center', paddingVertical: 8, gap: 12 }} contentOffset={{ x: 0, y: contOffset(pageIndex) }}>{pages.map(renderPage)}</ScrollView></GestureDetector>
             ) : twoPage ? (
-              <ScrollView ref={scrollRef} horizontal pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={{ x: Math.floor(pageIndex / 2) * availW, y: 0 }} showsHorizontalScrollIndicator={false}>
+              <GestureDetector gesture={pagedPinch}><ScrollView ref={scrollRef} horizontal pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={{ x: Math.floor(pageIndex / 2) * availW, y: 0 }} showsHorizontalScrollIndicator={false}>
                 {Array.from({ length: Math.ceil((doc.pageCount + (prefs.twoPageStartOdd ? 0 : 1)) / 2) }, (_, pair) => wrapZoom('pair' + pair, sizeFor(0).w * 2 + 8, sizeFor(0).h, <View style={{ width: sizeFor(0).w * 2 + 8, height: sizeFor(0).h, flexDirection: 'row', gap: 8 }}>{renderPage(prefs.twoPageStartOdd ? pair * 2 : pair * 2 - 1)}{renderPage(prefs.twoPageStartOdd ? pair * 2 + 1 : pair * 2)}</View>))}
-              </ScrollView>
+              </ScrollView></GestureDetector>
             ) : (
-              <ScrollView ref={scrollRef} horizontal={layout === 'horizontal'} pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={layout === 'horizontal' ? { x: pageIndex * availW, y: 0 } : { x: 0, y: pageIndex * availH }} showsHorizontalScrollIndicator={false} showsVerticalScrollIndicator={false}>
+              <GestureDetector gesture={pagedPinch}><ScrollView ref={scrollRef} horizontal={layout === 'horizontal'} pagingEnabled scrollEnabled={scrollOK} onMomentumScrollEnd={onScrollEnd} contentOffset={layout === 'horizontal' ? { x: pageIndex * availW, y: 0 } : { x: 0, y: pageIndex * availH }} showsHorizontalScrollIndicator={false} showsVerticalScrollIndicator={false}>
                 {pages.map((i) => { const { w, h } = sizeFor(i); const content = Math.abs(i - pageIndex) <= 1 ? renderPage(i) : <View style={{ width: w, height: h, backgroundColor: '#fff' }} />; return wrapZoom(String(i), w, h, content); })}
-              </ScrollView>
+              </ScrollView></GestureDetector>
             )}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
         </View>
