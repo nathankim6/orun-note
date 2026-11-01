@@ -10,6 +10,6 @@ export type PdfPage = { index: number; width: number; height: number }; // PDF p
 export type Doc = {
   id: string; title: string; fileName: string; uri: string; size: number; pageCount: number; pages: PdfPage[];
   createdAt: string; updatedAt: string; lastOpenedAt?: string; lastPage: number; bookmarks: number[]; folderId?: string; coverColor: string;
-  cycle: number; maxCycle: number; subject?: string; tags: string[]; favorite?: boolean;
+  cycle: number; maxCycle: number; subject?: string; tags: string[]; favorite?: boolean; materialId?: string;
 };
 export type Folder = { id: string; name: string; color: string; createdAt: string };

@@ -1,6 +1,10 @@
-# Paperly (페이퍼리)
+# 옳은Note (코드명 Paperly)
 
-개인용 PDF 필기 앱 (iPad · Galaxy Tab). Expo / React Native 단일 코드베이스.
+접속 코드 기반 PDF 교재 배포 + 필기 앱 (iPad · Galaxy Tab). Expo / React Native 단일 코드베이스 + Supabase(스토리지·Edge Function).
+
+- 학생: 선생님이 준 접속 코드로 입장 → 배정된 교재 다운로드(기기 내 암호화) → 필기
+- 관리자(관리자 코드): 교재 업로드, 접속 코드 생성/비활성화, 코드별 교재 배정, 접속 기록
+- 서버: `supabase/migrations/0001_init.sql` + `supabase/functions/docs` (ADMIN_CODE 시크릿)
 
 핵심 기능
 - PDF 가져오기 → 기기 안에서 AES-GCM 암호화 저장 (iOS Keychain / Android Keystore 키, 백업·파일앱 노출 없음)

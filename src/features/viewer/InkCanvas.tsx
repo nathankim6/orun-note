@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, TextInput, Pressable, Text, Platform } from 'react-native';
 import Svg, { Path, Rect as SvgRect, G, Circle } from 'react-native-svg';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import { Point, Stroke, TextBox } from '@/data/types';
 import { ToolConfig, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist } from './ink';
 import { uid } from '@/store/persist';
@@ -30,7 +30,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
   const toPage = (x: number, y: number): Point => ({ x: x / s, y: y / s });
   const eraserR = Math.max(8, cfg.width * 3);
   const isDrawingTool = ['pen', 'pencil', 'highlighter', 'fountain', 'brush'].includes(cfg.tool);
-  const allowPointer = (pointerType: any) => fingerDraw || pointerType === 2 /* PointerType.STYLUS */ || pointerType === 1 /* MOUSE */ || Platform.OS === 'web';
+  // Finger input draws only when the user enabled it; stylus (Apple Pencil / S Pen) and mouse always draw.
+  const allowPointer = (pointerType: any) => Platform.OS === 'web' || fingerDraw || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE;
+  const rejected = useRef(false);
+  // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
+  const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
+  const clearDwell = () => { if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null; } };
+  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, 1500); };
 
   const finish = useCallback((pts: Point[], pointerOk: boolean) => {
     const t = Date.now() - startT.current; const tool = cfg.tool;
@@ -38,26 +44,34 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
     const isTap = pts.length > 0 && t < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s && boundsOf(pts).w < 6 / s && boundsOf(pts).h < 6 / s;
     if (isTap) { if (tool === 'text') { const p = pts[0]; const tb: TextBox = { id: uid(), rect: { x: p.x, y: p.y, w: 180, h: 40 }, text: '', color: cfg.color, size: 14, createdAt: Date.now() }; commitText([...textRef.current, tb]); setEditing(tb.id); return; } if (onTap?.(pts[0])) return; if (tool === 'lasso') { setSelection([]); onSelectionChange?.([]); return; } if (!isDrawingTool) return; }
     if (readOnly) return;
-    if (isDrawingTool) { let points = pts; if (lineSnap && tool !== 'highlighter') { const sn = snapLine(pts); if (sn) points = sn; } if (points.length === 0) return; commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points, createdAt: Date.now() }]); return; }
+    if (isDrawingTool) { let points = pts; if (lineSnap && tool !== 'highlighter' && !snappedLine.current) { const sn = snapLine(pts); if (sn) points = sn; } if (points.length === 0) return; commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points, createdAt: Date.now() }]); return; }
     if (tool === 'shape' && pts.length >= 2) { commit([...strokesRef.current, { id: uid(), tool: 'shape', shape: cfg.shape, color: cfg.color, width: cfg.width, opacity: 1, points: [pts[0], pts[pts.length - 1]], createdAt: Date.now() }]); return; }
     if (tool === 'lasso' && pts.length > 3) { const ids = strokesRef.current.filter((st) => st.points.some((q) => pointInPolygon(q, pts))).map((st) => st.id); setSelection(ids); onSelectionChange?.(ids); return; }
     if ((tool === 'eraser' || tool === 'vectorEraser') && strokesRef.current !== strokes) { /* already committed progressively */ }
   }, [cfg, s, commit, commitText, onTap, readOnly, lineSnap, isDrawingTool, strokes, onSelectionChange]);
 
   const erasing = useRef(false); const eraseBefore = useRef<Stroke[] | null>(null);
-  const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(1).runOnJS(true)
-    .onBegin((e) => { startT.current = Date.now(); const p = toPage(e.x, e.y); liveRef.current = [p]; if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') { erasing.current = true; eraseBefore.current = strokesRef.current; } if (cfg.tool === 'laser') setLaser([p]); else if (cfg.tool === 'lasso') setLasso([p]); else setLive([p]); })
+  const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(1).runOnJS(true).manualActivation(true)
+    // Decide per pointer: touch (when finger drawing is off) fails immediately so the ScrollView/pinch take over;
+    // a second finger cancels any stroke in progress so pinch-zoom never leaves ink behind.
+    .onTouchesDown((e, sm) => { if (e.numberOfTouches > 1) { rejected.current = true; liveRef.current = []; setLive([]); setLaser([]); setLasso([]); sm.fail(); return; } if (!allowPointer(e.pointerType)) { rejected.current = true; sm.fail(); return; } rejected.current = false; sm.activate(); })
+    .onTouchesMove((e, sm) => { if (e.numberOfTouches > 1) { rejected.current = true; liveRef.current = []; setLive([]); sm.fail(); } })
+    .onBegin((e) => { startT.current = Date.now(); snappedLine.current = false; clearDwell(); const p = toPage(e.x, e.y); liveRef.current = [p]; lastMovePt.current = p; if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') { erasing.current = true; eraseBefore.current = strokesRef.current; } if (cfg.tool === 'laser') setLaser([p]); else if (cfg.tool === 'lasso') setLasso([p]); else setLive([p]); })
     .onUpdate((e) => { const p = toPage(e.x, e.y); const pointerOk = allowPointer(e.pointerType); if (!pointerOk) return; liveRef.current.push(p);
       if (cfg.tool === 'eraser') { const prev = liveRef.current.length > 1 ? liveRef.current[liveRef.current.length - 2] : undefined; const hit = strokesHit(strokesRef.current, p, eraserR, prev); if (hit.length) onStrokes(strokesRef.current.filter((st) => !hit.includes(st.id))); setLive([p]); return; }
       if (cfg.tool === 'vectorEraser') { const prev = liveRef.current.length > 1 ? liveRef.current[liveRef.current.length - 2] : undefined; let next = strokesRef.current; const n = prev ? Math.ceil(dist(prev, p) / Math.max(2, eraserR / 2)) : 1; for (let i = 1; i <= n; i++) { const q = prev ? { x: prev.x + ((p.x - prev.x) * i) / n, y: prev.y + ((p.y - prev.y) * i) / n } : p; next = eraseVector(next, q, eraserR, uid); } if (next !== strokesRef.current) onStrokes(next); setLive([p]); return; }
       if (cfg.tool === 'laser') { setLaser((l) => [...l.slice(-25), p]); return; } if (cfg.tool === 'lasso') { setLasso((l) => [...l, p]); return; }
       if (cfg.tool === 'shape') { setLive([liveRef.current[0], p]); return; }
+      if (isDrawingTool && cfg.tool !== 'highlighter') {
+        if (snappedLine.current) { liveRef.current = [liveRef.current[0], p]; setLive([liveRef.current[0], p]); return; }
+        if (!lastMovePt.current || dist(lastMovePt.current, p) > 3 / s) { lastMovePt.current = p; armDwell(p); }
+      }
       setLive([...liveRef.current]); })
-    .onEnd((e) => { const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType); if (erasing.current) { erasing.current = false; if (eraseBefore.current && eraseBefore.current !== strokesRef.current) { undoStack.current.push({ strokes: eraseBefore.current, textBoxes: textRef.current }); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); } eraseBefore.current = null; const isTap = pts.length > 0 && Date.now() - startT.current < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s; if (isTap) { const hit = strokesHit(strokesRef.current, pts[0], eraserR); if (hit.length) commit(strokesRef.current.filter((st) => !hit.includes(st.id))); else onTap?.(pts[0]); } }
+    .onEnd((e) => { clearDwell(); if (rejected.current) { liveRef.current = []; setLive([]); return; } const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType); if (erasing.current) { erasing.current = false; if (eraseBefore.current && eraseBefore.current !== strokesRef.current) { undoStack.current.push({ strokes: eraseBefore.current, textBoxes: textRef.current }); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); } eraseBefore.current = null; const isTap = pts.length > 0 && Date.now() - startT.current < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s; if (isTap) { const hit = strokesHit(strokesRef.current, pts[0], eraserR); if (hit.length) commit(strokesRef.current.filter((st) => !hit.includes(st.id))); else onTap?.(pts[0]); } }
       else if (cfg.tool === 'lasso') { finish(lasso.length ? [...lasso, toPage(e.x, e.y)] : pts, pointerOk); setLasso([]); }
       else finish(pts, pointerOk);
       setLive([]); liveRef.current = []; if (cfg.tool === 'laser') setTimeout(() => setLaser([]), 600); })
-    .onFinalize(() => { setLive([]); }), [enabled, cfg, s, finish, eraserR, onStrokes, commit, lasso, onTap]);
+    .onFinalize(() => { clearDwell(); setLive([]); if (rejected.current) { liveRef.current = []; erasing.current = false; eraseBefore.current = null; } }), [enabled, cfg, s, finish, eraserR, onStrokes, commit, lasso, onTap, fingerDraw, lineSnap]);
   const longPress = useMemo(() => Gesture.LongPress().enabled(enabled && !!onLongPress).minDuration(450).runOnJS(true).onStart((e) => onLongPress?.(toPage(e.x, e.y))), [enabled, onLongPress, s]);
   const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && !!onDoubleTap).numberOfTaps(2).runOnJS(true).onStart((e) => onDoubleTap?.(toPage(e.x, e.y))), [enabled, onDoubleTap, s]);
   const composed = useMemo(() => Gesture.Simultaneous(pan, longPress, doubleTap), [pan, longPress, doubleTap]);

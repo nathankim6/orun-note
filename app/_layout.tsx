@@ -1,15 +1,15 @@
-import React from 'react';
-import { Stack } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View } from 'react-native';
 import { useTheme } from '@/theme';
 import { useDocsStore } from '@/store/docs';
+import { useSession } from '@/store/session';
 import { Toast, T } from '@/components/ui';
 import { useContentProtection } from '@/lib/security';
 import { Logo } from '@/components/Logo';
-import { useEffect } from 'react';
 
 const ErrorUtilsAny = (globalThis as any).ErrorUtils;
 if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
@@ -17,14 +17,17 @@ if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
   const prev = ErrorUtilsAny.getGlobalHandler?.();
   ErrorUtilsAny.setGlobalHandler((err: any, isFatal?: boolean) => {
     try { useDocsStore.getState().showToast('오류: ' + (err?.message ?? String(err)).slice(0, 140)); } catch {}
-    if (!isFatal && prev) prev(err, isFatal); // non-fatal: keep default logging; fatal: swallow instead of killing the app
+    if (!isFatal && prev) prev(err, isFatal);
     console.error('Unhandled JS error', err);
   });
 }
 
 export default function RootLayout() {
   const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const { hidden, attempts } = useContentProtection(); const showToast = useDocsStore((s) => s.showToast);
+  const { code, hydrated, revalidate } = useSession(); const segments = useSegments(); const router = useRouter();
   useEffect(() => { if (attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [attempts]);
+  useEffect(() => { if (hydrated && code) revalidate(); }, [hydrated]);
+  useEffect(() => { if (!hydrated) return; const inAuth = segments[0] === '(auth)'; if (!code && !inAuth) router.replace('/(auth)/code'); else if (code && inAuth) router.replace('/(tabs)'); }, [hydrated, code, segments.join('/')]);
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -32,6 +35,7 @@ export default function RootLayout() {
           <StatusBar style={dark ? 'light' : 'dark'} />
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
             <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="(auth)" />
             <Stack.Screen name="viewer/[docId]" options={{ animation: 'fade', gestureEnabled: false }} />
           </Stack>
           <Toast message={toast} />

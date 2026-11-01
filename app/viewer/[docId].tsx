@@ -56,16 +56,17 @@ export default function Viewer() {
   const goto = (i: number) => { i = Math.max(0, Math.min(doc.pageCount - 1, i)); setPageIndex(i); if (layout === 'continuous') scrollRef.current?.scrollTo({ y: contOffset(i), animated: true }); else if (twoPage) scrollRef.current?.scrollTo({ x: Math.floor(i / 2) * availW, animated: true }); else scrollRef.current?.scrollTo(layout === 'horizontal' ? { x: i * availW, animated: true } : { y: i * availH, animated: true }); };
   const onScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => { const { x, y } = e.nativeEvent.contentOffset; let i = pageIndex; if (layout === 'continuous') { let acc = 0; i = 0; for (let k = 0; k < contHeights.length; k++) { if (y < acc + contHeights[k] / 2) { i = k; break; } acc += contHeights[k]; i = k; } } else if (twoPage) i = Math.round(x / availW) * 2; else i = layout === 'horizontal' ? Math.round(x / availW) : Math.round(y / availH); if (i !== pageIndex && i >= 0 && i < doc.pageCount) setPageIndex(i); };
 
+  const clearAllInk = () => { for (let i = 0; i < doc.pageCount; i++) { const k = inkKey(doc.id, cycle, String(i)); if (ink.pages[k]?.strokes.length) ink.snapshot(k, '전체 삭제 전'); } ink.clearPackage(`${doc.id}:${cycle}:`); toast('이 문서의 필기를 모두 제거했어요'); };
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = cfg.tool !== 'hand';
-  const scrollOK = cfg.tool === 'hand' || !prefs.fingerDraw || Platform.OS === 'web';
+  const scrollOK = cfg.tool === 'hand' || !prefs.fingerDraw || Platform.OS === 'web'; // with finger drawing off, touch pans/pinches and only the stylus draws
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>
       <PdfPage uri={uri} index={pi} width={w} height={h} />
       <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
-        onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if ((cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') && prefs.eraserReturnToPen && next.length < strokes.length) setTimeout(() => setCfg(prevPen.current), 60); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
+        onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
         onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
     </View>); };
@@ -76,7 +77,7 @@ export default function Viewer() {
 
   return (
     <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E7E0', paddingTop: insets.top }}>
-      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
+      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
       {tabsH > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: tabsH, backgroundColor: colors.surfaceAlt }} contentContainerStyle={{ alignItems: 'flex-end' }}>
           {store.openTabs.map((id) => { const d = store.docs[id]; const active = id === docId; return <Pressable key={id} onPress={() => { store.setActiveTab(id); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 30, backgroundColor: active ? colors.surface : 'transparent', borderTopLeftRadius: 8, borderTopRightRadius: 8, maxWidth: 220 }}><Text numberOfLines={1} style={{ fontSize: 12, fontWeight: active ? '700' : '500', color: active ? colors.text : colors.textMuted, flexShrink: 1 }}>{d?.title ?? id}</Text><Pressable hitSlop={6} onPress={() => { store.closeTab(id); if (store.openTabs.length <= 1) exit(); }}><Ionicons name="close" size={14} color={colors.textMuted} /></Pressable></Pressable>; })}

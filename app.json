@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Paperly",
+    "name": "옳은Note",
     "slug": "paperly",
     "version": "1.0.0",
     "orientation": "default",
@@ -18,7 +18,7 @@
       "bundleIdentifier": "com.paperly.study",
       "requireFullScreen": false,
       "infoPlist": {
-        "CFBundleDisplayName": "페이퍼리",
+        "CFBundleDisplayName": "옳은Note",
         "ITSAppUsesNonExemptEncryption": false,
         "UIFileSharingEnabled": false,
         "LSSupportsOpeningDocumentsInPlace": false
@@ -28,7 +28,7 @@
       "package": "com.paperly.study",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0E7C7B"
+        "backgroundColor": "#EAF2FC"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [],
@@ -51,7 +51,8 @@
         {
           "image": "./assets/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#0E7C7B"
+          "backgroundColor": "#EAF2FC",
+          "imageWidth": 220
         }
       ],
       "expo-document-picker"
