@@ -1,7 +1,7 @@
 // Web implementation backed by pdf.js. Page images are returned as data URLs.
 import type { PdfInfo, PdfOutlineItem } from './types';
 let lib: any = null; const docs = new Map<string, Promise<any>>();
-async function pdfjs() { if (lib) return lib; lib = await import('pdfjs-dist'); lib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${lib.version}/build/pdf.worker.min.mjs`; return lib; }
+async function pdfjs() { if (lib) return lib; lib = await import('pdfjs-dist'); lib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; return lib; }
 async function open(uri: string) { if (!docs.has(uri)) { docs.set(uri, (async () => { const p = await pdfjs(); const data = await (await fetch(uri)).arrayBuffer(); return p.getDocument({ data }).promise; })()); } return docs.get(uri)!; }
 export default {
   // Web is a development/preview target only: no at-rest encryption is applied here.
