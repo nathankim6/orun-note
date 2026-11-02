@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, ScrollView, Pressable, Text, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, ScrollView, Pressable, Text, TextInput, ActivityIndicator, RefreshControl, Image } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useLayout } from '@/theme';
@@ -10,7 +10,8 @@ import { Logo } from '@/components/Logo';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { useInkStore } from '@/store/ink';
 import { useSession } from '@/store/session';
-import { pickAndImportPdf, deleteDocFiles, resolveUri, downloadMaterial } from '@/lib/files';
+import { pickAndImportPdf, deleteDocFiles, resolveUri, downloadMaterial, createBlankDoc } from '@/lib/files';
+import { OrunLogo } from '@/components/OrunLogo';
 import { PdfPage } from '@/features/viewer/PdfPage';
 import { fmtBytes, timeAgo } from '@/utils/format';
 import { Doc } from '@/data/types';
@@ -19,14 +20,14 @@ import { Material } from '@/lib/api';
 function Cover({ doc, width }: { doc: Doc; width: number }) {
   const [uri, setUri] = useState<string | null>(null); useEffect(() => { resolveUri(doc).then(setUri); }, [doc.id]);
   const p = doc.pages[0]; const h = p ? (p.height / p.width) * width : width * 1.38;
-  return <View style={{ width, height: h, borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' }}>{uri ? <PdfPage uri={uri} index={0} width={width} height={h} /> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="document-outline" size={28} color="#bbb" /></View>}<View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, backgroundColor: doc.coverColor }} /></View>;
+  return <View style={{ width, height: h, borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)' }}>{doc.coverUri ? <Image source={{ uri: doc.coverUri }} style={{ width, height: h }} resizeMode="cover" /> : uri ? <PdfPage uri={uri} index={p?.index ?? 0} width={width} height={h} template={doc.template} /> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="document-outline" size={28} color="#bbb" /></View>}<View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, backgroundColor: doc.coverColor }} /></View>;
 }
 function MaterialTile({ m, width, progress, onDownload }: { m: Material; width: number; progress?: number; onDownload: () => void }) {
   const { colors } = useTheme(); const h = width * 1.38; const busy = progress != null;
   return (
     <Pressable onPress={busy ? undefined : onDownload} style={{ width }}>
       <View style={{ width, height: h, borderRadius: 8, backgroundColor: colors.surface, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border, alignItems: 'center', justifyContent: 'center', padding: 12 }}>
-        {busy ? <><ActivityIndicator color={colors.primary} /><Text style={{ color: colors.primary, fontWeight: '800', marginTop: 10 }}>{Math.round((progress ?? 0) * 100)}%</Text><Muted variant="caption">받는 중</Muted><View style={{ width: '80%', marginTop: 8 }}><ProgressBar value={progress ?? 0} /></View></> : <><Ionicons name="cloud-download-outline" size={34} color={colors.primary} /><Text style={{ color: colors.text, fontWeight: '700', marginTop: 10, textAlign: 'center' }} numberOfLines={3}>{m.title}</Text><Muted variant="caption" style={{ marginTop: 4 }}>{m.pages ? `${m.pages}p · ` : ''}{fmtBytes(m.size)}</Muted><View style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 7 }}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>다운받기</Text></View></>}
+        {m.cover_url && !busy && <Image source={{ uri: m.cover_url }} style={{ position: 'absolute', left: 0, top: 0, width, height: h, opacity: 0.35 }} resizeMode="cover" />}{busy ? <><ActivityIndicator color={colors.primary} /><Text style={{ color: colors.primary, fontWeight: '800', marginTop: 10 }}>{Math.round((progress ?? 0) * 100)}%</Text><Muted variant="caption">받는 중</Muted><View style={{ width: '80%', marginTop: 8 }}><ProgressBar value={progress ?? 0} /></View></> : <><Ionicons name="cloud-download-outline" size={34} color={colors.primary} /><Text style={{ color: colors.text, fontWeight: '700', marginTop: 10, textAlign: 'center' }} numberOfLines={3}>{m.title}</Text><Muted variant="caption" style={{ marginTop: 4 }}>{m.pages ? `${m.pages}p · ` : ''}{fmtBytes(m.size)}</Muted><View style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 7 }}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>다운받기</Text></View></>}
       </View>
       <T variant="label" numberOfLines={2} style={{ marginTop: 8 }}>{m.title}</T>
       <Muted variant="caption">배정된 교재</Muted>
@@ -39,7 +40,7 @@ export default function Library() {
   const { docs, folders, remove, createFolder, deleteFolder, moveToFolder, update, openTab, showToast } = useDocsStore(); const inkPages = useInkStore((s) => s.pages);
   const { role, label, student, materials, refreshMaterials, materialsAt, cred } = useSession(); const code = cred() ?? (student ? 'student' : null);
   const [folder, setFolder] = useState<'all' | 'fav' | string>('all'); const [q, setQ] = useState(''); const [select, setSelect] = useState(false); const [selected, setSelected] = useState<string[]>([]); const [sort, setSort] = useState<'recent' | 'title' | 'added'>('recent');
-  const [folderSheet, setFolderSheet] = useState(false); const [newFolder, setNewFolder] = useState(''); const [confirmDel, setConfirmDel] = useState(false); const [busy, setBusy] = useState<string | null>(null); const [rename, setRename] = useState<Doc | null>(null); const [renameText, setRenameText] = useState(''); const [refreshing, setRefreshing] = useState(false); const [dl, setDl] = useState<Record<string, number>>({}); const [netErr, setNetErr] = useState<string | null>(null);
+  const [folderSheet, setFolderSheet] = useState(false); const [newFolder, setNewFolder] = useState(''); const [confirmDel, setConfirmDel] = useState(false); const [busy, setBusy] = useState<string | null>(null); const [rename, setRename] = useState<Doc | null>(null); const [renameText, setRenameText] = useState(''); const [refreshing, setRefreshing] = useState(false); const [dl, setDl] = useState<Record<string, number>>({}); const [netErr, setNetErr] = useState<string | null>(null); const [newPage, setNewPage] = useState(false); const [newTitle, setNewTitle] = useState('');
   const refresh = async () => { setRefreshing(true); try { await refreshMaterials(); setNetErr(null); } catch (e: any) { setNetErr(e?.message ?? '교재 목록을 불러오지 못했어요'); } finally { setRefreshing(false); } };
   useEffect(() => { refresh(); }, [role]);
   const localByMaterial = useMemo(() => Object.fromEntries(Object.values(docs).filter((d) => d.materialId).map((d) => [d.materialId!, d])), [docs]);
@@ -49,12 +50,12 @@ export default function Library() {
   const recent = Object.values(docs).filter((d) => d.lastOpenedAt).sort((a, b) => (b.lastOpenedAt! > a.lastOpenedAt! ? 1 : -1))[0];
   const strokeCount = (d: Doc) => Object.entries(inkPages).filter(([k]) => k.startsWith(d.id + ':')).reduce((a, [, p]) => a + p.strokes.length, 0);
   const doImport = async () => { try { setBusy('PDF 가져오는 중...'); const d = await pickAndImportPdf(); setBusy(null); if (d) { showToast(`'${d.title}' 추가됨 · ${d.pageCount}페이지`); openTab(d.id); router.push(`/viewer/${d.id}`); } } catch (e: any) { setBusy(null); showToast('PDF를 열 수 없어요: ' + (e?.message ?? '알 수 없는 오류')); } };
-  const doDownload = async (m: Material) => { setDl((s) => ({ ...s, [m.id]: 0 })); try { const d = await downloadMaterial(cred(), m.id, m.title, (p) => setDl((s) => ({ ...s, [m.id]: p }))); showToast(`'${d.title}' 받기 완료 · ${d.pageCount}페이지`); } catch (e: any) { showToast('받기 실패: ' + (e?.message ?? '')); } finally { setDl((s) => { const n = { ...s }; delete n[m.id]; return n; }); } };
+  const doDownload = async (m: Material) => { setDl((s) => ({ ...s, [m.id]: 0 })); try { const d = await downloadMaterial(cred(), m.id, m.title, (p) => setDl((s) => ({ ...s, [m.id]: p })), m.cover_url); showToast(`'${d.title}' 받기 완료 · ${d.pageCount}페이지`); } catch (e: any) { showToast('받기 실패: ' + (e?.message ?? '')); } finally { setDl((s) => { const n = { ...s }; delete n[m.id]; return n; }); } };
   const open = (d: Doc) => { openTab(d.id); router.push(`/viewer/${d.id}`); };
   const toggleSel = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   return (
     <GlassBackground>
-      <PageHeader title="내 교재" subtitle={`${label || (role === 'admin' ? '관리자' : '학생')}${student ? ` · ${student.school_name} ${student.grade_name}` : ''} · 받은 교재 ${Object.keys(localByMaterial).length} · 대기 ${pending.length}`} right={<Row gap={0}><IconButton icon="add-circle" size={26} color={colors.primary} onPress={doImport} label="내 PDF 가져오기" /><IconButton icon="refresh" onPress={refresh} label="새로고침" /><IconButton icon={select ? 'checkmark-done' : 'checkbox-outline'} active={select} onPress={() => { setSelect(!select); setSelected([]); }} /></Row>} />
+      <PageHeader title="내 교재" logo subtitle={`${label || (role === 'admin' ? '관리자' : '학생')}${student ? ` · ${student.school_name} ${student.grade_name}` : ''} · 받은 교재 ${Object.keys(localByMaterial).length} · 대기 ${pending.length}`} right={<Row gap={0}><IconButton icon="create-outline" size={24} color={colors.primary} onPress={() => { setNewTitle(`새 노트 ${new Date().getMonth() + 1}/${new Date().getDate()}`); setNewPage(true); }} label="새페이지" /><IconButton icon="add-circle" size={26} color={colors.primary} onPress={doImport} label="내 PDF 가져오기" /><IconButton icon="refresh" onPress={refresh} label="새로고침" /><IconButton icon={select ? 'checkmark-done' : 'checkbox-outline'} active={select} onPress={() => { setSelect(!select); setSelected([]); }} /></Row>} />
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 90 }} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
         <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, marginBottom: 12 }}><Ionicons name="search" size={18} color={colors.textFaint} /><TextInput value={q} onChangeText={setQ} placeholder="교재 제목으로 찾기" placeholderTextColor={colors.textFaint} style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, color: colors.text }} /></View>
         {busy && <Card style={{ marginBottom: 12 }}><Row><ActivityIndicator color={colors.primary} /><T>{busy}</T></Row></Card>}
@@ -101,6 +102,11 @@ export default function Library() {
           <Button small variant="ghost" title="폴더 이동" onPress={() => setFolderSheet(true)} style={{ backgroundColor: 'rgba(255,255,255,0.15)' }} />
           <Button small variant="danger" title="기기에서 삭제" onPress={() => setConfirmDel(true)} />
         </View>)}
+      <Sheet visible={newPage} onClose={() => setNewPage(false)} title="새페이지 (자유 필기 노트)" height={420}>
+        <Input label="이름" value={newTitle} onChangeText={setNewTitle} />
+        <Muted variant="caption" style={{ marginBottom: 8 }}>종이 종류를 고르면 3페이지로 시작하고, 보기 화면 하단 + 버튼으로 페이지를 더 넣을 수 있어요.</Muted>
+        <Row style={{ flexWrap: 'wrap' }}>{([['plain', '무지'], ['lined', '줄'], ['grid', '모눈'], ['dot', '점']] as const).map(([k, l]) => <Pressable key={k} onPress={() => { const d = createBlankDoc(newTitle.trim() || '새 노트', k, 3); setNewPage(false); showToast(`'${d.title}' 만들었어요`); openTab(d.id); router.push(`/viewer/${d.id}`); }} style={{ width: 96, alignItems: 'center', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: '#fff' }}><View style={{ width: 56, height: 72, borderRadius: 4, borderWidth: 1, borderColor: '#E3E8F0', backgroundColor: '#fff', overflow: 'hidden' }}>{k !== 'plain' && Array.from({ length: 6 }, (_, i) => <View key={i} style={{ position: 'absolute', left: 0, right: 0, top: (i + 1) * 10, height: 1, backgroundColor: 'rgba(47,111,237,0.3)' }} />)}{k === 'grid' && Array.from({ length: 5 }, (_, i) => <View key={'v' + i} style={{ position: 'absolute', top: 0, bottom: 0, left: (i + 1) * 10, width: 1, backgroundColor: 'rgba(47,111,237,0.3)' }} />)}</View><T variant="label" style={{ marginTop: 6 }}>{l}</T></Pressable>)}</Row>
+      </Sheet>
       <Sheet visible={folderSheet} onClose={() => setFolderSheet(false)} title={selected.length ? '폴더로 이동' : '폴더'}>
         {folders.map((f) => <ListItem key={f.id} icon="folder" title={f.name} onPress={() => { if (selected.length) { moveToFolder(selected, f.id); setSelected([]); setSelect(false); showToast(`${f.name}(으)로 이동했어요`); } setFolderSheet(false); }} />)}
         {selected.length > 0 && <ListItem icon="folder-open-outline" title="폴더에서 꺼내기" onPress={() => { moveToFolder(selected, undefined); setSelected([]); setSelect(false); setFolderSheet(false); }} />}

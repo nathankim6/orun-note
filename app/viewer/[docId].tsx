@@ -6,12 +6,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme, useLayout } from '@/theme';
 import { Badge, Button, Dialog, IconButton, ListItem, Muted, Row, Sheet, T } from '@/components/ui';
-import { Stroke, TextBox } from '@/data/types';
+import { Tool, Stroke, TextBox } from '@/data/types';
 import { useDocsStore } from '@/store/docs';
 import { inkKey, useInkStore } from '@/store/ink';
 import { useSettingsStore } from '@/store/settings';
 import { PdfPage } from '@/features/viewer/PdfPage';
 import { ZoomView, ZoomHandle } from '@/features/viewer/ZoomView';
+import { SubDocWindow } from '@/features/viewer/SubDocWindow';
+import { pickImageForPage, addBlankPages } from '@/lib/files';
+import { ImageBox } from '@/data/types';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
 import { Toolbar } from '@/features/viewer/Toolbar';
 import { ToolConfig, toolDefaults } from '@/features/viewer/ink';
@@ -36,10 +39,17 @@ export default function Viewer() {
   // Paged layouts zoom with a focal-anchored transform (ZoomView); `tzoom` mirrors its scale for the % label and sharper re-render.
   const [tzoom, setTzoom] = useState(1); const [pinching, setPinching] = useState(false); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
   useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
-  const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#1B1B1F', width: 2, shape: 'rectangle', opacity: 1 }); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
+  const [cfg, setCfg] = useState<ToolConfig>(() => { const v = useSettingsStore.getState().viewer; const t = (v.lastTool as Tool) || 'pen'; const pr = v.toolPresets?.[t] ?? v.toolPresets?.pen ?? { color: '#172033', width: 2, opacity: 1 }; return { tool: ['pen', 'highlighter'].includes(t) ? t : 'pen', color: pr.color, width: pr.width, shape: 'rectangle', opacity: pr.opacity }; }); const [textFont, setTextFont] = useState<string>('system'); const [subDoc, setSubDoc] = useState<string | null | 'pick'>(null); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
-  const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => { const next = { ...c, ...p }; if (p.tool && p.tool !== c.tool) Object.assign(next, toolDefaults(p.tool, next)); if (p.color) setRecentColors((r) => Array.from(new Set([p.color!, ...r])).slice(0, 6)); if (['pen', 'highlighter'].includes(next.tool)) prevPen.current = next; return next; }), []);
+  const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => {
+    const next = { ...c, ...p }; const v = useSettingsStore.getState().viewer;
+    if (p.tool && p.tool !== c.tool) { const pr = v.toolPresets?.[p.tool]; if (pr) { next.color = pr.color; next.width = pr.width; next.opacity = pr.opacity; } else Object.assign(next, toolDefaults(p.tool, next)); }
+    if (p.color) setRecentColors((r) => Array.from(new Set([p.color!, ...r])).slice(0, 6));
+    if (['pen', 'highlighter'].includes(next.tool)) prevPen.current = next;
+    // remember per-tool settings and last tool across launches
+    if (['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'text'].includes(next.tool)) useSettingsStore.getState().setViewer({ toolPresets: { ...v.toolPresets, [next.tool]: { color: next.color, width: next.width, opacity: next.opacity } }, ...(['pen', 'highlighter'].includes(next.tool) ? { lastTool: next.tool } : {}) });
+    return next; }), []);
 
   useEffect(() => { if (doc) store.touch(doc.id, pageIndex); }, [pageIndex, doc?.id]);
   const prevPage = useRef(pageIndex);
@@ -80,8 +90,8 @@ export default function Viewer() {
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>
-      <PdfPage uri={uri} index={pi} width={w} height={h} renderScale={layout === 'continuous' ? 1 : renderScale} />
-      <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
+      <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} renderScale={layout === 'continuous' ? 1 : renderScale} template={doc.template} />
+      <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
         onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' && layout === 'continuous' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
@@ -100,7 +110,7 @@ export default function Viewer() {
 
   return (
     <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E6EDF7', paddingTop: insets.top }}>
-      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} />}
+      {!fullscreen && <Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => activeInk?.undo()} onRedo={() => activeInk?.redo()} canUndo={hist.canUndo} canRedo={hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.5, im.width); const h = w * (im.height / im.width); ink.setImages(k, [...(ink.pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} />}
       {tabsH > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: tabsH, backgroundColor: colors.surfaceAlt }} contentContainerStyle={{ alignItems: 'flex-end' }}>
           {store.openTabs.map((id) => { const d = store.docs[id]; const active = id === docId; return <Pressable key={id} onPress={() => { store.setActiveTab(id); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 30, backgroundColor: active ? colors.surface : 'transparent', borderTopLeftRadius: 8, borderTopRightRadius: 8, maxWidth: 220 }}><Text numberOfLines={1} style={{ fontSize: 12, fontWeight: active ? '700' : '500', color: active ? colors.text : colors.textMuted, flexShrink: 1 }}>{d?.title ?? id}</Text><Pressable hitSlop={6} onPress={() => { store.closeTab(id); if (store.openTabs.length <= 1) exit(); }}><Ionicons name="close" size={14} color={colors.textMuted} /></Pressable></Pressable>; })}
@@ -136,10 +146,12 @@ export default function Viewer() {
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
         </View>
       </View>
+      {subDoc && <SubDocWindow mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
       <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: 'rgba(255,255,255,0.72)', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />
         <Pressable onPress={() => setSheet('goto')} style={{ paddingHorizontal: 8 }}><Text style={{ fontWeight: '700', color: colors.text, fontSize: 13 }}>{pageIndex + 1} <Text style={{ color: colors.textMuted, fontWeight: '500' }}>/ {doc.pageCount}</Text></Text></Pressable>
         <IconButton icon="chevron-forward" size={18} onPress={() => goto(pageIndex + 1)} disabled={pageIndex >= doc.pageCount - 1} label="다음 페이지" />
+        {doc.kind === 'blank' && <IconButton icon="add-circle-outline" size={20} color={colors.primary} onPress={() => { addBlankPages(doc, 1); setTimeout(() => goto(doc.pageCount), 50); }} label="페이지 추가" />}
         <View style={{ flex: 1, height: 4, backgroundColor: colors.surfaceAlt, borderRadius: 2, marginHorizontal: 8 }}><View style={{ width: `${((pageIndex + 1) / doc.pageCount) * 100}%`, height: 4, backgroundColor: colors.primary, borderRadius: 2 }} /></View>
         <IconButton icon={doc.bookmarks.includes(pageIndex) ? 'bookmark' : 'bookmark-outline'} size={18} active={doc.bookmarks.includes(pageIndex)} onPress={() => store.toggleBookmark(doc.id, pageIndex)} label="북마크" />
         <Pressable onPress={resetZoom} style={{ paddingHorizontal: 6 }}><Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>{Math.round(zoomPct * 100)}%</Text></Pressable>

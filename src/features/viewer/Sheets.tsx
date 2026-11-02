@@ -17,7 +17,7 @@ export function SettingsSheet({ visible, onClose, layout, setLayout }: { visible
       <Item k="twoPageStartOdd" title="두 페이지 보기: 홀수 페이지부터" desc="끄면 짝수 페이지부터 나란히 보여요" />
       <Muted variant="label" style={{ marginTop: 14 }}>필기</Muted>
       <Item k="strokeSmoothing" title="획 보정" desc="손떨림을 줄여 부드러운 선으로 그려요" />
-      <Item k="lineSnap" title="직선 보정" desc="끝점에서 1.5초 머무르면 직선으로 바뀌고, 거의 직선인 획도 보정" />
+      <Item k="lineSnap" title="직선 보정" desc="끝점에서 0.5초 머무르면 직선으로 바뀌고, 거의 직선인 획도 보정" />
       <Item k="penAutoReturn" title="펜 자동 복귀" desc="도형·텍스트 입력 후 자동으로 펜으로 돌아가요" />
       <Muted variant="label" style={{ marginTop: 14 }}>제스처</Muted>
       <Item k="doubleTapZoomEnabled" title="더블탭으로 확대" desc="지면을 두 번 탭하면 2배로 확대/원복" />

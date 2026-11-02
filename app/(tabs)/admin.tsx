@@ -9,14 +9,17 @@ import { GlassBackground } from '@/components/Glass';
 import { useSession } from '@/store/session';
 import { useDocsStore } from '@/store/docs';
 import { api, Material, Roster, Assignment, HwStudent } from '@/lib/api';
-import { uploadMaterial } from '@/lib/files';
+import { uploadMaterial, uploadCover } from '@/lib/files';
+import * as ImagePicker from 'expo-image-picker';
+import { Image } from 'react-native';
 import { fmtBytes, fmtDate, timeAgo } from '@/utils/format';
 
 type Tab = 'materials' | 'students' | 'requests' | 'log';
 export default function Admin() {
   const { colors } = useTheme(); const { isTablet } = useLayout(); const { role, cred } = useSession(); const c = cred(); const showToast = useDocsStore((s) => s.showToast);
   const [tab, setTab] = useState<Tab>('materials'); const [materials, setMaterials] = useState<Material[]>([]); const [roster, setRoster] = useState<Roster | null>(null); const [loading, setLoading] = useState(false); const [err, setErr] = useState<string | null>(null);
-  const [upload, setUpload] = useState<{ title: string; picked?: { uri: string; name: string; size: number; file?: File }; progress?: number } | null>(null);
+  const [upload, setUpload] = useState<{ title: string; picked?: { uri: string; name: string; size: number; file?: File }; cover?: { uri: string; mimeType?: string } | null; progress?: number } | null>(null);
+  const pickCover = async () => { const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8, allowsEditing: true, aspect: [3, 4] }); if (r.canceled || !r.assets?.length) return null; const a = r.assets[0]; return { uri: a.uri, mimeType: a.mimeType ?? 'image/jpeg' }; };
   const [assignMat, setAssignMat] = useState<Material | null>(null); const [openSchool, setOpenSchool] = useState<string | null>(null); const [q, setQ] = useState(''); const [confirm, setConfirm] = useState<{ title: string; message: string; onYes: () => void } | null>(null);
   const [stats, setStats] = useState<{ linked: number; materials: number; pending: number; log: { code: string; action: string; ok: boolean; at: string }[] } | null>(null); const [editTitle, setEditTitle] = useState<Material | null>(null); const [titleText, setTitleText] = useState(''); const [admins, setAdmins] = useState<{ email: string; label: string }[]>([]); const [newAdmin, setNewAdmin] = useState('');
   const load = async () => { setLoading(true); setErr(null); try { const [m, r] = await Promise.all([api.list(c), api.roster(c)]); setMaterials(m.materials); setRoster(r); if (tab === 'log') { setStats(await api.stats(c)); setAdmins((await api.admins.list(c)).admins); } } catch (e: any) { setErr(e?.message ?? '불러오기 실패'); } finally { setLoading(false); } };
@@ -30,7 +33,7 @@ export default function Admin() {
   const toggle = async (m: Material, type: Assignment['target_type'], id: string | null, on: boolean) => { setRoster((r) => r && ({ ...r, assignments: on ? [...r.assignments, { id: 'tmp' + Math.random(), material_id: m.id, target_type: type, target_id: id }] : r.assignments.filter((a) => !(a.material_id === m.id && a.target_type === type && (type === 'all' || a.target_id === id))) })); try { await api.assignToggle(c, m.id, type, id, on); } catch (e: any) { showToast('저장 실패: ' + e?.message); load(); } };
   if (role !== 'admin') return <View style={{ flex: 1 }}><PageHeader title="관리자" /><Empty icon="lock-closed-outline" title="관리자 전용" /></View>;
   const pick = async () => { const r = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: true }); if (r.canceled || !r.assets?.length) return; const a = r.assets[0]; setUpload({ title: a.name.replace(/\.pdf$/i, ''), picked: { uri: a.uri, name: a.name, size: a.size ?? 0, file: (a as any).file } }); };
-  const doUpload = async () => { if (!upload?.picked) return; try { setUpload((u) => u && { ...u, progress: 0 }); const m = await uploadMaterial(c, upload.picked, upload.title, (p) => setUpload((u) => u && { ...u, progress: p })); showToast(`'${m.title}' 업로드 완료 · 이제 배정하세요`); setUpload(null); await load(); setAssignMat(m); } catch (e: any) { showToast('업로드 실패: ' + (e?.message ?? '')); setUpload((u) => u && { ...u, progress: undefined }); } };
+  const doUpload = async () => { if (!upload?.picked) return; try { setUpload((u) => u && { ...u, progress: 0 }); const m = await uploadMaterial(c, upload.picked, upload.title, (p) => setUpload((u) => u && { ...u, progress: p })); if (upload.cover) await uploadCover(c, m.id, upload.cover); showToast(`'${m.title}' 업로드 완료 · 이제 배정하세요`); setUpload(null); await load(); setAssignMat(m); } catch (e: any) { showToast('업로드 실패: ' + (e?.message ?? '')); setUpload((u) => u && { ...u, progress: undefined }); } };
   const pendingCount = roster?.requests.length ?? 0;
   const filteredStudents = useMemo(() => (roster?.students ?? []).filter((s) => !q || s.name.includes(q) || s.code.includes(q.toUpperCase()) || s.grade_name.includes(q) || s.school_name.includes(q)), [roster, q]);
   const bySchool = useMemo(() => { const map = new Map<string, { school: { id: string; name: string }; grades: { grade: { id: string; name: string }; students: HwStudent[] }[] }>(); for (const sc of roster?.schools ?? []) map.set(sc.id, { school: sc, grades: (roster?.grades ?? []).filter((g) => g.school_id === sc.id).map((g) => ({ grade: g, students: filteredStudents.filter((s) => s.grade_id === g.id) })) }); return Array.from(map.values()); }, [roster, filteredStudents]);
@@ -46,7 +49,7 @@ export default function Admin() {
           {materials.length === 0 ? <Empty icon="book-outline" title="교재가 없어요" message="위 버튼으로 첫 교재를 올려보세요" /> : materials.map((m) => (
             <Card key={m.id} style={{ marginBottom: 10 }} padded={false}>
               <Row style={{ padding: 14 }} align="flex-start">
-                <View style={{ width: 40, height: 52, borderRadius: 8, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' }}><Ionicons name="document-text" size={22} color={colors.primary} /></View>
+                <Pressable onPress={async () => { const cv = await pickCover(); if (!cv) return; try { await uploadCover(c, m.id, cv); showToast('표지를 바꿨어요'); load(); } catch (e: any) { showToast(e?.message); } }} style={{ width: 40, height: 52, borderRadius: 8, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{m.cover_url ? <Image source={{ uri: m.cover_url }} style={{ width: 40, height: 52 }} /> : <Ionicons name="document-text" size={22} color={colors.primary} />}</Pressable>
                 <View style={{ flex: 1 }}><T variant="bodyBold" numberOfLines={2}>{m.title}</T><Muted variant="caption">{m.pages ? `${m.pages}p · ` : ''}{fmtBytes(m.size)} · {fmtDate(m.created_at, { short: true })}{!m.ready ? ' · 업로드 미완료' : ''}</Muted>
                   <Row gap={6} style={{ marginTop: 6, flexWrap: 'wrap' }}><Badge label={reach(m.id) ? `${reach(m.id)}명에게 보임` : '배정 안 됨'} tone={reach(m.id) ? 'primary' : 'neutral'} />{describeTargets(m.id).slice(0, 5).map((t, i) => <Badge key={i} label={t} />)}</Row></View>
                 <Row gap={0}><IconButton icon="people-outline" color={colors.primary} onPress={() => setAssignMat(m)} label="배정" /><IconButton icon="create-outline" onPress={() => { setEditTitle(m); setTitleText(m.title); }} /><IconButton icon="trash-outline" color={colors.danger} onPress={() => setConfirm({ title: '교재를 삭제할까요?', message: `'${m.title}' 파일과 배정 정보가 서버에서 삭제됩니다. 학생 기기에 이미 받은 사본은 남습니다.`, onYes: async () => { try { await api.materials.delete(c, m.id); showToast('삭제했어요'); load(); } catch (e: any) { showToast(e?.message); } } })} /></Row>
@@ -94,6 +97,10 @@ export default function Admin() {
         {upload && <>
           <Card style={{ marginBottom: 12 }}><Row><Ionicons name="document-text-outline" size={22} color={colors.primary} /><View style={{ flex: 1 }}><T variant="label" numberOfLines={1}>{upload.picked?.name}</T><Muted variant="caption">{fmtBytes(upload.picked?.size ?? 0)}</Muted></View></Row></Card>
           <Input label="교재 제목" value={upload.title} onChangeText={(t) => setUpload((u) => u && { ...u, title: t })} editable={upload.progress == null} />
+          <Row style={{ marginBottom: 12 }} align="flex-start">
+            <Pressable onPress={async () => { const cv = await pickCover(); if (cv) setUpload((u) => u && { ...u, cover: cv }); }} style={{ width: 72, height: 96, borderRadius: 10, borderWidth: 1, borderStyle: upload.cover ? 'solid' : 'dashed', borderColor: colors.border, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', backgroundColor: '#fff' }}>{upload.cover ? <Image source={{ uri: upload.cover.uri }} style={{ width: 72, height: 96 }} /> : <Ionicons name="image-outline" size={22} color={colors.textFaint} />}</Pressable>
+            <View style={{ flex: 1 }}><T variant="label">표지 사진 (선택)</T><Muted variant="caption">따로 넣지 않으면 PDF 첫 페이지가 표지로 보여요.</Muted>{upload.cover && <Pressable onPress={() => setUpload((u) => u && { ...u, cover: null })}><Text style={{ fontSize: 12, color: colors.danger, fontWeight: '600', marginTop: 4 }}>표지 제거</Text></Pressable>}</View>
+          </Row>
           {upload.progress != null ? <><ProgressBar value={upload.progress} /><Muted variant="caption" style={{ marginTop: 6, textAlign: 'center' }}>업로드 중 {Math.round(upload.progress * 100)}%</Muted></> : <Button title="업로드" onPress={doUpload} />}
         </>}
       </Sheet>

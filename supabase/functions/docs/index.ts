@@ -51,6 +51,12 @@ async function resolve(body: any): Promise<{ who: Who | null; authed?: { email: 
   supa.from("student_links").update({ last_seen_at: new Date().toISOString(), student_name: st.name, student_code: st.code, auth_user_id: authed.uid }).eq("student_id", st.id).then(() => {});
   return { who: { role: "student", email: authed.email, student: st, label: st.name }, authed };
 }
+// Attach short-lived signed URLs for cover images (admin-uploaded; otherwise the client shows page 1).
+async function withCovers(list: any[]) {
+  const paths = list.map((m) => m.cover_path).filter(Boolean); if (!paths.length) return list;
+  const { data } = await supa.storage.from(BUCKET).createSignedUrls(paths, 3600); const map = new Map((data ?? []).map((d: any) => [d.path, d.signedUrl]));
+  return list.map((m) => ({ ...m, cover_url: m.cover_path ? map.get(m.cover_path) ?? null : null }));
+}
 async function materialsFor(st: HwStudent) {
   const ors = [`target_type.eq.all`]; if (st.school_id) ors.push(`and(target_type.eq.school,target_id.eq.${st.school_id})`); if (st.grade_id) ors.push(`and(target_type.eq.grade,target_id.eq.${st.grade_id})`); ors.push(`and(target_type.eq.student,target_id.eq.${st.id})`);
   const { data } = await supa.from("assignments").select("material:materials(*)").or(ors.join(","));
@@ -97,8 +103,8 @@ Deno.serve(async (req) => {
     switch (action) {
       case "verify": return json({ ok: true, role: who.role, label: who.label });
       case "list": {
-        if (who.role === "admin") { const { data } = await supa.from("materials").select("*").order("created_at", { ascending: false }); return json({ ok: true, materials: data ?? [] }); }
-        return json({ ok: true, materials: await materialsFor(who.student), student: who.student });
+        if (who.role === "admin") { const { data } = await supa.from("materials").select("*").order("created_at", { ascending: false }); return json({ ok: true, materials: await withCovers(data ?? []) }); }
+        return json({ ok: true, materials: await withCovers(await materialsFor(who.student)), student: who.student });
       }
       case "download": {
         const id = String(body.materialId ?? "");
@@ -140,10 +146,14 @@ Deno.serve(async (req) => {
         return json({ ok: true, materialId: id, path, uploadUrl: s.signedUrl, token: s.token });
       }
       case "materials.complete": { const { data, error } = await supa.from("materials").update({ ready: true, size: Number(body.size ?? 0), pages: Number(body.pages ?? 0) }).eq("id", String(body.materialId)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
+      case "materials.coverUploadUrl": { const id = String(body.materialId ?? ""); const ext = String(body.ext ?? "jpg").replace(/[^a-z0-9]/gi, "").slice(0, 5) || "jpg"; const path = `covers/${id}.${ext}`;
+        const { data, error } = await supa.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true }); if (error || !data) return fail("표지 업로드 URL 생성 실패: " + (error?.message ?? ""), 500);
+        await supa.from("materials").update({ cover_path: path }).eq("id", id); return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token }); }
+      case "materials.coverClear": { const { data: m } = await supa.from("materials").select("cover_path").eq("id", String(body.id)).maybeSingle(); if (m?.cover_path) await supa.storage.from(BUCKET).remove([m.cover_path]); await supa.from("materials").update({ cover_path: null }).eq("id", String(body.id)); return json({ ok: true }); }
       case "materials.rename": { const { data, error } = await supa.from("materials").update({ title: String(body.title ?? "") }).eq("id", String(body.id)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
       case "materials.delete": {
-        const { data: m } = await supa.from("materials").select("storage_path").eq("id", String(body.id)).maybeSingle();
-        if (m) await supa.storage.from(BUCKET).remove([m.storage_path]);
+        const { data: m } = await supa.from("materials").select("storage_path,cover_path").eq("id", String(body.id)).maybeSingle();
+        if (m) await supa.storage.from(BUCKET).remove([m.storage_path, ...(m.cover_path ? [m.cover_path] : [])]);
         const { error } = await supa.from("materials").delete().eq("id", String(body.id)); if (error) return fail(error.message); return json({ ok: true });
       }
       case "stats": { const [{ count: l }, { count: m }, { count: p }, { data: log }] = await Promise.all([supa.from("student_links").select("*", { count: "exact", head: true }), supa.from("materials").select("*", { count: "exact", head: true }), supa.from("email_change_requests").select("*", { count: "exact", head: true }).eq("status", "pending"), supa.from("access_log").select("code,action,ok,at").order("at", { ascending: false }).limit(60)]);

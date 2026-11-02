@@ -2,19 +2,21 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, StyleSheet, TextInput, Pressable, Text, Platform } from 'react-native';
 import Svg, { Path, Rect as SvgRect, G, Circle } from 'react-native-svg';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
-import { Point, Stroke, TextBox } from '@/data/types';
+import { ImageBox, Point, Stroke, TextBox } from '@/data/types';
+import { Image } from 'react-native';
+import { TEXT_FONTS } from './Toolbar';
 import { ToolConfig, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
 
 export type InkHandle = { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
 type Props = {
-  width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; cfg: ToolConfig; enabled: boolean; fingerDraw: boolean; lineSnap?: boolean;
+  width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[]; onImages?: (next: ImageBox[]) => void; textFont?: string; cfg: ToolConfig; enabled: boolean; fingerDraw: boolean; lineSnap?: boolean;
   onStrokes: (next: Stroke[]) => void; onTextBoxes: (next: TextBox[]) => void; onTap?: (p: Point) => boolean; onLongPress?: (p: Point) => void; onDoubleTap?: (p: Point) => void; readOnly?: boolean;
   onHistory?: (h: { canUndo: boolean; canRedo: boolean }) => void; historyRef?: React.MutableRefObject<InkHandle | null>; onSelectionChange?: (ids: string[]) => void;
 };
 
-export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange }: Props) {
+export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange }: Props) {
   const { colors } = useTheme();
   const [live, setLive] = useState<Point[]>([]); const [laser, setLaser] = useState<Point[]>([]); const [lasso, setLasso] = useState<Point[]>([]); const [selection, setSelection] = useState<string[]>([]); const [editing, setEditing] = useState<string | null>(null);
   const liveRef = useRef<Point[]>([]); const startT = useRef(0); const strokesRef = useRef(strokes); strokesRef.current = strokes; const textRef = useRef(textBoxes); textRef.current = textBoxes;
@@ -37,13 +39,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
   const clearDwell = () => { if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null; } };
-  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, 1500); };
+  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, 500); };
 
   const finish = useCallback((pts: Point[], pointerOk: boolean) => {
     const t = Date.now() - startT.current; const tool = cfg.tool;
     if (!pointerOk) return;
     const isTap = pts.length > 0 && t < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s && boundsOf(pts).w < 6 / s && boundsOf(pts).h < 6 / s;
-    if (isTap) { if (tool === 'text') { const p = pts[0]; const tb: TextBox = { id: uid(), rect: { x: p.x, y: p.y, w: 180, h: 40 }, text: '', color: cfg.color, size: 14, createdAt: Date.now() }; commitText([...textRef.current, tb]); setEditing(tb.id); return; } if (onTap?.(pts[0])) return; if (tool === 'lasso') { setSelection([]); onSelectionChange?.([]); return; } if (!isDrawingTool) return; }
+    if (isTap) { if (tool === 'text') { const p = pts[0]; const tb: TextBox = { id: uid(), rect: { x: p.x, y: p.y, w: 180, h: 40 }, text: '', color: cfg.color, size: Math.max(8, cfg.width >= 8 ? cfg.width : 14), font: textFont, createdAt: Date.now() }; commitText([...textRef.current, tb]); setEditing(tb.id); return; } if (onTap?.(pts[0])) return; if (tool === 'lasso') { setSelection([]); onSelectionChange?.([]); return; } if (!isDrawingTool) return; }
     if (readOnly) return;
     if (isDrawingTool) { let points = pts; if (lineSnap && tool !== 'highlighter' && !snappedLine.current) { const sn = snapLine(pts); if (sn) points = sn; } if (points.length === 0) return; commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points, createdAt: Date.now() }]); return; }
     if (tool === 'shape' && pts.length >= 2) { commit([...strokesRef.current, { id: uid(), tool: 'shape', shape: cfg.shape, color: cfg.color, width: cfg.width, opacity: 1, points: [pts[0], pts[pts.length - 1]], createdAt: Date.now() }]); return; }
@@ -98,7 +100,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
           </Svg>
         </View>
       </GestureDetector>
-      {textBoxes.map((tb) => <TextBoxView key={tb.id} tb={tb} s={s} editing={editing === tb.id} onEdit={() => setEditing(tb.id)} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); if (!textRef.current.find((t) => t.id === tb.id)?.text.trim()) onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); else pushHistory(); }} onDelete={() => commitText(textRef.current.filter((t) => t.id !== tb.id))} enabled={enabled && (cfg.tool === 'text' || cfg.tool === 'hand' || cfg.tool === 'lasso')} />)}
+      {images.map((im) => <ImageBoxView key={im.id} im={im} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'lasso' || cfg.tool === 'text')} onChange={(patch) => onImages?.(images.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => onImages?.(images.filter((x) => x.id !== im.id))} />)}
+      {textBoxes.map((tb) => <TextBoxView key={tb.id} tb={tb} s={s} editing={editing === tb.id} onEdit={() => setEditing(tb.id)} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); if (!textRef.current.find((t) => t.id === tb.id)?.text.trim()) onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); else pushHistory(); }} onDelete={() => commitText(textRef.current.filter((t) => t.id !== tb.id))} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape'].includes(cfg.tool)} />)}
       {selBounds && selection.length > 0 && (
         <View style={{ position: 'absolute', left: Math.max(0, Math.min(width - 150, selBounds.x * s)), top: Math.max(0, (selBounds.y - 44) * s), flexDirection: 'row', backgroundColor: colors.text, borderRadius: 10, overflow: 'hidden' }}>
           {[['복제', duplicateSelection], ['삭제', deleteSelection], ['해제', () => { setSelection([]); onSelectionChange?.([]); }]].map(([l, f]) => <Pressable key={l as string} onPress={f as any} style={{ paddingHorizontal: 12, paddingVertical: 8 }}><Text style={{ color: colors.bg, fontWeight: '700', fontSize: 12 }}>{l as string}</Text></Pressable>)}
@@ -110,22 +113,39 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, cfg, enabled, 
 
 function TextBoxView({ tb, s, editing, onEdit, onChange, onCommit, onDelete, enabled }: { tb: TextBox; s: number; editing: boolean; onEdit: () => void; onChange: (p: Partial<TextBox>) => void; onCommit: () => void; onDelete: () => void; enabled: boolean }) {
   const { colors } = useTheme(); const start = useRef({ x: 0, y: 0 });
-  const drag = useMemo(() => Gesture.Pan().enabled(enabled && !editing).runOnJS(true).onBegin(() => { start.current = { x: tb.rect.x, y: tb.rect.y }; }).onUpdate((e) => onChange({ rect: { ...tb.rect, x: start.current.x + e.translationX / s, y: start.current.y + e.translationY / s } })), [enabled, editing, tb.rect, s]);
+  const drag = useMemo(() => Gesture.Pan().enabled(enabled && !editing).minDistance(2).runOnJS(true).onBegin(() => { start.current = { x: tb.rect.x, y: tb.rect.y }; }).onUpdate((e) => onChange({ rect: { ...tb.rect, x: start.current.x + e.translationX / s, y: start.current.y + e.translationY / s } })).onEnd(() => onCommit()), [enabled, editing, tb.rect, s]);
   const tap = useMemo(() => Gesture.Tap().enabled(enabled).numberOfTaps(2).runOnJS(true).onStart(onEdit), [enabled, onEdit]);
   return (
     <GestureDetector gesture={Gesture.Race(tap, drag)}>
       <View style={{ position: 'absolute', left: tb.rect.x * s, top: tb.rect.y * s, minWidth: tb.rect.w * s, borderWidth: editing || enabled ? 1 : 0, borderStyle: 'dashed', borderColor: editing ? colors.primary : 'rgba(0,0,0,0.15)', borderRadius: 4, padding: 4 * s, backgroundColor: editing ? 'rgba(255,255,255,0.9)' : 'transparent' }} pointerEvents={enabled ? 'auto' : 'none'}>
         {editing ? (
           <>
-            <TextInput autoFocus multiline value={tb.text} onChangeText={(text) => onChange({ text })} onBlur={onCommit} style={{ color: tb.color, fontSize: tb.size * s, minWidth: 160 * s, padding: 0 }} placeholder="텍스트 입력" />
+            <TextInput autoFocus multiline value={tb.text} onChangeText={(text) => onChange({ text })} onBlur={onCommit} style={{ color: tb.color, fontSize: tb.size * s, minWidth: 160 * s, padding: 0, fontFamily: TEXT_FONTS.find((f) => f.k === tb.font)?.family }} placeholder="텍스트 입력" />
             <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
-              {[12, 14, 18, 24].map((sz) => <Pressable key={sz} onPress={() => onChange({ size: sz })}><Text style={{ fontSize: 11, fontWeight: '700', color: tb.size === sz ? colors.primary : colors.textMuted }}>{sz}</Text></Pressable>)}
+              {[12, 16, 20, 28, 36].map((sz) => <Pressable key={sz} onPress={() => onChange({ size: sz })}><Text style={{ fontSize: 11, fontWeight: '700', color: tb.size === sz ? colors.primary : colors.textMuted }}>{sz}</Text></Pressable>)}{TEXT_FONTS.map((f) => <Pressable key={f.k} onPress={() => onChange({ font: f.k })}><Text style={{ fontSize: 11, fontWeight: '700', color: (tb.font ?? 'system') === f.k ? colors.primary : colors.textMuted, fontFamily: f.family }}>{f.label}</Text></Pressable>)}
               <Pressable onPress={onCommit}><Text style={{ fontSize: 11, fontWeight: '700', color: colors.primary }}>완료</Text></Pressable>
               <Pressable onPress={onDelete}><Text style={{ fontSize: 11, fontWeight: '700', color: colors.danger }}>삭제</Text></Pressable>
             </View>
           </>
-        ) : <Text style={{ color: tb.color, fontSize: tb.size * s }}>{tb.text}</Text>}
+        ) : <Text style={{ color: tb.color, fontSize: tb.size * s, fontFamily: TEXT_FONTS.find((f) => f.k === tb.font)?.family }}>{tb.text}</Text>}
+        {enabled && !editing && <View style={{ position: 'absolute', right: -6, bottom: -6, width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary, borderWidth: 2, borderColor: '#fff' }} />}
       </View>
     </GestureDetector>
+  );
+}
+
+function ImageBoxView({ im, s, enabled, onChange, onDelete }: { im: ImageBox; s: number; enabled: boolean; onChange: (p: Partial<ImageBox>) => void; onDelete: () => void }) {
+  const { colors } = useTheme(); const start = useRef({ x: 0, y: 0, w: 0, h: 0 }); const [sel, setSel] = useState(false);
+  const drag = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(2).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onUpdate((e) => onChange({ rect: { ...im.rect, x: start.current.x + e.translationX / s, y: start.current.y + e.translationY / s } })), [enabled, im.rect, s]);
+  const resize = useMemo(() => Gesture.Pan().enabled(enabled).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onUpdate((e) => { const ratio = start.current.h / start.current.w; const w = Math.max(30, start.current.w + e.translationX / s); onChange({ rect: { ...im.rect, w, h: w * ratio } }); }), [enabled, im.rect, s]);
+  const tap = useMemo(() => Gesture.Tap().enabled(enabled).runOnJS(true).onStart(() => setSel((v) => !v)), [enabled]);
+  return (
+    <View style={{ position: 'absolute', left: im.rect.x * s, top: im.rect.y * s, width: im.rect.w * s, height: im.rect.h * s }} pointerEvents={enabled ? 'auto' : 'none'}>
+      <GestureDetector gesture={Gesture.Race(tap, drag)}><View style={{ flex: 1, borderWidth: enabled ? 1 : 0, borderStyle: 'dashed', borderColor: sel ? colors.primary : 'rgba(0,0,0,0.15)' }} collapsable={false}><Image source={{ uri: im.uri }} style={{ width: '100%', height: '100%' }} resizeMode="stretch" /></View></GestureDetector>
+      {enabled && sel && <>
+        <GestureDetector gesture={resize}><View style={{ position: 'absolute', right: -10, bottom: -10, width: 22, height: 22, borderRadius: 11, backgroundColor: colors.primary, borderWidth: 2, borderColor: '#fff' }} collapsable={false} /></GestureDetector>
+        <Pressable onPress={onDelete} style={{ position: 'absolute', right: -10, top: -10, width: 22, height: 22, borderRadius: 11, backgroundColor: colors.danger, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '800', fontSize: 12 }}>×</Text></Pressable>
+      </>}
+    </View>
   );
 }

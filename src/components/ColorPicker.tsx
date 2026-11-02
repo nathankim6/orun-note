@@ -17,7 +17,7 @@ export function hsvToHex(h: number, s: number, v: number) { const c = v * s, x =
 export function hexToHsv(hex: string) { const m = /^#?([0-9a-f]{6})$/i.exec(hex); if (!m) return { h: 0, s: 0, v: 0 }; const n = parseInt(m[1], 16); const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255; const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min; let h = 0; if (d) { h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4; h = Math.round(h * 60); if (h < 0) h += 360; } return { h, s: max ? d / max : 0, v: max }; }
 
 /** Preset swatches + HSV pad with hue slider + hex input. Emits on every change. */
-export function ColorPicker({ value, onChange, recent = [], compact }: { value: string; onChange: (hex: string) => void; recent?: string[]; compact?: boolean }) {
+export function ColorPicker({ value, onChange, recent = [], compact, row }: { value: string; onChange: (hex: string) => void; recent?: string[]; compact?: boolean; row?: boolean }) {
   const { colors } = useTheme();
   const [hsv, setHsv] = useState(() => hexToHsv(value)); const [hex, setHex] = useState(value.toUpperCase()); const [pad, setPad] = useState({ w: 1, h: 1 });
   useEffect(() => { if (value.toUpperCase() !== hex) { setHex(value.toUpperCase()); setHsv(hexToHsv(value)); } }, [value]);
@@ -25,6 +25,15 @@ export function ColorPicker({ value, onChange, recent = [], compact }: { value: 
   const hueHex = useMemo(() => hsvToHex(hsv.h, 1, 1), [hsv.h]);
   const padGesture = useMemo(() => Gesture.Pan().runOnJS(true).minDistance(0).onBegin((e) => emit({ ...hsv, s: Math.min(1, Math.max(0, e.x / pad.w)), v: 1 - Math.min(1, Math.max(0, e.y / pad.h)) })).onUpdate((e) => emit({ ...hsv, s: Math.min(1, Math.max(0, e.x / pad.w)), v: 1 - Math.min(1, Math.max(0, e.y / pad.h)) })), [pad, hsv.h]);
   const sw = compact ? 24 : 28;
+  if (row) { // single-row variant for the compact toolbar option bar: scrollable presets + hue slider + hex
+    return (
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 5, flexWrap: 'wrap', width: 236 }}>{PRESET_COLORS.map((c) => <Pressable key={c} accessibilityLabel={`색상 ${c}`} onPress={() => { setHsv(hexToHsv(c)); setHex(c); onChange(c); }} style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: c, borderWidth: hex === c ? 2 : 1, borderColor: hex === c ? colors.primary : 'rgba(0,0,0,0.12)' }} />)}</View>
+        <View style={{ width: 120, justifyContent: 'center' }}><View style={{ height: 10, borderRadius: 5, overflow: 'hidden', position: 'absolute', left: 10, right: 10 }}><LinearGradient colors={['#FF0000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#FF00FF', '#FF0000']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1 }} /></View><Slider style={{ height: 30 }} minimumValue={0} maximumValue={360} step={1} value={hsv.h} onValueChange={(h) => emit({ h, s: hsv.s < 0.15 ? 0.85 : hsv.s, v: hsv.v < 0.15 ? 0.9 : hsv.v })} minimumTrackTintColor="transparent" maximumTrackTintColor="transparent" thumbTintColor={hueHex} /></View>
+        <View style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: hex, borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' }} />
+      </View>
+    );
+  }
   return (
     <View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>

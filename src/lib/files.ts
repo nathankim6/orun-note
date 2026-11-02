@@ -16,6 +16,8 @@ const idb = {
 };
 const webUrls = new Map<string, string>();
 export async function resolveUri(doc: Doc): Promise<string | null> {
+  if (doc.kind === 'blank') return 'blank:';
+  if (doc.sourceDocId) { const src = useDocsStore.getState().docs[doc.sourceDocId]; if (src) return resolveUri(src); }
   if (Platform.OS !== 'web') return (await PdfRenderer.fileExists(doc.uri)) ? doc.uri : null;
   if (webUrls.has(doc.id)) return webUrls.get(doc.id)!;
   const blob = await idb.get(doc.id).catch(() => undefined); if (!blob) return null; const url = URL.createObjectURL(blob); webUrls.set(doc.id, url); return url;
@@ -43,20 +45,23 @@ export async function importPdf({ uri, name, size, file, title, subject, materia
   return doc;
 }
 
-export async function deleteDocFiles(doc: Doc) { if (Platform.OS === 'web') { await idb.del(doc.id).catch(() => {}); const u = webUrls.get(doc.id); if (u) URL.revokeObjectURL(u); webUrls.delete(doc.id); } else { await PdfRenderer.deleteFile(doc.uri); } }
+export async function deleteDocFiles(doc: Doc) { if (doc.kind === 'blank' || doc.sourceDocId) return; const others = Object.values(useDocsStore.getState().docs).some((d) => d.id !== doc.id && d.sourceDocId === doc.id); if (others) return; // keep the file while split copies still use it
+  if (Platform.OS === 'web') { await idb.del(doc.id).catch(() => {}); const u = webUrls.get(doc.id); if (u) URL.revokeObjectURL(u); webUrls.delete(doc.id); } else { await PdfRenderer.deleteFile(doc.uri); } }
 export async function storageUsage(): Promise<number> { return Object.values(useDocsStore.getState().docs).reduce((a, d) => a + d.size, 0); }
 export async function clearPageCache() { await PdfRenderer.clearCaches(); }
 
 /** Downloads a material through a short-lived signed URL and stores it encrypted like any other document. */
-export async function downloadMaterial(code: string | null, materialId: string, title: string, onProgress?: (p: number) => void): Promise<Doc> {
+export async function downloadMaterial(code: string | null, materialId: string, title: string, onProgress?: (p: number) => void, coverUrl?: string | null): Promise<Doc> {
   const r = await api.download(code, materialId);
-  if (Platform.OS === 'web') { const res = await fetch(r.url); if (!res.ok) throw new Error('다운로드 실패 ' + res.status); const blob = await res.blob(); const url = URL.createObjectURL(blob); return importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); }
+  const coverUri = coverUrl ? await cacheCover(coverUrl) : null;
+  if (Platform.OS === 'web') { const res = await fetch(r.url); if (!res.ok) throw new Error('다운로드 실패 ' + res.status); const blob = await res.blob(); const url = URL.createObjectURL(blob); const d0 = await importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); if (coverUri) useDocsStore.getState().update(d0.id, { coverUri }); return { ...d0, coverUri: coverUri ?? undefined }; }
   const tmp = `${FileSystem.cacheDirectory}dl-${materialId}.pdf`;
   const task = FileSystem.createDownloadResumable(r.url, tmp, {}, (ev) => { if (ev.totalBytesExpectedToWrite > 0) onProgress?.(ev.totalBytesWritten / ev.totalBytesExpectedToWrite); });
   const res = await task.downloadAsync(); if (!res || res.status !== 200) throw new Error('다운로드 실패 ' + (res?.status ?? ''));
   const doc = await importPdf({ uri: tmp, name: r.fileName || `${title}.pdf`, size: 0, title, materialId });
   await FileSystem.deleteAsync(tmp, { idempotent: true }).catch(() => {});
-  return doc;
+  if (coverUri) useDocsStore.getState().update(doc.id, { coverUri });
+  return { ...doc, coverUri: coverUri ?? undefined };
 }
 /** Admin: uploads a local PDF to the shared bucket and registers it as a material. */
 export async function uploadMaterial(code: string | null, picked: { uri: string; name: string; size: number; file?: File }, title: string, onProgress?: (p: number) => void) {
@@ -67,4 +72,51 @@ export async function uploadMaterial(code: string | null, picked: { uri: string;
   else { const task = FileSystem.createUploadTask(u.uploadUrl, picked.uri, { httpMethod: 'PUT', headers: { 'Content-Type': 'application/pdf', 'x-upsert': 'true' }, uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT }, (ev) => { if (ev.totalBytesExpectedToSend > 0) onProgress?.(ev.totalBytesSent / ev.totalBytesExpectedToSend); }); const res = await task.uploadAsync(); if (!res || res.status >= 300) throw new Error('업로드 실패 ' + (res?.status ?? '') + ' ' + (res?.body ?? '').slice(0, 120)); }
   const done = await api.materials.complete(code, u.materialId, picked.size, info.pageCount);
   return done.material;
+}
+
+/** A free-drawing notebook: no PDF file, N pages of the chosen paper template (US letter-like proportions in PDF points). */
+export function createBlankDoc(title: string, template: Doc['template'] = 'plain', pages = 3): Doc {
+  const store = useDocsStore.getState();
+  const pg = Array.from({ length: pages }, (_, i) => ({ index: i, width: 612, height: 792 }));
+  return store.add({ title, fileName: '', uri: 'blank:', size: 0, pageCount: pages, pages: pg, kind: 'blank', template, coverColor: COVER_COLORS[Object.keys(store.docs).length % COVER_COLORS.length] } as any);
+}
+export function addBlankPages(doc: Doc, count = 1) {
+  const next = [...doc.pages, ...Array.from({ length: count }, (_, i) => ({ index: doc.pages.length + i, width: 612, height: 792 }))];
+  useDocsStore.getState().update(doc.id, { pages: next, pageCount: next.length });
+}
+/** Split: a new document showing only the selected pages of `doc`, sharing its file. Auto-named "<title> (p.a-b)". */
+export function splitDoc(doc: Doc, pageIndexes: number[], titleOverride?: string): Doc {
+  const store = useDocsStore.getState(); const sorted = [...pageIndexes].sort((a, b) => a - b);
+  const label = sorted.length === 1 ? `p.${sorted[0] + 1}` : sorted.every((v, i) => i === 0 || v === sorted[i - 1] + 1) ? `p.${sorted[0] + 1}-${sorted[sorted.length - 1] + 1}` : `${sorted.length}p 발췌`;
+  const base = doc.sourceDocId ? store.docs[doc.sourceDocId] ?? doc : doc;
+  const pages = sorted.map((i) => ({ ...doc.pages[i] }));
+  return store.add({ title: titleOverride ?? `${doc.title} (${label})`, fileName: base.fileName, uri: base.uri, size: 0, pageCount: pages.length, pages, kind: base.kind, template: base.template, sourceDocId: base.kind === 'blank' ? undefined : base.id, coverColor: doc.coverColor, folderId: doc.folderId } as any);
+}
+/** Pick a photo and return a data/file URI suitable for an ImageBox. */
+export async function pickImageForPage(): Promise<{ uri: string; width: number; height: number } | null> {
+  const ImagePicker = await import('expo-image-picker');
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync(); if (!perm.granted && Platform.OS !== 'web') return null;
+  const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6, base64: Platform.OS === 'web' });
+  if (r.canceled || !r.assets?.length) return null; const a = r.assets[0];
+  let uri = a.uri;
+  if (Platform.OS !== 'web') { // copy into app-private storage so the image survives picker cache cleanup
+    const FS = await import('expo-file-system/legacy'); const dir = FS.documentDirectory + 'orun-images/'; await FS.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {}); const dest = dir + Date.now().toString(36) + '.jpg'; await FS.copyAsync({ from: a.uri, to: dest }); uri = dest;
+  } else if (a.base64) uri = `data:${a.mimeType ?? 'image/jpeg'};base64,${a.base64}`;
+  return { uri, width: a.width, height: a.height };
+}
+
+/** Admin: upload a cover image for a material (PUT to a signed URL). */
+export async function uploadCover(code: string | null, materialId: string, picked: { uri: string; mimeType?: string }) {
+  const ext = (picked.mimeType?.split('/')[1] ?? 'jpg').replace('jpeg', 'jpg');
+  const r = await api.materials.coverUploadUrl(code, materialId, ext);
+  const blob = await (await fetch(picked.uri)).blob();
+  const res = await fetch(r.uploadUrl, { method: 'PUT', headers: { 'Content-Type': picked.mimeType ?? 'image/jpeg', 'x-upsert': 'true' }, body: blob });
+  if (!res.ok) throw new Error('표지 업로드 실패 (' + res.status + ')');
+}
+/** Cache a material's cover locally so the library can show it offline. */
+export async function cacheCover(url: string): Promise<string | null> {
+  try {
+    if (Platform.OS === 'web') { const b = await (await fetch(url)).blob(); return await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result)); fr.readAsDataURL(b); }); }
+    const dir = FileSystem.documentDirectory + 'orun-covers/'; await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {}); const dest = dir + Date.now().toString(36) + '.jpg'; const d = await FileSystem.downloadAsync(url, dest); return d.uri;
+  } catch { return null; }
 }
