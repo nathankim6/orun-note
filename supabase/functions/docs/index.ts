@@ -42,28 +42,34 @@ async function hwRoster() {
 async function lookup(raw: string) {
   const q = raw.replace(/[\u2018\u2019]/g, "'").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
   if (!q) return null;
-  const { data: hit } = await supa.from("dict_cache").select("data").eq("q", q).maybeSingle(); if (hit && (hit.data?.korean?.main || !hit.data?.isWord)) return hit.data;
+  const { data: hit } = await supa.from("dict_cache").select("data,created_at").eq("q", q).maybeSingle(); const fresh = hit && Date.now() - new Date(hit.created_at).getTime() < 12 * 3600e3; // Naver audio links are signed and expire
+  if (hit && fresh && (hit.data?.korean?.main || !hit.data?.isWord)) return hit.data;
   const isWord = !q.includes(" ");
+  const naverEarly = async (w: string): Promise<any> => { const r = await fetch(`https://en.dict.naver.com/api3/enko/search?query=${encodeURIComponent(w)}&m=pc&range=word&page=1&lang=ko&shouldSearchOpen=false`, { headers: { Referer: "https://en.dict.naver.com/", "User-Agent": "Mozilla/5.0" } }).catch(() => null); if (!r || !r.ok) return null; const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? []; const plain = (h: string) => String(h ?? "").replace(/<[^>]+>/g, "").trim().toLowerCase(); return items.find((x: any) => plain(x.expEntry) === w) ?? items[0] ?? null; };
   const strip = (h: string) => String(h ?? "").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim();
   const tryDict = async (w: string) => { const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(w)}`).catch(() => null); return r && r.ok ? r.json() : null; };
   const lemmas = (w: string) => { const c = [w]; if (w.endsWith("ies")) c.push(w.slice(0, -3) + "y"); if (w.endsWith("es")) c.push(w.slice(0, -2)); if (w.endsWith("s")) c.push(w.slice(0, -1)); if (w.endsWith("ied")) c.push(w.slice(0, -3) + "y"); if (w.endsWith("ed")) { c.push(w.slice(0, -2), w.slice(0, -1)); if (/(.)\1ed$/.test(w)) c.push(w.slice(0, -3)); } if (w.endsWith("ing")) { c.push(w.slice(0, -3), w.slice(0, -3) + "e"); if (/(.)\1ing$/.test(w)) c.push(w.slice(0, -4)); } if (w.endsWith("ly")) c.push(w.slice(0, -2)); if (w.endsWith("er")) c.push(w.slice(0, -2), w.slice(0, -1)); if (w.endsWith("est")) c.push(w.slice(0, -3)); return [...new Set(c)].filter((x) => x.length > 1); };
   let entries: any = null; let headword = q;
-  if (isWord) { for (const w of lemmas(q)) { entries = await tryDict(w); if (entries) { headword = w; break; } } }
+  const naverFirst = isWord ? naverEarly(q) : Promise.resolve(null);
+  // Fetch all lemma candidates and the Naver entry in parallel (sequential calls made the popup slow).
+  if (isWord) { const cands = lemmas(q); const results = await Promise.all(cands.map((w) => tryDict(w))); const i = results.findIndex(Boolean); if (i >= 0) { entries = results[i]; headword = cands[i]; } }
   const posKo: Record<string, string> = { noun: "명사", verb: "동사", adjective: "형용사", adverb: "부사", pronoun: "대명사", preposition: "전치사", conjunction: "접속사", interjection: "감탄사", article: "관사", abbreviation: "약어", prefix: "접두사", suffix: "접미사", "auxiliary verb": "조동사" };
-  const phon = { text: "", us: "", uk: "", audioUs: "", audioUk: "" };
+  const phon = { text: "", us: "", uk: "", audioUs: "", audioUk: "" }; const nvAudio = { us: "", uk: "" };
   // Korean meanings + IPA + US/UK recordings from the Naver English-Korean dictionary (public JSON used by its web UI).
   const naver = async (w: string) => { const r = await fetch(`https://en.dict.naver.com/api3/enko/search?query=${encodeURIComponent(w)}&m=pc&range=word&page=1&lang=ko&shouldSearchOpen=false`, { headers: { Referer: "https://en.dict.naver.com/", "User-Agent": "Mozilla/5.0" } }).catch(() => null); if (!r || !r.ok) return null; const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? []; return items.find((x: any) => strip(x.expEntry).toLowerCase() === w) ?? items.find((x: any) => strip(x.expEntry).toLowerCase() === headword) ?? items[0] ?? null; };
-  const nv = isWord ? ((await naver(q)) ?? (headword !== q ? await naver(headword) : null)) : null;
+  const nv = isWord ? ((await naverFirst) ?? (headword !== q ? await naver(headword) : null)) : null;
   const byPos: { pos: string; terms: string[] }[] = [];
   for (const mc of nv?.meansCollector ?? []) { const terms = (mc.means ?? []).map((m: any) => strip(m.value)).filter(Boolean).slice(0, 4); if (terms.length) byPos.push({ pos: strip(mc.partOfSpeech) || "", terms }); }
-  for (const sym of nv?.searchPhoneticSymbolList ?? []) { const code = String(sym.symbolTypeCode ?? ""); const v = sym.symbolValue ? `/${sym.symbolValue}/` : ""; if (code.includes("US")) { phon.us ||= v; phon.audioUs ||= sym.symbolFile ?? ""; } if (code.includes("GB")) { phon.uk ||= v; phon.audioUk ||= sym.symbolFile ?? ""; } if (!phon.text && v) phon.text = v; }
+  for (const sym of nv?.searchPhoneticSymbolList ?? []) { const code = String(sym.symbolTypeCode ?? ""); const iv = String(sym.symbolValue ?? "").replace(/<sup>\s*[|│｜]\s*<\/sup>/g, "ˈ").replace(/<sub>\s*[|│｜]\s*<\/sub>/g, "ˌ").replace(/<[^>]+>/g, "").trim(); const v = iv ? `/${iv}/` : ""; if (code.includes("US")) { phon.us ||= v; nvAudio.us ||= sym.symbolFile ?? ""; } if (code.includes("GB")) { phon.uk ||= v; nvAudio.uk ||= sym.symbolFile ?? ""; } if (!phon.text && v) phon.text = v; }
   for (const e of entries ?? []) { phon.text ||= e.phonetic ?? ""; for (const p of e.phonetics ?? []) { const a = String(p.audio ?? ""); const t = p.text ?? ""; if (/-us\.mp3$/.test(a)) { phon.audioUs ||= a; phon.us ||= t; } else if (/-uk\.mp3$/.test(a)) { phon.audioUk ||= a; phon.uk ||= t; } else if (a) { phon.audioUs ||= a; } if (!phon.text && t) phon.text = t; } }
+  // stable recordings (dictionaryapi.dev) first; signed Naver links only as a fallback
+  phon.audioUs ||= nvAudio.us; phon.audioUk ||= nvAudio.uk;
   const meanings: { pos: string; posKo: string; defs: { def: string; ex?: string }[]; synonyms: string[] }[] = [];
   for (const e of entries ?? []) for (const m of e.meanings ?? []) { const ex = meanings.find((x) => x.pos === m.partOfSpeech); const defs = (m.definitions ?? []).slice(0, 3).map((d: any) => ({ def: d.definition, ex: d.example })); if (ex) { ex.defs.push(...defs); ex.defs = ex.defs.slice(0, 4); } else meanings.push({ pos: m.partOfSpeech, posKo: posKo[m.partOfSpeech] ?? m.partOfSpeech, defs, synonyms: (m.synonyms ?? []).slice(0, 5) }); }
   let main = byPos[0]?.terms[0] ?? "";
-  if (!main) { const mm = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|ko`).then((r) => r.ok ? r.json() : null).catch(() => null); main = strip(mm?.responseData?.translatedText ?? ""); }
+  if (!main) { const mm = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|ko`).then((r) => r.ok ? r.json() : null).catch(() => null); main = strip(mm?.responseData?.translatedText ?? ""); if (!/[\uAC00-\uD7A3]/.test(main)) main = ""; }
   const data = { q, headword, isWord, phonetic: phon, korean: { main, byPos }, meanings: meanings.slice(0, 4), source: [nv ? "naver" : "", entries ? "dictionaryapi.dev" : "", !nv ? "mymemory" : ""].filter(Boolean).join("+") };
-  if (main || meanings.length) supa.from("dict_cache").upsert({ q, data }).then(() => {});
+  if (main || meanings.length) supa.from("dict_cache").upsert({ q, data, created_at: new Date().toISOString() }).then(() => {});
   return data;
 }
 

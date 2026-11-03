@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { api } from './api';
@@ -94,13 +95,12 @@ export function splitDoc(doc: Doc, pageIndexes: number[], titleOverride?: string
 }
 /** Pick a photo and return a data/file URI suitable for an ImageBox. */
 export async function pickImageForPage(): Promise<{ uri: string; width: number; height: number } | null> {
-  const ImagePicker = await import('expo-image-picker');
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync(); if (!perm.granted && Platform.OS !== 'web') return null;
   const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6, base64: Platform.OS === 'web' });
   if (r.canceled || !r.assets?.length) return null; const a = r.assets[0];
   let uri = a.uri;
   if (Platform.OS !== 'web') { // copy into app-private storage so the image survives picker cache cleanup
-    const FS = await import('expo-file-system/legacy'); const dir = FS.documentDirectory + 'orun-images/'; await FS.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {}); const dest = dir + Date.now().toString(36) + '.jpg'; await FS.copyAsync({ from: a.uri, to: dest }); uri = dest;
+    const FS = FileSystem; const dir = FS.documentDirectory + 'orun-images/'; await FS.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {}); const dest = dir + Date.now().toString(36) + '.jpg'; await FS.copyAsync({ from: a.uri, to: dest }); uri = dest;
   } else if (a.base64) uri = `data:${a.mimeType ?? 'image/jpeg'};base64,${a.base64}`;
   return { uri, width: a.width, height: a.height };
 }

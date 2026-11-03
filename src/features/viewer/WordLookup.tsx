@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
+import { createAudioPlayer } from 'expo-audio';
 import { useTheme } from '@/theme';
 import { DOCS_FN, SUPABASE_ANON_KEY } from '@/lib/config';
 
@@ -17,7 +18,7 @@ async function play(url: string, fallbackText: string, accent: 'us' | 'uk') {
   try {
     if (url) {
       if (Platform.OS === 'web') { const a = new (window as any).Audio(url); await a.play(); return; }
-      const { createAudioPlayer } = await import('expo-audio'); try { player?.remove?.(); } catch {} player = createAudioPlayer({ uri: url }); player.play(); return;
+      try { player?.remove?.(); } catch {} player = createAudioPlayer({ uri: url }); player.play(); return;
     }
   } catch {}
   Speech.stop(); Speech.speak(fallbackText, { language: accent === 'uk' ? 'en-GB' : 'en-US', rate: 0.9 });
@@ -34,8 +35,8 @@ export function WordLookup({ text, anchor, onClose, onHighlight, onLookup }: { t
   return (
     <>
       <Pressable style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, zIndex: 80 }} onPress={onClose} />
-      <View style={[{ position: 'absolute', left, width: cardW, maxHeight: Math.max(220, maxH), zIndex: 81, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.98)', borderWidth: 1, borderColor: 'rgba(47,111,237,0.25)', shadowColor: '#1B3B7A', shadowOpacity: 0.22, shadowRadius: 22, shadowOffset: { width: 0, height: 8 }, elevation: 14, overflow: 'hidden' }, pos]}>
-        <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)', backgroundColor: 'rgba(47,111,237,0.06)' }}>
+      <View style={[{ position: 'absolute', left, width: cardW, maxHeight: Math.max(220, maxH), zIndex: 81, borderRadius: 18, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: 'rgba(47,111,237,0.25)', shadowColor: '#1B3B7A', shadowOpacity: 0.22, shadowRadius: 22, shadowOffset: { width: 0, height: 8 }, elevation: 14, overflow: 'hidden' }, pos]}>
+        <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)', backgroundColor: '#F3F7FE' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Text style={{ fontSize: isWord ? 22 : 16, fontWeight: '800', color: colors.text, flex: 1 }} numberOfLines={2} selectable>{d?.headword && d.headword !== text.toLowerCase() && isWord ? `${text} → ${d.headword}` : text}</Text>
             <Pressable onPress={onClose} hitSlop={8}><Ionicons name="close" size={20} color={colors.textMuted} /></Pressable>
