@@ -1,6 +1,7 @@
 import React, { useEffect, useImperativeHandle, forwardRef } from 'react';
 import { Platform } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
+import { lastLookupAt } from './InkCanvas';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS, cancelAnimation } from 'react-native-reanimated';
 
 export type ZoomHandle = { zoomTo: (scale: number, fx?: number, fy?: number) => void; reset: () => void; pinchBegin: (fx: number, fy: number) => void; pinchUpdate: (scale: number, fx: number, fy: number) => void; pinchEnd: () => void; getScale: () => number };
@@ -71,9 +72,11 @@ export const ZoomView = forwardRef<ZoomHandle, Props>(function ZoomView({ width,
     .onUpdate((e) => { const b = bounds(scale.value); tx.value = clamp(startTx.value + e.translationX, b.minX - 40, b.maxX + 40); ty.value = clamp(startTy.value + e.translationY, b.minY - 40, b.maxY + 40); })
     .onEnd(() => { const b = bounds(scale.value); tx.value = withTiming(clamp(tx.value, b.minX, b.maxX), { duration: 160 }); ty.value = withTiming(clamp(ty.value, b.minY, b.maxY), { duration: 160 }); });
 
+  // A double-tap on an English word opens the dictionary instead of zooming (InkCanvas records the lookup time).
+  const maybeZoom = (target: number, x: number, y: number) => { setTimeout(() => { if (Date.now() - lastLookupAt < 500) return; zoomToJS(target, x, y); }, 60); };
   const doubleTap = Gesture.Tap().numberOfTaps(2).maxDelay(260)
     .onTouchesDown((e, st) => { const pt = (e.changedTouches[0] as any)?.pointerType; if (pt === PointerType.STYLUS) st.fail(); })
-    .onEnd((e) => { runOnJS(zoomToJS)(scale.value > 1.001 ? 1 : 2.2, e.x, e.y); });
+    .onEnd((e) => { runOnJS(maybeZoom)(scale.value > 1.001 ? 1 : 2.2, e.x, e.y); });
 
   const gesture = Gesture.Simultaneous(pan, doubleTap);
   // RN scales around the view center by default. Compensate so that (tx, ty) describe where the content's top-left

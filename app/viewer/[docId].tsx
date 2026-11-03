@@ -16,6 +16,8 @@ import { SubDocWindow } from '@/features/viewer/SubDocWindow';
 import { pickImageForPage, addBlankPages } from '@/lib/files';
 import { ImageBox } from '@/data/types';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
+import { WordLookup } from '@/features/viewer/WordLookup';
+import { cachedWords, loadWords } from '@/features/viewer/words';
 import { Toolbar } from '@/features/viewer/Toolbar';
 import { ToolConfig, toolDefaults } from '@/features/viewer/ink';
 import { LeftPanel, LeftTab } from '@/features/viewer/Panels';
@@ -39,7 +41,9 @@ export default function Viewer() {
   // Paged layouts zoom with a focal-anchored transform (ZoomView); `tzoom` mirrors its scale for the % label and sharper re-render.
   const [tzoom, setTzoom] = useState(1); const [pinching, setPinching] = useState(false); const [renderScale, setRenderScale] = useState(1); const [tzoomed, setTzoomed] = useState(false); const zoomRefs = useRef<Record<string, ZoomHandle | null>>({}); const contScroll = useRef(0);
   useEffect(() => { setTzoom(1); setRenderScale(1); }, [pageIndex, layout]);
-  const [cfg, setCfg] = useState<ToolConfig>(() => { const v = useSettingsStore.getState().viewer; const t = (v.lastTool as Tool) || 'pen'; const pr = v.toolPresets?.[t] ?? v.toolPresets?.pen ?? { color: '#172033', width: 2, opacity: 1 }; return { tool: ['pen', 'highlighter'].includes(t) ? t : 'pen', color: pr.color, width: pr.width, shape: 'rectangle', opacity: pr.opacity }; }); const [textFont, setTextFont] = useState<string>('system'); const [subDoc, setSubDoc] = useState<string | null | 'pick'>(null); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
+  // Text layer for tap-to-define: load current and neighbouring pages in the background.
+  useEffect(() => { if (!uri || !doc || doc.kind === 'blank') return; let alive = true; [pageIndex, pageIndex + 1, pageIndex - 1].filter((i) => i >= 0 && i < doc.pageCount).forEach((i) => loadWords(uri, doc.pages[i].index).then(() => alive && setWordsVer((v) => v + 1))); return () => { alive = false; }; }, [uri, pageIndex, doc?.id]);
+  const [cfg, setCfg] = useState<ToolConfig>(() => { const v = useSettingsStore.getState().viewer; const t = (v.lastTool as Tool) || 'pen'; const pr = v.toolPresets?.[t] ?? v.toolPresets?.pen ?? { color: '#172033', width: 2, opacity: 1 }; return { tool: ['pen', 'highlighter'].includes(t) ? t : 'pen', color: pr.color, width: pr.width, shape: 'rectangle', opacity: pr.opacity }; }); const [textFont, setTextFont] = useState<string>('system'); const [lookup, setLookup] = useState<{ text: string; abs: { x: number; y: number }; rects: { x: number; y: number; w: number; h: number }[]; k: string } | null>(null); const [wordsVer, setWordsVer] = useState(0); const [subDoc, setSubDoc] = useState<string | null | 'pick'>(null); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
   const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => {
@@ -85,13 +89,13 @@ export default function Viewer() {
   const clearAllInk = () => { for (let i = 0; i < doc.pageCount; i++) { const k = inkKey(doc.id, cycle, String(i)); if (ink.pages[k]?.strokes.length) ink.snapshot(k, '전체 삭제 전'); } ink.clearPackage(`${doc.id}:${cycle}:`); toast('이 문서의 필기를 모두 제거했어요'); };
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
-  const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = cfg.tool !== 'hand';
+  const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = true; // hand tool: the canvas ignores drags (pan fails) but still receives taps for word lookup
   const scrollOK = !tzoomed && !pinching; // finger swipes turn pages; while pinching or zoomed in, the ZoomView owns the fingers
 
   const renderPage = (pi: number) => { if (pi < 0 || pi >= doc.pageCount) return <View key={'blank' + pi} style={{ width: sizeFor(0).w, height: sizeFor(0).h }} />; const { s, w, h } = sizeFor(pi); const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff', borderRadius: 2, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: 'hidden' }}>
       <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} renderScale={layout === 'continuous' ? 1 : renderScale} template={doc.template} />
-      <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
+      <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
         onDoubleTap={prefs.doubleTapZoomEnabled && cfg.tool === 'hand' && layout === 'continuous' ? () => setZoom((z) => (z > 1 ? 1 : 2)) : undefined} historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
@@ -146,6 +150,7 @@ export default function Viewer() {
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
         </View>
       </View>
+      {lookup && <WordLookup text={lookup.text} anchor={lookup.abs} onClose={() => setLookup(null)} onLookup={(q) => setLookup((l) => l && { ...l, text: q })} onHighlight={() => { const k = lookup.k; const add = lookup.rects.map((r) => ({ id: Math.random().toString(36).slice(2, 10), tool: 'highlighter' as Tool, color: '#FDE68A', width: r.h * 0.95, opacity: 0.45, points: [{ x: r.x, y: r.y + r.h / 2 }, { x: r.x + r.w, y: r.y + r.h / 2 }], createdAt: Date.now() })); ink.setStrokes(k, [...(ink.pages[k]?.strokes ?? []), ...add]); setLookup(null); toast('형광펜으로 표시했어요'); }} />}
       {subDoc && <SubDocWindow mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
       <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: 'rgba(255,255,255,0.72)', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />

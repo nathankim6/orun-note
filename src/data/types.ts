@@ -1,5 +1,5 @@
 export type Rect = { x: number; y: number; w: number; h: number };
-export type Tool = 'pen' | 'pencil' | 'highlighter' | 'fountain' | 'brush' | 'eraser' | 'vectorEraser' | 'lasso' | 'shape' | 'text' | 'laser' | 'hand' | 'image';
+export type Tool = 'pen' | 'pencil' | 'highlighter' | 'fountain' | 'brush' | 'eraser' | 'vectorEraser' | 'lasso' | 'shape' | 'text' | 'laser' | 'hand' | 'image' | 'select';
 export type ShapeKind = 'line' | 'rectangle' | 'ellipse' | 'triangle' | 'diamond' | 'arrow';
 export type Point = { x: number; y: number; p?: number };
 export type Stroke = { id: string; tool: Tool; color: string; width: number; opacity: number; points: Point[]; shape?: ShapeKind; createdAt: number };

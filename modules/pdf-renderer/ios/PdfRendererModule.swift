@@ -120,6 +120,26 @@ public class PdfRendererModule: Module {
       try self.queue.sync { () throws -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
     }
 
+    /// Words on a page with rectangles normalized to the displayed page (0..1, top-left origin) for tap-to-define.
+    AsyncFunction("getWords") { (uri: String, index: Int) throws -> [[String: Any]] in
+      try self.queue.sync { () throws -> [[String: Any]] in
+      let doc = try self.document(uri)
+      guard let page = doc.page(at: index), let text = page.string, !text.isEmpty else { return [] }
+      let box = page.bounds(for: .mediaBox); let rot = ((page.rotation % 360) + 360) % 360
+      var out: [[String: Any]] = []
+      let ns = text as NSString
+      ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byWords, .localized]) { sub, range, _, _ in
+        guard let w = sub, w.rangeOfCharacter(from: .letters) != nil, let sel = page.selection(for: range) else { return }
+        let b = sel.bounds(for: page); if b.isEmpty || b.width <= 0 { return }
+        var nx = (b.minX - box.minX) / box.width, ny = 1 - (b.maxY - box.minY) / box.height, nw = b.width / box.width, nh = b.height / box.height
+        if rot == 90 { (nx, ny, nw, nh) = (1 - ny - nh, nx, nh, nw) } else if rot == 180 { (nx, ny) = (1 - nx - nw, 1 - ny - nh) } else if rot == 270 { (nx, ny, nw, nh) = (ny, 1 - nx - nw, nh, nw) }
+        out.append(["t": w, "x": Double(nx), "y": Double(ny), "w": Double(nw), "h": Double(nh)])
+        if out.count > 4000 { return }
+      }
+      return out
+      }
+    }
+
     AsyncFunction("getOutline") { (uri: String) throws -> [[String: Any]] in
       try self.queue.sync { () throws -> [[String: Any]] in
       let doc = try self.document(uri); var out: [[String: Any]] = []

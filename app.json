@@ -64,7 +64,8 @@
           "name": "옳은Note"
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": false

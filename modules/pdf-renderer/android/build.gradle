@@ -13,3 +13,8 @@ android {
     versionName '1.0.0'
   }
 }
+
+dependencies {
+  // Text layer (word positions) for tap-to-define and search; PdfRenderer only rasterizes.
+  implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+}

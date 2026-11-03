@@ -36,6 +36,37 @@ async function hwRoster() {
   return { schools, grades, students: students.map(shapeStudent) };
 }
 
+// ---- dictionary (English → IPA, pronunciation audio, English definitions, Korean meanings) ----
+// Sources follow the approach used by open-source lookup popups (Relper, Lexigo, Quick-Dictionary): the Free Dictionary
+// API (dictionaryapi.dev) for English definitions, the Naver En-Ko dictionary for Korean meanings/IPA/recordings, MyMemory for phrases.
+async function lookup(raw: string) {
+  const q = raw.replace(/[\u2018\u2019]/g, "'").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
+  if (!q) return null;
+  const { data: hit } = await supa.from("dict_cache").select("data").eq("q", q).maybeSingle(); if (hit && (hit.data?.korean?.main || !hit.data?.isWord)) return hit.data;
+  const isWord = !q.includes(" ");
+  const strip = (h: string) => String(h ?? "").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim();
+  const tryDict = async (w: string) => { const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(w)}`).catch(() => null); return r && r.ok ? r.json() : null; };
+  const lemmas = (w: string) => { const c = [w]; if (w.endsWith("ies")) c.push(w.slice(0, -3) + "y"); if (w.endsWith("es")) c.push(w.slice(0, -2)); if (w.endsWith("s")) c.push(w.slice(0, -1)); if (w.endsWith("ied")) c.push(w.slice(0, -3) + "y"); if (w.endsWith("ed")) { c.push(w.slice(0, -2), w.slice(0, -1)); if (/(.)\1ed$/.test(w)) c.push(w.slice(0, -3)); } if (w.endsWith("ing")) { c.push(w.slice(0, -3), w.slice(0, -3) + "e"); if (/(.)\1ing$/.test(w)) c.push(w.slice(0, -4)); } if (w.endsWith("ly")) c.push(w.slice(0, -2)); if (w.endsWith("er")) c.push(w.slice(0, -2), w.slice(0, -1)); if (w.endsWith("est")) c.push(w.slice(0, -3)); return [...new Set(c)].filter((x) => x.length > 1); };
+  let entries: any = null; let headword = q;
+  if (isWord) { for (const w of lemmas(q)) { entries = await tryDict(w); if (entries) { headword = w; break; } } }
+  const posKo: Record<string, string> = { noun: "명사", verb: "동사", adjective: "형용사", adverb: "부사", pronoun: "대명사", preposition: "전치사", conjunction: "접속사", interjection: "감탄사", article: "관사", abbreviation: "약어", prefix: "접두사", suffix: "접미사", "auxiliary verb": "조동사" };
+  const phon = { text: "", us: "", uk: "", audioUs: "", audioUk: "" };
+  // Korean meanings + IPA + US/UK recordings from the Naver English-Korean dictionary (public JSON used by its web UI).
+  const naver = async (w: string) => { const r = await fetch(`https://en.dict.naver.com/api3/enko/search?query=${encodeURIComponent(w)}&m=pc&range=word&page=1&lang=ko&shouldSearchOpen=false`, { headers: { Referer: "https://en.dict.naver.com/", "User-Agent": "Mozilla/5.0" } }).catch(() => null); if (!r || !r.ok) return null; const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? []; return items.find((x: any) => strip(x.expEntry).toLowerCase() === w) ?? items.find((x: any) => strip(x.expEntry).toLowerCase() === headword) ?? items[0] ?? null; };
+  const nv = isWord ? ((await naver(q)) ?? (headword !== q ? await naver(headword) : null)) : null;
+  const byPos: { pos: string; terms: string[] }[] = [];
+  for (const mc of nv?.meansCollector ?? []) { const terms = (mc.means ?? []).map((m: any) => strip(m.value)).filter(Boolean).slice(0, 4); if (terms.length) byPos.push({ pos: strip(mc.partOfSpeech) || "", terms }); }
+  for (const sym of nv?.searchPhoneticSymbolList ?? []) { const code = String(sym.symbolTypeCode ?? ""); const v = sym.symbolValue ? `/${sym.symbolValue}/` : ""; if (code.includes("US")) { phon.us ||= v; phon.audioUs ||= sym.symbolFile ?? ""; } if (code.includes("GB")) { phon.uk ||= v; phon.audioUk ||= sym.symbolFile ?? ""; } if (!phon.text && v) phon.text = v; }
+  for (const e of entries ?? []) { phon.text ||= e.phonetic ?? ""; for (const p of e.phonetics ?? []) { const a = String(p.audio ?? ""); const t = p.text ?? ""; if (/-us\.mp3$/.test(a)) { phon.audioUs ||= a; phon.us ||= t; } else if (/-uk\.mp3$/.test(a)) { phon.audioUk ||= a; phon.uk ||= t; } else if (a) { phon.audioUs ||= a; } if (!phon.text && t) phon.text = t; } }
+  const meanings: { pos: string; posKo: string; defs: { def: string; ex?: string }[]; synonyms: string[] }[] = [];
+  for (const e of entries ?? []) for (const m of e.meanings ?? []) { const ex = meanings.find((x) => x.pos === m.partOfSpeech); const defs = (m.definitions ?? []).slice(0, 3).map((d: any) => ({ def: d.definition, ex: d.example })); if (ex) { ex.defs.push(...defs); ex.defs = ex.defs.slice(0, 4); } else meanings.push({ pos: m.partOfSpeech, posKo: posKo[m.partOfSpeech] ?? m.partOfSpeech, defs, synonyms: (m.synonyms ?? []).slice(0, 5) }); }
+  let main = byPos[0]?.terms[0] ?? "";
+  if (!main) { const mm = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|ko`).then((r) => r.ok ? r.json() : null).catch(() => null); main = strip(mm?.responseData?.translatedText ?? ""); }
+  const data = { q, headword, isWord, phonetic: phon, korean: { main, byPos }, meanings: meanings.slice(0, 4), source: [nv ? "naver" : "", entries ? "dictionaryapi.dev" : "", !nv ? "mymemory" : ""].filter(Boolean).join("+") };
+  if (main || meanings.length) supa.from("dict_cache").upsert({ q, data }).then(() => {});
+  return data;
+}
+
 // ---- identity ----
 type Who = { role: "admin"; email?: string; label: string } | { role: "student"; email: string; student: HwStudent; label: string };
 async function emailFromToken(token: string): Promise<{ email: string; uid: string } | null> {
@@ -68,6 +99,7 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return fail("POST only", 405);
   let body: any; try { body = await req.json(); } catch { return fail("invalid json"); }
   const action = String(body.action ?? "");
+  if (action === "dict") { try { const d = await lookup(String(body.q ?? "")); return d ? json({ ok: true, ...d }) : fail("단어를 찾을 수 없어요", 404); } catch (e) { return fail((e as Error).message, 500); } }
   try {
     const r = await resolve(body); const who = r.who;
     supa.from("access_log").insert({ code: (who?.role === "student" ? who.student.code : who?.role === "admin" ? "admin" : (r.authed?.email ?? "-")).slice(0, 40), action, ok: !!who }).then(() => {});
