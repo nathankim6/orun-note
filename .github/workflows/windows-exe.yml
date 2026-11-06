@@ -2,6 +2,8 @@ name: Windows installer (exe)
 on:
   push: { branches: [main], paths: ['app/**', 'src/**', 'desktop/**', 'modules/pdf-renderer/src/**', 'package.json', 'package-lock.json', 'app.json', '.github/workflows/windows-exe.yml'] }
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   win:
     runs-on: windows-latest
@@ -21,3 +23,11 @@ jobs:
           npx electron-builder --win nsis --x64 --publish never
       - uses: actions/upload-artifact@v4
         with: { name: orun-note-windows-installer, path: desktop/release/*.exe, retention-days: 30 }
+      - name: Publish to GitHub Release
+        shell: bash
+        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        run: |
+          VER=$(node -p "require('./desktop/package.json').version")
+          TAG="v${VER}-windows"
+          NOTES="옳은Note Windows 10/11 (64비트) 설치 파일입니다. 서명되지 않은 설치 파일이라 SmartScreen 경고가 뜨면 '추가 정보' → '실행'을 누르세요."
+          gh release create "$TAG" desktop/release/*.exe --title "옳은Note ${VER} (Windows)" --notes "$NOTES" || gh release upload "$TAG" desktop/release/*.exe --clobber
