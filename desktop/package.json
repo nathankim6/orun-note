@@ -1,20 +1,51 @@
 {
   "name": "orun-note-desktop",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "옳은Note for Windows",
   "author": "ORUN ACADEMY",
   "main": "main.js",
   "private": true,
-  "scripts": { "dist": "electron-builder --win nsis --x64 --publish never" },
-  "devDependencies": { "electron": "^33.2.0", "electron-builder": "^25.1.8" },
+  "scripts": {
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
   "build": {
     "appId": "com.orun.note.desktop",
     "productName": "옳은Note",
     "artifactName": "OrunNote-Setup-${version}.${ext}",
-    "directories": { "output": "release", "buildResources": "build" },
-    "files": ["main.js", "app/**/*", "package.json"],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "app/**/*",
+      "package.json"
+    ],
     "asar": true,
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "build/icon.ico" },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "옳은Note", "installerIcon": "build/icon.ico", "uninstallerIcon": "build/icon.ico" }
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "옳은Note",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    }
   }
 }

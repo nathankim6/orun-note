@@ -7,6 +7,7 @@ import { Button, Muted, Row, T } from '@/components/ui';
 import { Glass, GlassBackground } from '@/components/Glass';
 import { OrunLogo } from '@/components/OrunLogo';
 import { useSession } from '@/store/session';
+import { normalizeStudentCode } from '@/utils/codeInput';
 
 /**
  * Entry: Google sign-in. First time, the student also enters the 옳은영어 숙제 student code to bind this Google account.
@@ -48,7 +49,7 @@ export default function Gate() {
                   <Muted style={{ marginTop: 6 }}>숙제 시스템(orunhomework.com)에서 받은 5자리 학생 코드예요. 한 번만 입력하면 이 Google 계정으로 계속 로그인됩니다.</Muted>
                   <View style={{ marginTop: 18, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 16, borderWidth: 1.5, borderColor: err ? colors.danger : '#E3E8F0', paddingHorizontal: 14 }}>
                     <Ionicons name="key-outline" size={20} color={colors.textMuted} />
-                    <TextInput value={studentCode} onChangeText={(t) => setStudentCode(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))} autoCapitalize="characters" autoCorrect={false} placeholder="예) AGMYE" placeholderTextColor={colors.textFaint} style={{ flex: 1, paddingVertical: 14, paddingHorizontal: 10, fontSize: 22, letterSpacing: 4, fontWeight: '700', color: colors.text }} onSubmitEditing={link} />
+                    <TextInput value={studentCode} onChangeText={(t) => setStudentCode(normalizeStudentCode(t))} autoCapitalize="characters" autoCorrect={false} autoComplete="off" spellCheck={false} keyboardType={Platform.OS === 'ios' ? 'ascii-capable' : Platform.OS === 'android' ? 'visible-password' : 'default'} placeholder="예) AGMYE" placeholderTextColor={colors.textFaint} style={{ flex: 1, paddingVertical: 14, paddingHorizontal: 10, fontSize: 22, letterSpacing: 4, fontWeight: '700', color: colors.text }} onSubmitEditing={link} />
                   </View>
                   <Button title={busy ? '확인 중...' : '연결하고 시작'} onPress={link} loading={busy} disabled={studentCode.length < 3} style={{ marginTop: 14 }} />
                 </>)}
