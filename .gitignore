@@ -14,3 +14,6 @@ web-build/
 npm-debug.*
 *.tsbuildinfo
 expo-env.d.ts
+desktop/app
+desktop/release
+desktop/node_modules

@@ -1,0 +1,23 @@
+name: Windows installer (exe)
+on:
+  push: { branches: [main], paths: ['app/**', 'src/**', 'desktop/**', 'modules/pdf-renderer/src/**', 'package.json', 'package-lock.json', 'app.json', '.github/workflows/windows-exe.yml'] }
+  workflow_dispatch:
+jobs:
+  win:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Export web app
+        run: npx expo export --platform web --output-dir desktop/app
+      - name: Build installer
+        working-directory: desktop
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --win nsis --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with: { name: orun-note-windows-installer, path: desktop/release/*.exe, retention-days: 30 }
