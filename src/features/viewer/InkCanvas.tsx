@@ -34,7 +34,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const [selText, setSelText] = useState<string[]>([]); const [selImg, setSelImg] = useState<string[]>([]); const [dragOff, setDragOff] = useState<{ x: number; y: number } | null>(null);
   const [textSel, setTextSel] = useState<PdfWord[]>([]); const [marquee, setMarquee] = useState<{ a: Point; b: Point } | null>(null);
   const selMode = useRef<'move' | 'resize' | 'text' | 'marquee' | 'lasso' | null>(null); const selStart = useRef<Point>({ x: 0, y: 0 });
-  const [dragScale, setDragScale] = useState<{ f: number; ox: number; oy: number } | null>(null); const resizeBase = useRef({ x: 0, y: 0, w: 1, h: 1 }); const [pasteAt, setPasteAt] = useState<Point | null>(null);
+  const [dragScale, setDragScaleState] = useState<{ f: number; ox: number; oy: number } | null>(null); const dragScaleRef = useRef<{ f: number; ox: number; oy: number } | null>(null);
+  const setDragScale = (v: { f: number; ox: number; oy: number } | null) => { dragScaleRef.current = v; setDragScaleState(v); };
+  const lassoRef = useRef<Point[]>([]); const marqueeRef = useRef<{ a: Point; b: Point } | null>(null); const resizeBase = useRef({ x: 0, y: 0, w: 1, h: 1 }); const [pasteAt, setPasteAt] = useState<Point | null>(null);
   const imagesRef = useRef(images); imagesRef.current = images;
   const pageW = width / s, pageH = height / s;
   const tbRect = (tb: TextBox) => { const lines = Math.max(1, (tb.text || ' ').split('\n').length); const longest = Math.max(4, ...(tb.text || '    ').split('\n').map((l) => l.length)); return { x: tb.rect.x, y: tb.rect.y, w: Math.max(tb.rect.w * 0.4, longest * tb.size * 0.6) + 8, h: lines * tb.size * 1.35 + 8 }; };
@@ -100,19 +102,19 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
         const hasSel = selection.length || selText.length || selImg.length; const sb = combinedBounds();
         if (hasSel && sb && dist(p, { x: sb.x + sb.w + 6 / s, y: sb.y + sb.h + 6 / s }) < 18 / s) { selMode.current = 'resize'; resizeBase.current = { x: sb.x - 6 / s, y: sb.y - 6 / s, w: sb.w + 12 / s, h: sb.h + 12 / s }; return; }
         if (hasSel && sb && inRect(p, sb, 10 / s)) { selMode.current = 'move'; return; }
-        if (cfg.tool === 'lasso') { clearSel(); if (opts.lassoMode === 'rect') { selMode.current = 'marquee'; setMarquee({ a: p, b: p }); } else { selMode.current = 'lasso'; setLasso([p]); } return; }
+        if (cfg.tool === 'lasso') { clearSel(); if (opts.lassoMode === 'rect') { selMode.current = 'marquee'; marqueeRef.current = { a: p, b: p }; setMarquee({ a: p, b: p }); } else { selMode.current = 'lasso'; lassoRef.current = [p]; setLasso([p]); } return; }
         const img = [...imagesRef.current].reverse().find((im) => inRect(p, im.rect)); if (img) { setSelection([]); setSelText([]); setSelImg([img.id]); selMode.current = 'move'; return; }
         const tb = [...textRef.current].reverse().find((t) => inRect(p, tbRect(t), 4 / s)); if (tb) { setSelection([]); setSelImg([]); setSelText([tb.id]); selMode.current = 'move'; return; }
         const hit = strokesHit(strokesRef.current, p, 10 / s); if (hit.length) { setSelText([]); setSelImg([]); setSelection([hit[hit.length - 1]]); selMode.current = 'move'; return; }
-        clearSel(); selMode.current = words?.length && wordAt(words, p.x / pageW, p.y / pageH) ? 'text' : 'marquee'; if (selMode.current === 'marquee') setMarquee({ a: p, b: p }); return; } if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') { erasing.current = true; eraseBefore.current = strokesRef.current; } if (cfg.tool === 'laser') setLaser([p]); else setLive([p]); 
+        clearSel(); selMode.current = words?.length && wordAt(words, p.x / pageW, p.y / pageH) ? 'text' : 'marquee'; if (selMode.current === 'marquee') { marqueeRef.current = { a: p, b: p }; setMarquee({ a: p, b: p }); } return; } if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') { erasing.current = true; eraseBefore.current = strokesRef.current; } if (cfg.tool === 'laser') setLaser([p]); else setLive([p]); 
   };
   const moveTo = (e: PseudoEvt) => { const p = toPageP(e); const pointerOk = allowPointer(e.pointerType); if (!pointerOk) return; liveRef.current.push(p);
       if (cfg.tool === 'select' || cfg.tool === 'lasso') { const a = selStart.current;
         if (selMode.current === 'move') setDragOff({ x: p.x - a.x, y: p.y - a.y });
         else if (selMode.current === 'resize') { const b0 = resizeBase.current; setDragScale({ f: Math.max(0.15, ((p.x - b0.x) + (p.y - b0.y)) / Math.max(1e-3, b0.w + b0.h)), ox: b0.x, oy: b0.y }); }
         else if (selMode.current === 'text') setTextSel(wordsBetween(words ?? null, { x: a.x / pageW, y: a.y / pageH }, { x: p.x / pageW, y: p.y / pageH }));
-        else if (selMode.current === 'lasso') setLasso((l) => [...l, p]);
-        else setMarquee({ a, b: p }); return; }
+        else if (selMode.current === 'lasso') { lassoRef.current = [...lassoRef.current, p]; setLasso(lassoRef.current); }
+        else { marqueeRef.current = { a, b: p }; setMarquee(marqueeRef.current); } return; }
       if (cfg.tool === 'eraser') { const prev = liveRef.current.length > 1 ? liveRef.current[liveRef.current.length - 2] : undefined; const hit = strokesHit(eraseCands(), p, eraserR, prev); if (hit.length) onStrokes(strokesRef.current.filter((st) => !hit.includes(st.id))); setLive([p]); return; }
       if (cfg.tool === 'vectorEraser') { const prev = liveRef.current.length > 1 ? liveRef.current[liveRef.current.length - 2] : undefined; let next = strokesRef.current; const n = prev ? Math.ceil(dist(prev, p) / Math.max(2, eraserR / 2)) : 1; for (let i = 1; i <= n; i++) { const q = prev ? { x: prev.x + ((p.x - prev.x) * i) / n, y: prev.y + ((p.y - prev.y) * i) / n } : p; next = eraseVector(next, q, eraserR, uid, opts.eraseHighlighterOnly ? (st) => st.tool === 'highlighter' : undefined); } if (next !== strokesRef.current) onStrokes(next); setLive([p]); return; }
       if (cfg.tool === 'laser') { setLaser((l) => [...l.slice(-25), p]); return; }
@@ -127,15 +129,15 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const endAt = (e: PseudoEvt) => { clearDwell(); if (rejected.current) { liveRef.current = []; setLive([]); return; } const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType);
       if (cfg.tool === 'select' || cfg.tool === 'lasso') { const end = toPage(e.x, e.y); const a = selStart.current; const moved = dist(a, end) > 4 / s; const abs = { x: (e as any).absoluteX ?? e.x, y: (e as any).absoluteY ?? e.y };
         if (selMode.current === 'move') { if (moved) applyMove(end.x - a.x, end.y - a.y); else if (cfg.tool === 'select') lookupAt(end, abs); setDragOff(null); }
-        else if (selMode.current === 'resize') { if (dragScale) applyScale(dragScale.f, dragScale.ox, dragScale.oy); setDragScale(null); }
-        else if (selMode.current === 'lasso') { const poly = [...lasso, end]; setLasso([]); if (moved && poly.length > 3) selectWhere((q) => pointInPolygon(q, poly)); else setPasteAt(end); }
+        else if (selMode.current === 'resize') { const ds = dragScaleRef.current; if (ds) applyScale(ds.f, ds.ox, ds.oy); setDragScale(null); }
+        else if (selMode.current === 'lasso') { const poly = [...lassoRef.current, end]; lassoRef.current = []; setLasso([]); const span = poly.length > 1 ? Math.max(...poly.map((q) => dist(poly[0], q))) : 0; if (poly.length > 3 && span > 8 / s) selectWhere((q) => pointInPolygon(q, poly)); else setPasteAt(end); }
         else if (selMode.current === 'text') { const ws = moved ? wordsBetween(words ?? null, { x: a.x / pageW, y: a.y / pageH }, { x: end.x / pageW, y: end.y / pageH }) : []; if (!moved) lookupAt(end, abs); else if (ws.length && onLookup) { setTextSel(ws); onLookup(ws.map((w) => w.t).join(' ').replace(/\s+([,.;:!?])/g, '$1').replace(/^[^A-Za-z]+|[^A-Za-z.!?]+$/g, ''), abs, ws.map((w) => ({ x: w.x * pageW, y: w.y * pageH, w: w.w * pageW, h: w.h * pageH }))); } }
-        else { const m = marquee; setMarquee(null); if (m && moved) { const r = { x: Math.min(m.a.x, end.x), y: Math.min(m.a.y, end.y), w: Math.abs(end.x - m.a.x), h: Math.abs(end.y - m.a.y) }; selectWhere((q) => inRect(q, r)); } else if (cfg.tool === 'lasso') setPasteAt(end); else lookupAt(end, abs); }
+        else { const m = marqueeRef.current; marqueeRef.current = null; setMarquee(null); if (m && moved) { const r = { x: Math.min(m.a.x, end.x), y: Math.min(m.a.y, end.y), w: Math.abs(end.x - m.a.x), h: Math.abs(end.y - m.a.y) }; selectWhere((q) => inRect(q, r)); } else if (cfg.tool === 'lasso') setPasteAt(end); else lookupAt(end, abs); }
         selMode.current = null; liveRef.current = []; setLive([]); return; } if (erasing.current) { erasing.current = false; if (eraseBefore.current && eraseBefore.current !== strokesRef.current) { undoStack.current.push({ strokes: eraseBefore.current, textBoxes: textRef.current }); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); } eraseBefore.current = null; const isTap = pts.length > 0 && Date.now() - startT.current < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s; if (isTap) { const hit = strokesHit(eraseCands(), pts[0], eraserR); if (hit.length) commit(strokesRef.current.filter((st) => !hit.includes(st.id))); else onTap?.(pts[0]); } }
       else finish(pts, pointerOk);
       setLive([]); liveRef.current = []; if (cfg.tool === 'laser') setTimeout(() => setLaser([]), 600); 
   };
-  const abortStroke = () => { clearDwell(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; if (activeType.current === PointerType.STYLUS) penSession.value = { ...penSession.value, writing: false, at: Date.now() }; };
+  const abortStroke = () => { clearDwell(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; };
   const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(10).averageTouches(false).runOnJS(true).manualActivation(true)
     .onTouchesDown((e, sm) => {
       if (cfg.tool === 'hand') { rejected.current = true; sm.fail(); return; }
@@ -143,13 +145,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       const t = e.changedTouches[e.changedTouches.length - 1]; if (!t) return;
       if (!allowPointer(e.pointerType)) { rejected.current = true; return; } // finger: never draws; let the document scroll/zoom (that cancels us)
       rejected.current = false; activeId.current = t.id; activeType.current = e.pointerType; pressureRef.current = undefined;
-      if (e.pointerType === PointerType.STYLUS) penSession.value = { ...penSession.value, writing: true, at: Date.now() };
+      penSession.value = { ...penSession.value, writing: true, byPen: e.pointerType === PointerType.STYLUS, at: Date.now() };
       sm.activate(); beginAt(pseudo(t));
     })
     .onTouchesMove((e) => { if (activeId.current == null) return; const t = e.allTouches.find((x) => x.id === activeId.current); if (t) moveTo(pseudo(t)); })
     .onTouchesUp((e, sm) => {
       if (activeId.current == null) return; const t = e.changedTouches.find((x) => x.id === activeId.current); if (!t) return;
-      activeId.current = null; if (activeType.current === PointerType.STYLUS) penSession.value = { ...penSession.value, writing: false, at: Date.now() };
+      activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at };
       endAt(pseudo(t));
       const remaining = e.allTouches.filter((a) => !e.changedTouches.some((c) => c.id === a.id)); if (!remaining.length) sm.end();
     })

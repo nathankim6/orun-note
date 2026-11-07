@@ -134,7 +134,9 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
   // ---------- gestures ----------
   /** Palm rejection: true while the pen hovers / writes / was just lifted — finger & palm contacts are then ignored. */
-  const penBusy = () => { 'worklet'; const ps = penSession.value; const now = Date.now(); return ps.writing || now - ps.at < PALM_WINDOW_MS || now - ps.hoverAt < PALM_WINDOW_MS; };
+  const penBusy = () => { 'worklet'; const ps = penSession.value; const now = Date.now(); return (ps.writing && ps.byPen) || now - ps.at < PALM_WINDOW_MS || now - ps.hoverAt < PALM_WINDOW_MS; };
+  /** The ink layer owns a stroke right now (pen or mouse): the page must not move under it. */
+  const inkOwns = () => { 'worklet'; return penSession.value.writing; };
   const snapPaged = (vx: number) => {
     'worklet';
     const cell = clamp(Math.round((-tx.value - vx * 0.18) / W), 0, Math.max(0, L.cells - 1));
@@ -145,10 +147,11 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const doubleTapJS = useCallback((x: number, y: number) => { setTimeout(() => { if (Date.now() - lastLookupAt < 600) return; zoomJS(z.value < 1.6 ? 2.5 : 1, x, y); }, 70); }, [zoomJS]);
   const gesture = useMemo(() => {
     const pan = Gesture.Pan().minDistance(4).maxPointers(1)
-      .onTouchesDown((e, st) => { const pt = e.pointerType; if (pt === PointerType.STYLUS || (pt === PointerType.MOUSE && !mousePans) || pinching.value || (pt === PointerType.TOUCH && penBusy())) st.fail(); })
+      .onTouchesDown((e, st) => { const pt = e.pointerType; if (pt === PointerType.STYLUS || (pt === PointerType.MOUSE && !mousePans) || pinching.value || inkOwns() || (pt === PointerType.TOUCH && penBusy())) st.fail(); })
+      .onTouchesMove((_e, st) => { if (inkOwns()) st.fail(); })
       .onStart(() => { cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value; })
       .onUpdate((e) => {
-        if (pinching.value) return; const b = bounds(z.value);
+        if (pinching.value || inkOwns()) return; const b = bounds(z.value);
         tx.value = rubber(sTx.value + e.translationX, b.minX, b.maxX);
         const rawY = sTy.value + e.translationY; ty.value = rubber(rawY, b.minY, b.maxY);
         if (canPull) { const over = b.minY - rawY; const st = over > 150 ? 2 : over > 40 ? 1 : 0; if (st !== pullStage.value) { pullStage.value = st; runOnJS(pullJS)(st); } }
@@ -162,9 +165,10 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.997, clamp: [b.minY, b.maxY], rubberBandEffect: true, rubberBandFactor: 0.7 });
       });
     const pinch = Gesture.Pinch()
-      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penBusy()) st.fail(); })
+      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penBusy() || inkOwns()) st.fail(); })
       .onStart((e) => { pinching.value = true; cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(z); sZ.value = z.value; sTx.value = tx.value; sTy.value = ty.value; sFx.value = e.focalX; sFy.value = e.focalY; })
       .onUpdate((e) => {
+        if (inkOwns()) return;
         let nz = sZ.value * e.scale;
         if (nz > MAX_Z) nz = MAX_Z + (nz - MAX_Z) * 0.25; if (nz < minZ) nz = minZ - (minZ - nz) * 0.25;
         // the content point that was under the fingers stays under the fingers (and follows them when they move)
@@ -179,7 +183,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
       })
       .onFinalize(() => { pinching.value = false; });
     const dbl = Gesture.Tap().numberOfTaps(2).maxDelay(300).maxDistance(30).enabled(doubleTapZoom)
-      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || e.numberOfTouches > 1 || penBusy()) st.fail(); })
+      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || e.numberOfTouches > 1 || penBusy() || inkOwns()) st.fail(); })
       .onEnd((e) => { runOnJS(doubleTapJS)(e.x, e.y); });
     // pen hovering above the screen (S Pen / Apple Pencil hover) arms palm rejection before the tip touches down
     const hover = Gesture.Hover().onBegin((e) => { if (e.pointerType === PointerType.STYLUS) penSession.value = { ...penSession.value, hoverAt: Date.now() }; }).onUpdate((e) => { if (e.pointerType === PointerType.STYLUS) penSession.value = { ...penSession.value, hoverAt: Date.now() }; });

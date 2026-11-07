@@ -53,7 +53,7 @@ export function eraseVector(strokes: Stroke[], p: Point, radius: number, mk: () 
   return out;
 }
 export function pointInPolygon(p: Point, poly: Point[]) { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; const intersect = yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi + 1e-9) + xi; if (intersect) inside = !inside; } return inside; }
-export function snapLine(points: Point[]): Point[] | null { if (points.length < 8) return null; const a = points[0], b = points[points.length - 1]; const L = dist(a, b); if (L < 40) return null; const maxDev = Math.max(...points.map((p) => Math.abs((b.y - a.y) * p.x - (b.x - a.x) * p.y + b.x * a.y - b.y * a.x) / L)); return maxDev < Math.max(3, L * 0.03) ? [a, b] : null; }
+export function snapLine(points: Point[]): Point[] | null { if (points.length < 8) return null; const a = points[0], b = points[points.length - 1]; const L = dist(a, b); if (L < 40) return null; const maxDev = Math.max(...points.map((p) => Math.abs((b.y - a.y) * p.x - (b.x - a.x) * p.y + b.x * a.y - b.y * a.x) / L)); return maxDev < Math.max(2, L * 0.012) ? [a, b] : null; }
 export function boundsOf(points: Point[]) { const xs = points.map((p) => p.x), ys = points.map((p) => p.y); return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }; }
 
 /**
