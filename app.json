@@ -21,7 +21,10 @@
         "CFBundleDisplayName": "옳은Note",
         "ITSAppUsesNonExemptEncryption": false,
         "UIFileSharingEnabled": false,
-        "LSSupportsOpeningDocumentsInPlace": false
+        "LSSupportsOpeningDocumentsInPlace": false,
+        "NSMicrophoneUsageDescription": "홈워크(숙제)의 녹음 과제를 제출할 때 마이크를 사용합니다.",
+        "NSCameraUsageDescription": "홈워크에서 숙제 사진을 찍어 제출하거나 필기에 사진을 넣을 때 카메라를 사용합니다.",
+        "NSPhotoLibraryUsageDescription": "필기에 사진을 넣거나 홈워크에 사진을 제출할 때 사진 보관함을 사용합니다."
       }
     },
     "android": {
@@ -31,7 +34,11 @@
         "backgroundColor": "#EAF2FC"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": [],
+      "permissions": [
+        "RECORD_AUDIO",
+        "CAMERA",
+        "MODIFY_AUDIO_SETTINGS"
+      ],
       "allowBackup": false
     },
     "web": {
@@ -65,7 +72,15 @@
         }
       ],
       "expo-web-browser",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "필기에 사진을 넣거나 홈워크에 사진을 제출할 때 사진 보관함을 사용합니다.",
+          "cameraPermission": "홈워크에서 숙제 사진을 찍어 제출할 때 카메라를 사용합니다.",
+          "microphonePermission": "홈워크(숙제)의 녹음 과제를 제출할 때 마이크를 사용합니다."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false

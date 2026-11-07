@@ -45,10 +45,8 @@ export const type = {
 };
 
 export function useTheme() {
-  const scheme = useColorScheme();
-  const pref = useSettingsStore((s) => s.theme);
-  const dark = pref === 'dark' || (pref === 'system' && scheme === 'dark');
-  return { colors: dark ? darkColors : lightColors, dark, spacing, radius, type };
+  // Light theme only (system/dark modes removed by request).
+  return { colors: lightColors, dark: false, spacing, radius, type };
 }
 
 export function useLayout() {

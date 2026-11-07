@@ -29,9 +29,6 @@ export default function Settings() {
           <ListItem icon={session.role === 'admin' ? 'shield-checkmark-outline' : 'person-circle-outline'} title={session.role === 'admin' ? '관리자 모드' : `${session.label || '학생'}${session.student ? ` · ${session.student.school_name} ${session.student.grade_name}` : ''}`} subtitle={`${session.email ?? (session.adminCode ? '관리자 코드로 입장' : '-')}${session.student ? ` · 학생 코드 ${session.student.code}` : ''}${session.verifiedAt ? ' · 확인 ' + fmtDate(session.verifiedAt, { time: true }) : ''}`} />
           <ListItem icon="log-out-outline" title="로그아웃" subtitle="받아둔 교재와 필기는 기기에 남지만 다시 로그인해야 열 수 있어요. Google 계정 변경은 관리자 승인이 필요해요" onPress={() => setConfirmOut(true)} />
         </Card>
-        <SectionHeader title="테마" />
-        <Row>{([['system', '시스템 설정'], ['light', '라이트'], ['dark', '다크']] as const).map(([k, l]) => <Chip key={k} label={l} active={s.theme === k} onPress={() => s.setTheme(k)} />)}</Row>
-        <Muted variant="caption" style={{ marginTop: 6 }}>시스템 설정을 선택하면 기기의 다크 모드 설정을 따릅니다.</Muted>
         <SectionHeader title="보기 옵션 (뷰어 기본값)" />
         <Card>
           <Muted variant="label">기본 레이아웃</Muted>

@@ -1,3 +1,4 @@
+import { getStroke } from 'perfect-freehand';
 import { Point, ShapeKind, Stroke, Tool } from '@/data/types';
 
 export const PEN_COLORS = ['#1B1B1F', '#D64545', '#3B6FD6', '#2E9E5B', '#7C5CBF'];
@@ -39,10 +40,11 @@ export const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 export function distToSegment(p: Point, a: Point, b: Point) { const dx = b.x - a.x, dy = b.y - a.y; const l2 = dx * dx + dy * dy; if (l2 === 0) return dist(p, a); let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)); }
 export function strokeHitsPoint(st: Stroke, p: Point, radius: number) { const r = radius + st.width / 2; if (st.shape) { const [a, b] = [st.points[0], st.points[1] ?? st.points[0]]; const bx = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; if (st.shape === 'line' || st.shape === 'arrow') return distToSegment(p, a, b) <= r; const inside = p.x >= bx.x - r && p.x <= bx.x + bx.w + r && p.y >= bx.y - r && p.y <= bx.y + bx.h + r; const inner = p.x > bx.x + r && p.x < bx.x + bx.w - r && p.y > bx.y + r && p.y < bx.y + bx.h - r; return inside && !inner; } if (st.points.length === 1) return dist(p, st.points[0]) <= r; for (let i = 1; i < st.points.length; i++) if (distToSegment(p, st.points[i - 1], st.points[i]) <= r) return true; return false; }
 export function strokesHit(strokes: Stroke[], p: Point, radius: number, prev?: Point) { const samples: Point[] = [p]; if (prev) { const n = Math.ceil(dist(prev, p) / Math.max(2, radius)); for (let i = 1; i < n; i++) samples.push({ x: prev.x + ((p.x - prev.x) * i) / n, y: prev.y + ((p.y - prev.y) * i) / n }); } return strokes.filter((st) => samples.some((q) => strokeHitsPoint(st, q, radius))).map((st) => st.id); }
-export function eraseVector(strokes: Stroke[], p: Point, radius: number, mk: () => string): Stroke[] {
+export function eraseVector(strokes: Stroke[], p: Point, radius: number, mk: () => string, only?: (st: Stroke) => boolean): Stroke[] {
   const out: Stroke[] = [];
   for (const st of strokes) {
-    if (st.shape || st.tool === 'text') { if (!strokeHitsPoint(st, p, radius)) out.push(st); continue; }
+    if (only && !only(st)) { out.push(st); continue; }
+    if (st.shape || st.poly || st.tool === 'text') { if (!strokeHitsPoint(st, p, radius)) out.push(st); continue; }
     let cur: Point[] = []; let changed = false;
     const flush = () => { if (cur.length >= 2) out.push({ ...st, id: changed ? mk() : st.id, points: cur }); cur = []; };
     for (const q of st.points) { if (dist(p, q) <= radius + st.width / 2) { changed = true; flush(); } else cur.push(q); }
@@ -53,3 +55,62 @@ export function eraseVector(strokes: Stroke[], p: Point, radius: number, mk: () 
 export function pointInPolygon(p: Point, poly: Point[]) { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; const intersect = yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi + 1e-9) + xi; if (intersect) inside = !inside; } return inside; }
 export function snapLine(points: Point[]): Point[] | null { if (points.length < 8) return null; const a = points[0], b = points[points.length - 1]; const L = dist(a, b); if (L < 40) return null; const maxDev = Math.max(...points.map((p) => Math.abs((b.y - a.y) * p.x - (b.x - a.x) * p.y + b.x * a.y - b.y * a.x) / L)); return maxDev < Math.max(3, L * 0.03) ? [a, b] : null; }
 export function boundsOf(points: Point[]) { const xs = points.map((p) => p.x), ys = points.map((p) => p.y); return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }; }
+
+/**
+ * Samsung-Notes-like pen ink: a filled, variable-width outline (perfect-freehand).
+ * Uses real stylus pressure when present (Apple Pencil / S Pen), otherwise simulates it from speed.
+ * Returned path is in PDF page units; render with `scale={s}`. Cached per points array (immutable per stroke).
+ */
+const outlineCache = new WeakMap<Point[], string>();
+export function penOutline(points: Point[], width: number, live = false, fixed = false): string {
+  if (!live) { const hit = outlineCache.get(points); if (hit) return hit; }
+  const hasPressure = !fixed && points.some((q) => typeof q.p === 'number' && q.p > 0);
+  const input = points.map((q) => [q.x, q.y, hasPressure ? Math.max(0.05, q.p ?? 0.5) : 0.5]);
+  const out = getStroke(input, { size: width * (fixed ? 1.05 : 1.35), thinning: fixed ? 0 : hasPressure ? 0.62 : 0.38, smoothing: 0.62, streamline: live ? 0.32 : 0.42, simulatePressure: !hasPressure && !fixed, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+  let d = '';
+  if (out.length > 2) {
+    d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;
+    for (let i = 0; i < out.length; i++) { const [x0, y0] = out[i]; const [x1, y1] = out[(i + 1) % out.length]; d += ` ${x0.toFixed(2)} ${y0.toFixed(2)} ${((x0 + x1) / 2).toFixed(2)} ${((y0 + y1) / 2).toFixed(2)}`; }
+    d += ' Z';
+  } else if (points.length) { const q = points[0]; const r = width * 0.6; d = `M ${q.x - r} ${q.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`; }
+  if (!live) outlineCache.set(points, d);
+  return d;
+}
+export const isInkPen = (tool: string) => tool === 'pen' || tool === 'pencil' || tool === 'fountain' || tool === 'brush';
+
+/** Polyline path (no smoothing) for auto-corrected polygons and straight highlighter strokes. */
+export function polyPath(points: Point[], s: number, closed = false) { if (!points.length) return ''; let d = `M ${points[0].x * s} ${points[0].y * s}`; for (let i = 1; i < points.length; i++) d += ` L ${points[i].x * s} ${points[i].y * s}`; return closed ? d + ' Z' : d; }
+
+/** Ramer–Douglas–Peucker simplification. */
+function rdp(pts: Point[], eps: number): Point[] {
+  if (pts.length < 3) return pts.slice(); const a = pts[0], b = pts[pts.length - 1]; let idx = 0, dmax = 0;
+  for (let i = 1; i < pts.length - 1; i++) { const d = distToSegment(pts[i], a, b); if (d > dmax) { dmax = d; idx = i; } }
+  if (dmax <= eps) return [a, b]; return [...rdp(pts.slice(0, idx + 1), eps).slice(0, -1), ...rdp(pts.slice(idx), eps)];
+}
+/**
+ * 도형 자동 보정 (Samsung Notes "neat shape"): turns a rough closed figure into a clean ellipse, rectangle,
+ * triangle or polygon. Only large closed strokes qualify, so ordinary handwriting (o, 0, D…) is left alone.
+ */
+export type NeatShape = { kind: 'ellipse' | 'rectangle'; a: Point; b: Point } | { kind: 'poly'; points: Point[] };
+export function recognizeShape(pts: Point[], minSize = 36): NeatShape | null {
+  if (pts.length < 12) return null;
+  const bx = boundsOf(pts); const diag = Math.hypot(bx.w, bx.h); if (Math.max(bx.w, bx.h) < minSize) return null;
+  let len = 0; for (let i = 1; i < pts.length; i++) len += dist(pts[i - 1], pts[i]);
+  const gap = dist(pts[0], pts[pts.length - 1]); if (gap > Math.max(diag * 0.22, len * 0.1)) return null; // must be (nearly) closed
+  // ellipse test: normalized radius variance around the bbox centre
+  const cx = bx.x + bx.w / 2, cy = bx.y + bx.h / 2, rx = Math.max(1, bx.w / 2), ry = Math.max(1, bx.h / 2);
+  const rr = pts.map((q) => Math.hypot((q.x - cx) / rx, (q.y - cy) / ry)); const mean = rr.reduce((a, b) => a + b, 0) / rr.length; const sd = Math.sqrt(rr.reduce((a, b) => a + (b - mean) ** 2, 0) / rr.length);
+  const closedPts = [...pts, pts[0]]; let poly = rdp(closedPts, diag * 0.07); if (poly.length > 1 && dist(poly[0], poly[poly.length - 1]) < diag * 0.12) poly = poly.slice(0, -1);
+  // merge near-collinear vertices
+  const corners = poly.filter((q, i) => { const p0 = poly[(i - 1 + poly.length) % poly.length], p2 = poly[(i + 1) % poly.length]; const a1 = Math.atan2(q.y - p0.y, q.x - p0.x), a2 = Math.atan2(p2.y - q.y, p2.x - q.x); let d = Math.abs(a2 - a1); if (d > Math.PI) d = 2 * Math.PI - d; return d > 0.45; });
+  if (corners.length >= 3 && corners.length <= 4 && sd > 0.07) {
+    if (corners.length === 4) {
+      // axis-aligned rectangle when edges are near horizontal/vertical
+      const axis = corners.every((q, i) => { const n = corners[(i + 1) % 4]; const ang = Math.abs(Math.atan2(n.y - q.y, n.x - q.x)) % (Math.PI / 2); return ang < 0.2 || ang > Math.PI / 2 - 0.2; });
+      if (axis) return { kind: 'rectangle', a: { x: bx.x, y: bx.y }, b: { x: bx.x + bx.w, y: bx.y + bx.h } };
+    }
+    return { kind: 'poly', points: corners };
+  }
+  if (sd < 0.11 && mean > 0.75 && mean < 1.15) return { kind: 'ellipse', a: { x: bx.x, y: bx.y }, b: { x: bx.x + bx.w, y: bx.y + bx.h } };
+  return null;
+}

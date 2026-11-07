@@ -15,6 +15,7 @@ export default function TabsLayout() {
       sceneStyle: { backgroundColor: colors.bg },
     } as any}>
       <Tabs.Screen name="index" options={{ title: '내 교재', tabBarIcon: icon('library-outline', 'library') }} />
+      <Tabs.Screen name="homework" options={{ title: '홈워크', tabBarIcon: icon('school-outline', 'school') }} />
       <Tabs.Screen name="admin" options={{ title: '관리자', tabBarIcon: icon('shield-outline', 'shield'), href: role === 'admin' ? undefined : null }} />
       <Tabs.Screen name="settings" options={{ title: '설정', tabBarIcon: icon('settings-outline', 'settings') }} />
     </Tabs>

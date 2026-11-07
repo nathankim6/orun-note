@@ -12,7 +12,7 @@ import { useInkStore } from '@/store/ink';
 import { useSession } from '@/store/session';
 import { pickAndImportPdf, deleteDocFiles, resolveUri, downloadMaterial, createBlankDoc } from '@/lib/files';
 import { OrunLogo } from '@/components/OrunLogo';
-import { PdfPage } from '@/features/viewer/PdfPage';
+import { PdfPage, BlankPaper } from '@/features/viewer/PdfPage';
 import { fmtBytes, timeAgo } from '@/utils/format';
 import { Doc } from '@/data/types';
 import { Material } from '@/lib/api';
@@ -105,7 +105,7 @@ export default function Library() {
       <Sheet visible={newPage} onClose={() => setNewPage(false)} title="새페이지 (자유 필기 노트)" height={420}>
         <Input label="이름" value={newTitle} onChangeText={setNewTitle} />
         <Muted variant="caption" style={{ marginBottom: 8 }}>종이 종류를 고르면 3페이지로 시작하고, 보기 화면 하단 + 버튼으로 페이지를 더 넣을 수 있어요.</Muted>
-        <Row style={{ flexWrap: 'wrap' }}>{([['plain', '무지'], ['lined', '줄'], ['grid', '모눈'], ['dot', '점']] as const).map(([k, l]) => <Pressable key={k} onPress={() => { const d = createBlankDoc(newTitle.trim() || '새 노트', k, 3); setNewPage(false); showToast(`'${d.title}' 만들었어요`); openTab(d.id); router.push(`/viewer/${d.id}`); }} style={{ width: 96, alignItems: 'center', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: '#fff' }}><View style={{ width: 56, height: 72, borderRadius: 4, borderWidth: 1, borderColor: '#E3E8F0', backgroundColor: '#fff', overflow: 'hidden' }}>{k !== 'plain' && Array.from({ length: 6 }, (_, i) => <View key={i} style={{ position: 'absolute', left: 0, right: 0, top: (i + 1) * 10, height: 1, backgroundColor: 'rgba(47,111,237,0.3)' }} />)}{k === 'grid' && Array.from({ length: 5 }, (_, i) => <View key={'v' + i} style={{ position: 'absolute', top: 0, bottom: 0, left: (i + 1) * 10, width: 1, backgroundColor: 'rgba(47,111,237,0.3)' }} />)}</View><T variant="label" style={{ marginTop: 6 }}>{l}</T></Pressable>)}</Row>
+        <Row style={{ flexWrap: 'wrap' }}>{([['plain', '빈 페이지'], ['lined', '줄'], ['narrowLined', '좁은 줄'], ['wideLined', '넓은 줄'], ['grid', '격자'], ['narrowGrid', '좁은 격자'], ['dot', '점'], ['oxford', '옥스퍼드'], ['music', '음악']] as const).map(([k, l]) => <Pressable key={k} onPress={() => { const d = createBlankDoc(newTitle.trim() || '새 노트', k, 3); setNewPage(false); showToast(`'${d.title}' 만들었어요`); openTab(d.id); router.push(`/viewer/${d.id}`); }} style={{ width: 96, alignItems: 'center', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: '#fff' }}><View style={{ width: 56, height: 72, borderRadius: 4, borderWidth: 1, borderColor: '#E3E8F0', backgroundColor: '#fff', overflow: 'hidden' }}><BlankPaper width={56} height={72} template={k} /></View><T variant="label" style={{ marginTop: 6 }}>{l}</T></Pressable>)}</Row>
       </Sheet>
       <Sheet visible={folderSheet} onClose={() => setFolderSheet(false)} title={selected.length ? '폴더로 이동' : '폴더'}>
         {folders.map((f) => <ListItem key={f.id} icon="folder" title={f.name} onPress={() => { if (selected.length) { moveToFolder(selected, f.id); setSelected([]); setSelect(false); showToast(`${f.name}(으)로 이동했어요`); } setFolderSheet(false); }} />)}

@@ -140,6 +140,14 @@ Deno.serve(async (req) => {
 
     switch (action) {
       case "verify": return json({ ok: true, role: who.role, label: who.label });
+      // 홈워크 tab: the exact login entry orunhomework.com keeps in localStorage ("homework_auth_session") for the linked student code
+      case "homework.session": {
+        if (who.role !== "student") return json({ ok: true, session: null });
+        const codes = await hw(`access_codes?select=id,code,name,is_admin,role,is_active&code=eq.${encodeURIComponent(who.student.code)}&limit=1`);
+        const ac = codes[0]; if (!ac || !ac.is_active) return fail("숙제 시스템 학생 코드가 비활성화되었습니다", 403);
+        const st = (await hw(`students?select=${encodeURIComponent("id,grade:grade_id(name,school:school_id(name))")}&access_code_id=eq.${ac.id}&limit=1`))[0];
+        return json({ ok: true, session: { code: ac.code, name: ac.name, isAdmin: !!ac.is_admin, role: ac.role, accessCodeId: ac.id, studentId: st?.id, schoolName: st?.grade?.school?.name, gradeName: st?.grade?.name } });
+      }
       case "list": {
         if (who.role === "admin") { const { data } = await supa.from("materials").select("*").order("created_at", { ascending: false }); return json({ ok: true, materials: await withCovers(data ?? []) }); }
         return json({ ok: true, materials: await withCovers(await materialsFor(who.student)), student: who.student });
