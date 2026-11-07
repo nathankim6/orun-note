@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Pressable, ActivityIndicator, BackHandler, Linking, Platform } from 'react-native';
+import { View, Text, Pressable, ActivityIndicator, BackHandler, Linking, Platform, StyleSheet } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
 // The package's TS types resolve to an incompatible class signature with this RN version; runtime is fine.
 const WebView: any = RNWebView;
@@ -24,11 +24,11 @@ export function HomeworkView({ session }: { session: HwSession | null }) {
   }, [canBack]));
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ height: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, gap: 4, backgroundColor: 'rgba(255,255,255,0.85)', borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' }}>
-        <Pressable accessibilityLabel="뒤로" disabled={!canBack} onPress={() => ref.current?.goBack()} style={{ padding: 8, opacity: canBack ? 1 : 0.3 }}><Ionicons name="chevron-back" size={20} color={colors.text} /></Pressable>
-        <Pressable accessibilityLabel="새로고침" onPress={() => { setErr(null); ref.current?.reload(); }} style={{ padding: 8 }}><Ionicons name="refresh" size={19} color={colors.text} /></Pressable>
-        <Pressable accessibilityLabel="홈워크 처음 화면" onPress={() => { setErr(null); setKey((k) => k + 1); }} style={{ padding: 8 }}><Ionicons name="home-outline" size={19} color={colors.text} /></Pressable>
-        <Text numberOfLines={1} style={{ flex: 1, fontWeight: '700', color: colors.text, marginLeft: 4 }}>홈워크{session ? ` · ${session.name}${session.schoolName ? ` (${session.schoolName} ${session.gradeName ?? ''})` : ''}` : ''}</Text>
+      <View style={{ height: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, gap: 4, backgroundColor: 'rgba(249,249,249,0.97)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(60,60,67,0.29)' }}>
+        <Pressable accessibilityLabel="뒤로" disabled={!canBack} onPress={() => ref.current?.goBack()} style={{ padding: 8, opacity: canBack ? 1 : 0.3 }}><Ionicons name="chevron-back" size={24} color={colors.primary} /></Pressable>
+        <Pressable accessibilityLabel="새로고침" onPress={() => { setErr(null); ref.current?.reload(); }} style={{ padding: 8 }}><Ionicons name="refresh" size={21} color={colors.primary} /></Pressable>
+        <Pressable accessibilityLabel="홈워크 처음 화면" onPress={() => { setErr(null); setKey((k) => k + 1); }} style={{ padding: 8 }}><Ionicons name="home-outline" size={21} color={colors.primary} /></Pressable>
+        <Text numberOfLines={1} style={{ flex: 1, fontWeight: '600', fontSize: 17, textAlign: 'center', color: colors.text, marginLeft: 4 }}>홈워크{session ? ` · ${session.name}${session.schoolName ? ` (${session.schoolName} ${session.gradeName ?? ''})` : ''}` : ''}</Text>
         {loading && <ActivityIndicator size="small" color={colors.primary} />}
       </View>
       {err ? (

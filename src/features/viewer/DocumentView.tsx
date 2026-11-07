@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, Platform, StyleSheet } from 'react-native';
+import { View, Text, Platform, StyleSheet, PixelRatio } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDecay, runOnJS, cancelAnimation, useAnimatedReaction, Easing } from 'react-native-reanimated';
 import { lastLookupAt } from './InkCanvas';
@@ -16,11 +16,14 @@ import { penSession, PALM_WINDOW_MS } from './penSession';
  * Web: wheel scrolls, Ctrl/⌘+wheel (and trackpad pinch) zooms at the cursor, PageUp/PageDown/arrows turn pages.
  */
 export type DocMode = 'vertical' | 'horizontal' | 'twoPage';
+/** A sharp re-render of the on-screen part of a zoomed page: region (x,y,w,h) in device pixels of a page rendered pxW wide; n* = same region normalized 0..1. */
+export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
 export type PageBox = { x: number; y: number; w: number; h: number; s: number }; // content coords at zoom 1; s = PDF pt → px at zoom 1
 export type DocHandle = { goto: (i: number, animated?: boolean) => void; zoomTo: (z: number, fx?: number, fy?: number) => void; zoomBy: (f: number) => void; fit: () => void; fitPage: () => void; getZoom: () => number };
 type Props = {
   width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number;
-  renderPage: (i: number, box: PageBox, rs: number) => React.ReactNode;
+  renderPage: (i: number, box: PageBox, rs: number, tile?: PageTile) => React.ReactNode;
+  /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox) => void;
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
   /** 캔버스 고정: no zoom / pan while locked */ locked?: boolean;
   /** notebooks: keep pulling past the last page to add one (Samsung Notes) */ onPullAddPage?: () => void;
@@ -52,7 +55,7 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage }, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch }, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
@@ -77,7 +80,26 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   // ---------- JS-side callbacks ----------
   const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
   const badgeJS = useCallback((zz: number) => badge.current?.show(`${Math.round(zz * 100)}%`), []);
-  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => (r[0] === a && r[1] === b ? r : [a, b])); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange]);
+  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; if (onPrefetch) for (let i = Math.max(0, a - 2); i <= Math.min(L.boxes.length - 1, b + 3); i++) if (i < a || i > b) onPrefetch(i, L.boxes[i]); return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange, onPrefetch, L]);
+
+  const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const tileTimer = useRef<any>(null); const rangeRef = useRef(range); rangeRef.current = range;
+  const computeTiles = useCallback(() => {
+    const zz = z.value, x0 = tx.value, y0 = ty.value; const dpr = Math.min(3, PixelRatio.get());
+    if (zz < 1.25) { setTiles((t) => (Object.keys(t).length ? {} : t)); return; }
+    const out: Record<number, PageTile> = {}; const [ra, rb] = rangeRef.current;
+    for (let i = Math.max(0, ra); i <= rb && i < L.boxes.length; i++) {
+      const bx = L.boxes[i]; const sx = x0 + bx.x * zz, sy = y0 + bx.y * zz, sw = bx.w * zz, sh = bx.h * zz;
+      const ix0 = Math.max(0, sx), iy0 = Math.max(0, sy), ix1 = Math.min(W, sx + sw), iy1 = Math.min(H, sy + sh);
+      if (ix1 - ix0 < 8 || iy1 - iy0 < 8) continue;
+      const pxW = Math.round(sw * dpr), pxH = Math.round(sh * dpr);
+      const x = Math.max(0, Math.floor((ix0 - sx) * dpr)), y = Math.max(0, Math.floor((iy0 - sy) * dpr)); const w = Math.min(pxW - x, Math.ceil((ix1 - ix0) * dpr)), h = Math.min(pxH - y, Math.ceil((iy1 - iy0) * dpr));
+      out[i] = { pxW, x, y, w, h, nx: x / pxW, ny: y / pxH, nw: w / pxW, nh: h / pxH };
+    }
+    setTiles(out);
+  }, [L, W, H]);
+  const kickTiles = useCallback(() => { clearTimeout(tileTimer.current); tileTimer.current = setTimeout(computeTiles, 260); }, [computeTiles]);
+  useAnimatedReaction(() => (z.value < 1.25 ? -1 : Math.round(tx.value / 48) * 7919 + Math.round(ty.value / 48) * 31 + Math.round(z.value * 50)), (k, prev) => { if (k !== prev) runOnJS(kickTiles)(); }, [kickTiles]);
+  useEffect(() => () => clearTimeout(tileTimer.current), []);
 
   // visible pages + current page, recomputed on the UI thread whenever the transform moves
   const boxes = L.boxes;
@@ -134,9 +156,15 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
   // ---------- gestures ----------
   /** Palm rejection: true while the pen hovers / writes / was just lifted — finger & palm contacts are then ignored. */
-  const penBusy = () => { 'worklet'; const ps = penSession.value; const now = Date.now(); return (ps.writing && ps.byPen) || now - ps.at < PALM_WINDOW_MS || now - ps.hoverAt < PALM_WINDOW_MS; };
-  /** The ink layer owns a stroke right now (pen or mouse): the page must not move under it. */
-  const inkOwns = () => { 'worklet'; return penSession.value.writing; };
+  const penBusy = () => { 'worklet'; const ps = penSession.value; const now = Date.now(); return (ps.writing && ps.byPen && now - ps.since < 20000) || now - ps.at < PALM_WINDOW_MS || now - ps.hoverAt < PALM_WINDOW_MS; };
+  /** The ink layer owns a stroke right now (pen or mouse): the page must not move under it. Stale (>20 s) flags are ignored. */
+  const inkOwns = () => { 'worklet'; const ps = penSession.value; return ps.writing && Date.now() - ps.since < 20000; };
+  /** A pen stroke is in progress (two-finger pinch is still allowed while the pen merely hovers). */
+  const penWriting = () => { 'worklet'; const ps = penSession.value; return ps.writing && ps.byPen && Date.now() - ps.since < 20000; };
+  /** Single-finger palm guard: pen writing or lifted < 450 ms ago (hover alone only raises the drag threshold). */
+  const palmBusy = () => { 'worklet'; const ps = penSession.value; return penWriting() || Date.now() - ps.at < 450; };
+  const hoverRecent = () => { 'worklet'; return Date.now() - penSession.value.hoverAt < PALM_WINDOW_MS; };
+  const panStartX = useSharedValue(0); const panStartY = useSharedValue(0); const panThresh = useSharedValue(8); const panAxis = useSharedValue(0); // 0 free · 1 horizontal only · 2 vertical only
   const snapPaged = (vx: number) => {
     'worklet';
     const cell = clamp(Math.round((-tx.value - vx * 0.18) / W), 0, Math.max(0, L.cells - 1));
@@ -146,29 +174,62 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const thumbActive = useSharedValue(0); const thumbGesture = useRef<any>(null);
   const doubleTapJS = useCallback((x: number, y: number) => { setTimeout(() => { if (Date.now() - lastLookupAt < 600) return; zoomJS(z.value < 1.6 ? 2.5 : 1, x, y); }, 70); }, [zoomJS]);
   const gesture = useMemo(() => {
-    const pan = Gesture.Pan().minDistance(4).maxPointers(1)
-      .onTouchesDown((e, st) => { const pt = e.pointerType; if (pt === PointerType.STYLUS || (pt === PointerType.MOUSE && !mousePans) || pinching.value || inkOwns() || (pt === PointerType.TOUCH && penBusy())) st.fail(); })
-      .onTouchesMove((_e, st) => { if (inkOwns()) st.fail(); })
-      .onStart(() => { cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value; })
+    const pan = Gesture.Pan().manualActivation(true).maxPointers(1)
+      .onTouchesDown((e, st) => {
+        const pt = e.pointerType;
+        if (pt === PointerType.STYLUS || (pt === PointerType.MOUSE && !mousePans) || pinching.value || inkOwns() || (pt === PointerType.TOUCH && palmBusy())) { st.fail(); return; }
+        const t0 = e.allTouches[0]; panStartX.value = t0 ? t0.absoluteX : 0; panStartY.value = t0 ? t0.absoluteY : 0;
+        panThresh.value = pt === PointerType.MOUSE ? 2 : hoverRecent() ? 26 : 8; // a resting palm while the pen hovers barely moves; a real swipe does
+      })
+      .onTouchesMove((e, st) => {
+        if (inkOwns() || pinching.value) { st.fail(); return; }
+        const t0 = e.allTouches[0]; if (!t0) return; const dx = t0.absoluteX - panStartX.value, dy = t0.absoluteY - panStartY.value;
+        if (dx * dx + dy * dy > panThresh.value * panThresh.value) st.activate();
+      })
+      .onStart((e) => {
+        cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value;
+        const b = bounds(z.value);
+        panAxis.value = mode === 'vertical' && b.maxX - b.minX < 2 ? 2 : -1;                     // page fits the width: never wobble sideways; otherwise decide on the first movement
+      })
       .onUpdate((e) => {
         if (pinching.value || inkOwns()) return; const b = bounds(z.value);
-        tx.value = rubber(sTx.value + e.translationX, b.minX, b.maxX);
-        const rawY = sTy.value + e.translationY; ty.value = rubber(rawY, b.minY, b.maxY);
-        if (canPull) { const over = b.minY - rawY; const st = over > 150 ? 2 : over > 40 ? 1 : 0; if (st !== pullStage.value) { pullStage.value = st; runOnJS(pullJS)(st); } }
+        if (panAxis.value === -1) {
+          const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY); if (ax + ay < 6) return;
+          if (mode !== 'vertical' && z.value <= 1.01) panAxis.value = ay > ax ? 2 : 1;            // paged: a swipe is either a left/right or an up/down page turn
+          else panAxis.value = ay > ax * 1.25 ? 2 : ax > ay * 1.25 ? 1 : 0;                       // zoomed in: lock to the dominant direction
+        }
+        if (mode !== 'vertical' && z.value <= 1.01 && panAxis.value === 2) { ty.value = sTy.value + e.translationY * 0.3; return; } // light feedback; the page turns on release
+        if (panAxis.value !== 2) tx.value = rubber(sTx.value + e.translationX, b.minX, b.maxX);
+        if (panAxis.value !== 1) {
+          const rawY = sTy.value + e.translationY; ty.value = rubber(rawY, b.minY, b.maxY);
+          if (canPull) { const over = b.minY - rawY; const st = over > 150 ? 2 : over > 40 ? 1 : 0; if (st !== pullStage.value) { pullStage.value = st; runOnJS(pullJS)(st); } }
+        }
       })
       .onEnd((e) => {
         if (pinching.value) return; const b = bounds(z.value);
         if (canPull && pullStage.value === 2) { pullStage.value = 0; runOnJS(pullJS)(0); runOnJS(addPageJS)(); ty.value = withTiming(b.minY, { duration: 220 }); return; }
         if (pullStage.value) { pullStage.value = 0; runOnJS(pullJS)(0); }
-        if (mode !== 'vertical' && z.value <= 1.01) { snapPaged(e.velocityX); return; }
-        tx.value = withDecay({ velocity: e.velocityX, deceleration: 0.997, clamp: [b.minX, b.maxX], rubberBandEffect: true, rubberBandFactor: 0.7 });
-        ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.997, clamp: [b.minY, b.maxY], rubberBandEffect: true, rubberBandFactor: 0.7 });
+        if (panAxis.value === -1) panAxis.value = 0;
+        if (mode !== 'vertical' && z.value <= 1.01) {
+          if (panAxis.value === 2) { // up = next page, down = previous page
+            const cell0 = clamp(Math.round(-sTx.value / W), 0, Math.max(0, L.cells - 1));
+            const go = Math.abs(e.translationY) > 48 || Math.abs(e.velocityY) > 500 ? (e.translationY < 0 ? 1 : -1) : 0;
+            const cell = clamp(cell0 + go, 0, Math.max(0, L.cells - 1)); const b1 = bounds(1);
+            tx.value = withTiming(-cell * W, { duration: 260, easing: Easing.out(Easing.cubic) }); ty.value = withTiming((b1.minY + b1.maxY) / 2, { duration: 220 });
+            return;
+          }
+          snapPaged(e.velocityX); return;
+        }
+        if (panAxis.value !== 2) tx.value = withDecay({ velocity: e.velocityX, deceleration: 0.997, clamp: [b.minX, b.maxX], rubberBandEffect: true, rubberBandFactor: 0.7 });
+        else if (tx.value < b.minX || tx.value > b.maxX) tx.value = withTiming(clamp(tx.value, b.minX, b.maxX), { duration: 160 });
+        if (panAxis.value !== 1) ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.997, clamp: [b.minY, b.maxY], rubberBandEffect: true, rubberBandFactor: 0.7 });
+        else if (ty.value < b.minY || ty.value > b.maxY) ty.value = withTiming(clamp(ty.value, b.minY, b.maxY), { duration: 160 });
       });
     const pinch = Gesture.Pinch()
-      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penBusy() || inkOwns()) st.fail(); })
+      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penWriting()) st.fail(); })
       .onStart((e) => { pinching.value = true; cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(z); sZ.value = z.value; sTx.value = tx.value; sTy.value = ty.value; sFx.value = e.focalX; sFy.value = e.focalY; })
       .onUpdate((e) => {
-        if (inkOwns()) return;
+        if (penWriting()) return;
         let nz = sZ.value * e.scale;
         if (nz > MAX_Z) nz = MAX_Z + (nz - MAX_Z) * 0.25; if (nz < minZ) nz = minZ - (minZ - nz) * 0.25;
         // the content point that was under the fingers stays under the fingers (and follows them when they move)
@@ -234,7 +295,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         <Animated.View style={[{ width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
             <View key={i} style={[styles.page, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>
-              {i >= a && i <= b ? <PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs)} /> : null}
+              {i >= a && i <= b ? <PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /> : null}
             </View>
           ))}
         </Animated.View>

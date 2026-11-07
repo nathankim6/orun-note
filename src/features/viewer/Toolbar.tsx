@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { View, Pressable, Text, ScrollView, StyleSheet, Image } from 'react-native';
-import Slider from '@react-native-community/slider';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Pressable, Text, ScrollView, StyleSheet, Image, useWindowDimensions } from 'react-native';
+import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '@/theme';
 import { Tool, ShapeKind } from '@/data/types';
@@ -9,19 +9,43 @@ import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
 import { hsvToHex, hexToHsv } from '@/components/ColorPicker';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
+import { ToolArt, ToolArtKind, ColorWheel } from './ToolArt';
 
 export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
   { k: 'system', label: '기본' }, { k: 'serif', label: '명조', family: 'serif' }, { k: 'mono', label: '고정폭', family: 'monospace' }, { k: 'rounded', label: '둥근', family: 'sans-serif-medium' },
 ];
 // Curated, hue-ordered palette: neutrals then each hue from deep to light, so picking a color is one tap.
 const PALETTE = ['#172033', '#475569', '#94A3B8', '#FFFFFF', '#B91C1C', '#EF4444', '#FCA5A5', '#C2410C', '#F97316', '#FDBA74', '#CA8A04', '#FACC15', '#FDE68A', '#15803D', '#22C55E', '#86EFAC', '#0E7490', '#06B6D4', '#1D4ED8', '#3B82F6', '#93C5FD', '#6D28D9', '#8B5CF6', '#C4B5FD', '#BE185D', '#EC4899', '#F9A8D4', '#78350F'];
+
+/**
+ * Drag-or-tap slider (replaces the native slider): works with a finger, Apple Pencil, S Pen and mouse, inside the
+ * horizontally scrolling option bar, and keeps tracking for the whole drag (the old one only reacted to taps).
+ */
+export function DragSlider({ value, min, max, step = 0, onChange, height = 32, width, fill = '#2F6FED', thumb = '#2F6FED', track }: { value: number; min: number; max: number; step?: number; onChange: (v: number) => void; height?: number; width?: number; fill?: string | null; thumb?: string; track?: React.ReactNode }) {
+  const [w, setW] = useState(0); const wRef = useRef(0); const cb = useRef(onChange); cb.current = onChange; const last = useRef<number | null>(null);
+  const PAD = 11;
+  const toVal = (x: number) => { const W = Math.max(1, wRef.current - PAD * 2); let v = min + Math.min(1, Math.max(0, (x - PAD) / W)) * (max - min); if (step) v = Math.round(v / step) * step; return Math.min(max, Math.max(min, v)); };
+  const emit = (x: number) => { const v = toVal(x); if (v !== last.current) { last.current = v; cb.current(v); } };
+  const g = useMemo(() => Gesture.Pan().minDistance(0).shouldCancelWhenOutside(false).hitSlop({ top: 10, bottom: 10, left: 6, right: 6 }).runOnJS(true)
+    .onBegin((e) => { last.current = null; emit(e.x); }).onUpdate((e) => emit(e.x)).onFinalize(() => { last.current = null; }), [min, max, step]);
+  const frac = max > min ? (Math.min(max, Math.max(min, value)) - min) / (max - min) : 0; const x = PAD + frac * Math.max(0, w - PAD * 2);
+  return (
+    <GestureDetector gesture={g}>
+      <View onLayout={(e) => { wRef.current = e.nativeEvent.layout.width; setW(e.nativeEvent.layout.width); }} style={{ height, justifyContent: 'center', width, flex: width ? undefined : 1 }} collapsable={false}>
+        {track ?? <View style={{ position: 'absolute', left: PAD, right: PAD, height: 6, borderRadius: 3, backgroundColor: 'rgba(0,0,0,0.12)' }} />}
+        {fill ? <View style={{ position: 'absolute', left: PAD, width: Math.max(0, x - PAD), height: 6, borderRadius: 3, backgroundColor: fill }} /> : null}
+        <View pointerEvents="none" style={{ position: 'absolute', left: x - 11, width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 3, borderColor: thumb, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 }} />
+      </View>
+    </GestureDetector>
+  );
+}
 /** Rainbow hue strip + brightness strip for fine tuning the current color (no numbers). */
 function HueRow({ color, onChange }: { color: string; onChange: (hex: string) => void }) {
   const hsv = hexToHsv(color); const hueHex = hsvToHex(hsv.h, 1, 1);
   return (
     <View style={{ width: 170, gap: 2 }}>
-      <View style={{ height: 22, justifyContent: 'center' }}><View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{['#FF0000', '#FF8000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#8000FF', '#FF00FF', '#FF0000'].map((c, i) => <View key={i} style={{ flex: 1, backgroundColor: c }} />)}</View><Slider style={{ height: 22 }} minimumValue={0} maximumValue={359} step={1} value={hsv.h} onValueChange={(h) => onChange(hsvToHex(h, Math.max(hsv.s, 0.6), Math.max(hsv.v, 0.75)))} minimumTrackTintColor="transparent" maximumTrackTintColor="transparent" thumbTintColor={hueHex} /></View>
-      <View style={{ height: 22, justifyContent: 'center' }}><View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{[0.15, 0.35, 0.55, 0.75, 0.95].map((v, i) => <View key={i} style={{ flex: 1, backgroundColor: hsvToHex(hsv.h, Math.max(hsv.s, 0.5), v) }} />)}</View><Slider style={{ height: 22 }} minimumValue={0.12} maximumValue={1} step={0.01} value={hsv.v} onValueChange={(v) => onChange(hsvToHex(hsv.h, hsv.s, v))} minimumTrackTintColor="transparent" maximumTrackTintColor="transparent" thumbTintColor={color} /></View>
+      <DragSlider height={22} min={0} max={359} step={1} value={hsv.h} onChange={(h) => onChange(hsvToHex(h, Math.max(hsv.s, 0.6), Math.max(hsv.v, 0.75)))} fill={null} thumb={hueHex} track={<View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{['#FF0000', '#FF8000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#8000FF', '#FF00FF', '#FF0000'].map((c, i) => <View key={i} style={{ flex: 1, backgroundColor: c }} />)}</View>} />
+      <DragSlider height={22} min={0.12} max={1} step={0.01} value={hsv.v} onChange={(v) => onChange(hsvToHex(hsv.h, hsv.s, v))} fill={null} thumb={color} track={<View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{[0.15, 0.35, 0.55, 0.75, 0.95].map((v, i) => <View key={i} style={{ flex: 1, backgroundColor: hsvToHex(hsv.h, Math.max(hsv.s, 0.5), v) }} />)}</View>} />
     </View>
   );
 }
@@ -29,22 +53,27 @@ const SHAPES: { k: ShapeKind; icon: any; label: string }[] = [{ k: 'line', icon:
 const RANGE: Record<string, { min: number; max: number }> = { pen: { min: 0.5, max: 12 }, highlighter: { min: 6, max: 40 }, eraser: { min: 2, max: 40 }, vectorEraser: { min: 2, max: 40 }, shape: { min: 0.5, max: 12 }, text: { min: 8, max: 48 } };
 
 type Panel = null | 'pen' | 'highlighter' | 'color' | 'shape' | 'eraser' | 'text' | 'snap' | 'lasso';
-type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void };
+type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
 
 /**
  * Main toolbar + a single compact option row right under it. Pen and highlighter are both top-level; tapping the
  * active tool again toggles its option row. Option rows preview live; 취소 restores the pre-open state, 적용 keeps it.
  */
-export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock }: Props) {
+export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
-  const settings = useSettingsStore(); const viewer = settings.viewer;
+  const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
+  useEffect(() => { if (dismissKey) setPanel(null); }, [dismissKey]);
+  useEffect(() => { onPanelChange?.(!!panel); }, [panel]);
   const snap = React.useRef<{ cfg: ToolConfig; viewer: typeof viewer } | null>(null);
-  const openPanel = (p: Panel) => { if (p && !panel) snap.current = { cfg: { ...cfg }, viewer: { ...viewer } }; setPanel(p); };
+  const openPanel = (p: Panel) => setPanel(p);
+  // 취소 restores exactly what was active when the card opened (also when it opened by picking another tool)
+  const prevPanel = React.useRef<Panel>(null);
+  useEffect(() => { if (panel && !prevPanel.current) snap.current = { cfg: { ...cfg }, viewer: { ...viewer } }; prevPanel.current = panel; }, [panel]);
   const cancelPanel = () => { if (snap.current) { (onCfgReplace ?? ((c: ToolConfig) => onCfg(c)))(snap.current.cfg); settings.setViewer(snap.current.viewer); } setPanel(null); };
   const applyPanel = () => setPanel(null);
   const isEraser = cfg.tool === 'eraser' || cfg.tool === 'vectorEraser';
   const toolPanel: Record<string, Panel> = { lasso: 'lasso', pen: 'pen', highlighter: 'highlighter', eraser: 'eraser', vectorEraser: 'eraser', shape: 'shape', text: 'text' };
-  const pick = (tool: Tool) => { if (cfg.tool === tool || (isEraser && (tool === 'eraser' || tool === 'vectorEraser'))) { const p = toolPanel[cfg.tool] ?? null; openPanel(panel === p ? null : p); return; } onCfg({ tool }); setPanel(null); };
+  const pick = (tool: Tool) => { if (cfg.tool === tool || (isEraser && (tool === 'eraser' || tool === 'vectorEraser'))) { const p = toolPanel[cfg.tool] ?? null; openPanel(panel === p ? null : p); return; } onCfg({ tool }); setPanel(toolPanel[tool] ?? null); };
   const quick = (viewer.favoriteColors ?? []).slice(0, 5);
   const setFav = (i: number, c: string) => { const next = [...(viewer.favoriteColors ?? [])]; next[i] = c; settings.setViewer({ favoriteColors: next }); };
   const range = RANGE[cfg.tool] ?? RANGE.pen;
@@ -55,64 +84,113 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const ic = (name: any, active?: boolean, lib?: 'mci', size = 20) => lib === 'mci' ? <MaterialCommunityIcons name={name} size={size} color={active ? '#fff' : colors.text} /> : <Ionicons name={name} size={size} color={active ? '#fff' : colors.text} />;
   const CI = (n: ColorIconName, ink?: string, d?: boolean) => <ColorIcon name={n} size={24} ink={ink} disabled={d} />;
   const previewDot = (max = 30) => { const d = Math.min(max, Math.max(2, cfg.width * (cfg.tool === 'highlighter' ? 0.8 : isEraser ? 1 : 2.2))); return <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', alignItems: 'center', justifyContent: 'center' }}><View style={{ width: d, height: d, borderRadius: 17, backgroundColor: isEraser ? 'rgba(0,0,0,0.08)' : cfg.color, borderWidth: isEraser ? 1.5 : 0, borderColor: colors.textMuted, opacity: cfg.tool === 'highlighter' ? 0.55 * cfg.opacity + 0.2 : cfg.opacity }} /></View>; };
-  const WidthSlider = () => <Row gap={8} style={{ flex: 1, minWidth: 180, maxWidth: 320 }}><MaterialCommunityIcons name="circle-small" size={16} color={colors.textFaint} /><Slider style={{ flex: 1, height: 32 }} minimumValue={range.min} maximumValue={range.max} step={0.5} value={Math.min(range.max, Math.max(range.min, cfg.width))} onValueChange={(v) => onCfg({ width: Math.round(v * 2) / 2 })} minimumTrackTintColor={colors.primary} maximumTrackTintColor="rgba(0,0,0,0.12)" thumbTintColor={colors.primary} /><MaterialCommunityIcons name="circle" size={16} color={colors.textFaint} />{previewDot()}</Row>;
-  const OpacitySlider = () => <Row gap={6} style={{ width: 150 }}><MaterialCommunityIcons name="circle-opacity" size={16} color={colors.textFaint} /><Slider style={{ flex: 1, height: 32 }} minimumValue={0.15} maximumValue={1} step={0.05} value={cfg.opacity} onValueChange={(v) => onCfg({ opacity: Math.round(v * 20) / 20 })} minimumTrackTintColor={colors.primary} maximumTrackTintColor="rgba(0,0,0,0.12)" thumbTintColor={colors.primary} /></Row>;
+  const widthSlider = (<Row gap={8} style={{ flex: 1, minWidth: 180, maxWidth: 320 }}><MaterialCommunityIcons name="circle-small" size={16} color={colors.textFaint} /><DragSlider min={range.min} max={range.max} step={0.5} value={Math.min(range.max, Math.max(range.min, cfg.width))} onChange={(v) => onCfg({ width: Math.round(v * 2) / 2 })} fill={colors.primary} thumb={colors.primary} /><MaterialCommunityIcons name="circle" size={16} color={colors.textFaint} />{previewDot()}</Row>);
+  const opacitySlider = (<Row gap={6} style={{ flex: 1, minWidth: 160, maxWidth: 320 }}><MaterialCommunityIcons name="circle-opacity" size={16} color={colors.textFaint} /><DragSlider min={0.15} max={1} step={0.05} value={cfg.opacity} onChange={(v) => onCfg({ opacity: Math.round(v * 20) / 20 })} fill={colors.primary} thumb={colors.primary} /></Row>);
   const Seg = ({ items, value, onChange }: { items: { k: string; label: string; icon?: any }[]; value: string; onChange: (k: string) => void }) => <View style={styles.seg}>{items.map((it) => <Pressable key={it.k} onPress={() => onChange(it.k)} style={[styles.segItem, value === it.k && { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } }]}>{it.icon && <MaterialCommunityIcons name={it.icon} size={14} color={value === it.k ? colors.primary : colors.textMuted} />}<Text style={{ fontSize: 12, fontWeight: '700', color: value === it.k ? colors.primary : colors.textMuted }}>{it.label}</Text></Pressable>)}</View>;
   const Footer = () => <Row gap={6} style={{ marginLeft: 'auto', paddingLeft: 10 }}><Pressable onPress={cancelPanel} style={styles.ghostBtn}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted }}>취소</Text></Pressable><Pressable onPress={applyPanel} style={[styles.ghostBtn, { backgroundColor: colors.primary }]}><Ionicons name="checkmark" size={14} color="#fff" /><Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>적용</Text></Pressable></Row>;
 
+  const toolBtn = (kind: ToolArtKind, label: string, active: boolean, onPress: () => void, color?: string) => (
+    <Pressable key={kind} accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress} hitSlop={{ top: 6, bottom: 0, left: 2, right: 2 }} style={styles.toolSlot}>
+      <View style={{ transform: [{ translateY: active ? 0 : 13 }] }}><ToolArt kind={kind} color={color} /></View>
+    </Pressable>
+  );
+  const penColor = cfg.tool === 'pen' ? cfg.color : viewer.toolPresets?.pen?.color ?? '#1C1C1E';
+  const hlColor = cfg.tool === 'highlighter' ? cfg.color : viewer.toolPresets?.highlighter?.color ?? '#FACC15';
+  const roundBtn = (label: string, icon: any, onPress?: () => void, disabled?: boolean) => <Pressable accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.roundBtn, pressed && { opacity: 0.55 }]}><Ionicons name={icon} size={18} color={disabled ? '#C7C7CC' : '#1C1C1E'} /></Pressable>;
+  const iconBtn = (label: string, name: any, lib: 'ion' | 'mci', active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.iconBtn, active && styles.iconBtnActive, pressed && { opacity: 0.55 }]}>{lib === 'mci' ? <MaterialCommunityIcons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} /> : <Ionicons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} />}</Pressable>;
+  const chip = (label: string, text: string, icon: any, active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && { opacity: 0.6 }]}><MaterialCommunityIcons name={icon} size={15} color={active ? '#007AFF' : '#3A3A3C'} />{winW >= 1100 ? <Text style={[styles.chipText, active && { color: '#007AFF' }]}>{text}</Text> : null}</Pressable>;
+  const favRow = (
+    <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Text style={styles.rowLbl}>즐겨찾기</Text>
+      {(viewer.favoritePens ?? []).map((f, i) => <Pressable key={i} accessibilityLabel={`즐겨찾는 펜 ${i + 1}`} onPress={() => { onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); if (f.tool === 'pen') settings.setViewer({ fixedWidth: !!f.fixed }); setPanel(f.tool as Panel); }} onLongPress={() => settings.setViewer({ favoritePens: (viewer.favoritePens ?? []).filter((_, j) => j !== i) })} style={[styles.fav, cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} /></Pressable>)}
+      {(viewer.favoritePens ?? []).length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...(viewer.favoritePens ?? []), { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? viewer.fixedWidth : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color="#8E8E93" /></Pressable>}
+    </View>
+  );
+  const toggleRow = (label: string, value: boolean, onChange: (v: boolean) => void) => <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined, flex: 1 }]}>{label}</Text><Toggle value={value} onChange={onChange} /></View>;
+  const sizeRow = (label: string) => <View style={styles.cardRow}><Text style={styles.rowLbl}>{label}</Text>{widthSlider}</View>;
+  const cardW = Math.min(560, winW - 24);
+
   return (
-    <View style={{ backgroundColor: 'rgba(255,255,255,0.78)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.9)' }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 6, height: 50, gap: 2, flexGrow: 1 }}>
-        <Pressable accessibilityLabel="뒤로가기" onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 6 }}>{CI('back')}<Image source={require('../../../assets/orun-mark.png')} style={{ width: 28, height: 28, borderRadius: 8 }} /></Pressable>
-        <View style={styles.sep} />
-        {!readOnly && <>
-          <Btn label="펜" active={cfg.tool === 'pen'} onPress={() => pick('pen')}>{CI('pen', cfg.tool === 'pen' ? cfg.color : viewer.toolPresets?.pen?.color)}</Btn>
-          <Btn label="형광펜" active={cfg.tool === 'highlighter'} onPress={() => pick('highlighter')}>{CI('highlighter', cfg.tool === 'highlighter' ? cfg.color : viewer.toolPresets?.highlighter?.color)}</Btn>
-          <Btn label="지우개" active={isEraser} onPress={() => pick(cfg.tool === 'vectorEraser' ? 'vectorEraser' : 'eraser')}>{CI('eraser')}</Btn>
-          <Btn label="선택" active={cfg.tool === 'select'} onPress={() => pick('select')}>{CI('select')}</Btn>
-          <Btn label="올가미" active={cfg.tool === 'lasso'} onPress={() => pick('lasso')}>{CI('lasso')}</Btn>
-          <Pressable accessibilityLabel="굵기" onPress={() => openPanel(panel === (toolPanel[cfg.tool] ?? 'pen') ? null : (toolPanel[cfg.tool] ?? 'pen'))} style={[styles.widthBtn, { borderColor: panel && panel !== 'color' ? colors.primary : 'rgba(0,0,0,0.1)' }]}><View style={{ width: dot, height: dot, borderRadius: dot, backgroundColor: isEraser ? colors.textFaint : cfg.color, opacity: cfg.tool === 'highlighter' ? 0.6 : 1 }} /></Pressable>
-          <View style={styles.sep} />
-          {quick.map((c, i) => <Pressable key={i} accessibilityLabel={`대표색 ${i + 1}`} onPress={() => { if (cfg.color === c) openPanel(panel === 'color' ? null : 'color'); else onCfg({ color: c }); }} onLongPress={() => setFav(i, cfg.color)} style={[styles.dot, { borderColor: cfg.color === c ? colors.primary : 'transparent' }]}><View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: c, borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' }} /></Pressable>)}
-          <Pressable accessibilityLabel="색상 선택" onPress={() => openPanel(panel === 'color' ? null : 'color')} style={[styles.dot, { borderColor: panel === 'color' ? colors.primary : 'transparent' }]}><View style={{ width: 18, height: 18, borderRadius: 9, overflow: 'hidden' }}><View style={{ flex: 1, flexDirection: 'row' }}><View style={{ flex: 1, backgroundColor: '#F43F5E' }} /><View style={{ flex: 1, backgroundColor: '#F59E0B' }} /></View><View style={{ flex: 1, flexDirection: 'row' }}><View style={{ flex: 1, backgroundColor: '#22C55E' }} /><View style={{ flex: 1, backgroundColor: '#2F6FED' }} /></View></View></Pressable>
-          <View style={styles.sep} />
-          <Btn label="도형" active={cfg.tool === 'shape'} onPress={() => pick('shape')}>{CI('shape')}</Btn>
-          <Btn label="텍스트" active={cfg.tool === 'text'} onPress={() => pick('text')}>{CI('text')}</Btn>
-          {onInsertImage && <Btn label="사진 넣기" onPress={onInsertImage}>{CI('image')}</Btn>}
-          <Btn label="보정" active={panel === 'snap'} onPress={() => openPanel(panel === 'snap' ? null : 'snap')}>{CI('magic')}</Btn>
-        </>}
-        <Btn label="손/이동" active={cfg.tool === 'hand'} onPress={() => pick('hand')}>{CI('hand')}</Btn>
-        <View style={styles.sep} />
-        <Btn label="되돌리기" onPress={onUndo} disabled={!canUndo}>{CI('undo', undefined, !canUndo)}</Btn>
-        <Btn label="다시하기" onPress={onRedo} disabled={!canRedo}>{CI('redo', undefined, !canRedo)}</Btn>
-        {onSubDoc && <Btn label="서브교재" onPress={onSubDoc}>{CI('subdoc')}</Btn>}
-        {onMore && <Btn label="더보기" onPress={onMore}>{CI('more')}</Btn>}
-        <View style={{ flex: 1, minWidth: 8 }} />
-        {onZoomPad && <Pressable accessibilityLabel="간편 입력창" onPress={onZoomPad} style={[styles.toggleBtn, zoomPad && { backgroundColor: colors.primarySoft, borderColor: colors.primary }]}><MaterialCommunityIcons name="magnify-plus-outline" size={14} color={zoomPad ? colors.primary : colors.textMuted} /><Text style={{ fontSize: 10, fontWeight: '600', color: zoomPad ? colors.primary : colors.textMuted }}>간편 입력창</Text></Pressable>}
-        {onLock && <Pressable accessibilityLabel="캔버스 고정" onPress={onLock} style={[styles.toggleBtn, locked && { backgroundColor: colors.primarySoft, borderColor: colors.primary }]}><MaterialCommunityIcons name={locked ? 'lock' : 'lock-open-variant-outline'} size={14} color={locked ? colors.primary : colors.textMuted} /><Text style={{ fontSize: 10, fontWeight: '600', color: locked ? colors.primary : colors.textMuted }}>캔버스 고정</Text></Pressable>}
-        <Pressable accessibilityLabel="펜 자동 복귀" onPress={() => settings.setViewer({ penAutoReturn: !viewer.penAutoReturn })} style={[styles.toggleBtn, viewer.penAutoReturn && { backgroundColor: colors.primarySoft, borderColor: colors.primary }]}><MaterialCommunityIcons name="undo-variant" size={14} color={viewer.penAutoReturn ? colors.primary : colors.textMuted} /><Text style={{ fontSize: 10, fontWeight: '600', color: viewer.penAutoReturn ? colors.primary : colors.textMuted }}>펜 복귀</Text></Pressable>
-      </ScrollView>
+    <View pointerEvents="box-none">
+      <View style={styles.bar}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.barContent}>
+          <Pressable accessibilityLabel="뒤로가기" onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.55 }]}><Ionicons name="chevron-back" size={26} color="#007AFF" /><Image source={require('../../../assets/orun-mark.png')} style={{ width: 26, height: 26, borderRadius: 7 }} /></Pressable>
+          {roundBtn('되돌리기', 'arrow-undo', onUndo, !canUndo)}
+          {roundBtn('다시하기', 'arrow-redo', onRedo, !canRedo)}
+          {!readOnly && <>
+            <View style={styles.toolTray}>
+              {toolBtn('pen', '펜', cfg.tool === 'pen', () => pick('pen'), penColor)}
+              {toolBtn('highlighter', '형광펜', cfg.tool === 'highlighter', () => pick('highlighter'), hlColor)}
+              {toolBtn('eraser', '지우개', isEraser, () => pick(cfg.tool === 'vectorEraser' ? 'vectorEraser' : 'eraser'))}
+              {toolBtn('lasso', '올가미', cfg.tool === 'lasso', () => pick('lasso'))}
+              {toolBtn('select', '선택', cfg.tool === 'select', () => pick('select'), '#007AFF')}
+            </View>
+            <View style={styles.colorGrid}>
+              {quick.map((c, i) => { const sel = c.toUpperCase() === cfg.color.toUpperCase(); return <Pressable key={i} accessibilityLabel={`대표색 ${i + 1}`} onPress={() => { if (sel) openPanel(panel === 'color' ? null : 'color'); else onCfg({ color: c }); }} onLongPress={() => setFav(i, cfg.color)} style={[styles.swatch, sel && { borderColor: c.toUpperCase() === '#FFFFFF' ? '#C7C7CC' : c }]}><View style={[styles.swatchIn, { backgroundColor: c }]} /></Pressable>; })}
+              <Pressable accessibilityLabel="색상 선택" onPress={() => openPanel(panel === 'color' ? null : 'color')} style={[styles.swatch, panel === 'color' && { borderColor: '#007AFF' }]}><ColorWheel size={20} /></Pressable>
+            </View>
+            {iconBtn('도형', 'shape-outline', 'mci', cfg.tool === 'shape', () => pick('shape'))}
+            {iconBtn('텍스트', 'format-text', 'mci', cfg.tool === 'text', () => pick('text'))}
+            {onInsertImage && iconBtn('사진 넣기', 'image-outline', 'ion', false, onInsertImage)}
+            {iconBtn('보정', 'auto-fix', 'mci', panel === 'snap', () => openPanel(panel === 'snap' ? null : 'snap'))}
+          </>}
+          {iconBtn('손/이동', 'hand-left-outline', 'ion', cfg.tool === 'hand', () => pick('hand'))}
+          {onSubDoc && iconBtn('서브교재', 'book-open-page-variant-outline', 'mci', false, onSubDoc)}
+          <View style={{ flex: 1, minWidth: 8 }} />
+          {onZoomPad && chip('간편 입력창', '간편 입력창', 'magnify-plus-outline', !!zoomPad, onZoomPad)}
+          {onLock && chip('캔버스 고정', '캔버스 고정', locked ? 'lock' : 'lock-open-variant-outline', !!locked, onLock)}
+          {chip('펜 자동 복귀', '펜 복귀', 'undo-variant', !!viewer.penAutoReturn, () => settings.setViewer({ penAutoReturn: !viewer.penAutoReturn }))}
+          {onMore && roundBtn('더보기', 'ellipsis-horizontal', onMore)}
+        </ScrollView>
+      </View>
 
       {panel && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.05)', backgroundColor: 'rgba(255,255,255,0.97)', shadowColor: '#0F172A', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6 }} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 10, minHeight: 46, gap: 12, flexGrow: 1 }}>
-          {(panel === 'pen' || panel === 'highlighter') && <><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k as Panel); }} /><WidthSlider />{cfg.tool !== 'highlighter' && <OpacitySlider />}
-            {cfg.tool === 'pen' ? <Seg items={[{ k: 'var', label: '가변 굵기' }, { k: 'fix', label: '고정 굵기' }]} value={viewer.fixedWidth ? 'fix' : 'var'} onChange={(k) => settings.setViewer({ fixedWidth: k === 'fix' })} /> : <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}
-            <View style={{ width: 1, height: 26, backgroundColor: 'rgba(0,0,0,0.1)' }} />
-            <Row gap={4}>{(viewer.favoritePens ?? []).map((f, i) => <Pressable key={i} accessibilityLabel={`즐겨찾는 펜 ${i + 1}`} onPress={() => { onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); if (f.tool === 'pen') settings.setViewer({ fixedWidth: !!f.fixed }); setPanel(f.tool as Panel); }} onLongPress={() => settings.setViewer({ favoritePens: (viewer.favoritePens ?? []).filter((_, j) => j !== i) })} style={[styles.fav, cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: colors.primary }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : 'pen'} size={11} color={colors.textMuted} /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} /></Pressable>)}
-              {(viewer.favoritePens ?? []).length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...(viewer.favoritePens ?? []), { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? viewer.fixedWidth : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color={colors.textMuted} /></Pressable>}</Row>
-            <Footer /></>}
-          {panel === 'eraser' && <><Seg items={[{ k: 'eraser', label: '획 지우개', icon: 'eraser' }, { k: 'vectorEraser', label: '영역 지우개', icon: 'eraser-variant' }]} value={cfg.tool} onChange={(k) => onCfg({ tool: k as Tool })} /><WidthSlider /><Row gap={6}><Text style={styles.lbl}>형광펜만 지우기</Text><Toggle value={!!viewer.eraseHighlighterOnly} onChange={(v) => settings.setViewer({ eraseHighlighterOnly: v })} /></Row><Pressable onPress={() => setConfirm('page')} style={styles.ghostBtn}><Ionicons name="trash-outline" size={14} color={colors.danger} /><Text style={{ fontSize: 12, fontWeight: '700', color: colors.danger }}>손글씨 모두 지우기</Text></Pressable>{onClearAll && <Pressable onPress={() => setConfirm('all')} style={styles.ghostBtn}><Ionicons name="trash-bin-outline" size={14} color={colors.danger} /><Text style={{ fontSize: 12, fontWeight: '700', color: colors.danger }}>모든 페이지 지우기</Text></Pressable>}<Footer /></>}
-          {panel === 'shape' && <><Seg items={SHAPES.map((sh) => ({ k: sh.k, label: sh.label, icon: sh.icon }))} value={cfg.shape} onChange={(k) => onCfg({ shape: k as ShapeKind, tool: 'shape' })} /><WidthSlider /><Footer /></>}
-          {panel === 'text' && <><Seg items={TEXT_FONTS.map((f) => ({ k: f.k, label: f.label }))} value={textFont} onChange={(k) => onTextFont?.(k)} /><Row gap={8} style={{ width: 220 }}><Text style={{ fontSize: 10, color: colors.textFaint }}>가</Text><Slider style={{ flex: 1, height: 32 }} minimumValue={8} maximumValue={48} step={1} value={cfg.width} onValueChange={(v) => onCfg({ width: Math.round(v) })} minimumTrackTintColor={colors.primary} maximumTrackTintColor="rgba(0,0,0,0.12)" thumbTintColor={colors.primary} /><Text style={{ fontSize: 18, color: colors.textFaint }}>가</Text></Row><Text style={{ fontSize: Math.min(28, cfg.width), color: cfg.color, fontFamily: TEXT_FONTS.find((f) => f.k === textFont)?.family }}>가나다 Abc</Text><Footer /></>}
-          {panel === 'color' && <>
-            <View style={{ alignItems: 'center' }}><View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } }} /><Text style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>현재</Text></View>
-            <View style={{ flexDirection: 'row', gap: 6 }}>{PALETTE.map((c) => <Pressable key={c} accessibilityLabel={`색상 ${c}`} onPress={() => onCfg({ color: c })} style={({ pressed }) => ({ width: 26, height: 26, borderRadius: 13, backgroundColor: c, borderWidth: c.toUpperCase() === cfg.color.toUpperCase() ? 3 : 1, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? colors.primary : 'rgba(0,0,0,0.12)', transform: [{ scale: pressed ? 0.88 : 1 }] })} />)}</View>
-            <HueRow color={cfg.color} onChange={(c) => onCfg({ color: c })} />
-            <View style={{ alignItems: 'center' }}><Text style={{ fontSize: 9, color: colors.textMuted, marginBottom: 2 }}>대표색에 저장 ↓ 칸 누르기</Text><Row gap={5}>{quick.map((c, i) => <Pressable key={i} accessibilityLabel={`대표색 ${i + 1}에 저장`} onPress={() => setFav(i, cfg.color)} style={{ width: 22, height: 22, borderRadius: 6, backgroundColor: c, borderWidth: 2, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? colors.primary : '#fff', shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />)}</Row></View>
-            {!isEraser && <OpacitySlider />}<Footer /></>}
-          {panel === 'snap' && <><Row gap={6}><Text style={styles.lbl}>획 보정</Text><Toggle value={viewer.strokeSmoothing} onChange={(v) => settings.setViewer({ strokeSmoothing: v })} /></Row><Row gap={6}><Text style={styles.lbl}>직선 자동 보정 (끝에서 0.5초 멈춤)</Text><Toggle value={viewer.lineSnap} onChange={(v) => settings.setViewer({ lineSnap: v })} /></Row><Row gap={6}><Text style={styles.lbl}>도형 자동 보정</Text><Toggle value={viewer.shapeSnap} onChange={(v) => settings.setViewer({ shapeSnap: v })} /></Row><Footer /></>}
-          {panel === 'lasso' && <><Seg items={[{ k: 'free', label: '자유형' }, { k: 'rect', label: '사각형' }]} value={viewer.lassoMode ?? 'free'} onChange={(k) => settings.setViewer({ lassoMode: k as 'free' | 'rect' })} /><Row gap={6}><Text style={styles.lbl}>부분 선택된 개체 포함</Text><Toggle value={viewer.lassoPartial ?? true} onChange={(v) => settings.setViewer({ lassoPartial: v })} /></Row><Text style={{ fontSize: 11, color: colors.textMuted }}>선택한 뒤 끌어서 이동 · 오른쪽 아래 점으로 크기 조절</Text><Footer /></>}
-        </ScrollView>
+        <View pointerEvents="box-none" style={{ paddingHorizontal: 12, paddingTop: 8, alignItems: 'flex-start' }}>
+          <View style={[styles.card, { width: cardW }]}>
+            {(panel === 'pen' || panel === 'highlighter') && <>
+              <View style={styles.cardRow}><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k as Panel); }} /><View style={{ flex: 1 }} />
+                {cfg.tool === 'pen' ? <Seg items={[{ k: 'var', label: '가변 굵기' }, { k: 'fix', label: '고정 굵기' }]} value={viewer.fixedWidth ? 'fix' : 'var'} onChange={(k) => settings.setViewer({ fixedWidth: k === 'fix' })} /> : <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}</View>
+              {sizeRow('굵기')}
+              {cfg.tool !== 'highlighter' && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
+              {favRow}
+            </>}
+            {panel === 'eraser' && <>
+              <View style={styles.cardRow}><Seg items={[{ k: 'eraser', label: '획 지우개', icon: 'eraser' }, { k: 'vectorEraser', label: '영역 지우개', icon: 'eraser-variant' }]} value={cfg.tool} onChange={(k) => onCfg({ tool: k as Tool })} /></View>
+              {sizeRow('크기')}
+              {toggleRow('형광펜만 지우기', !!viewer.eraseHighlighterOnly, (v) => settings.setViewer({ eraseHighlighterOnly: v }))}
+              <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Pressable onPress={() => setConfirm('page')} style={styles.ghostBtn}><Ionicons name="trash-outline" size={14} color="#FF3B30" /><Text style={{ fontSize: 13, fontWeight: '600', color: '#FF3B30' }}>이 페이지 필기 모두 지우기</Text></Pressable>{onClearAll && <Pressable onPress={() => setConfirm('all')} style={styles.ghostBtn}><Ionicons name="trash-bin-outline" size={14} color="#FF3B30" /><Text style={{ fontSize: 13, fontWeight: '600', color: '#FF3B30' }}>모든 페이지 지우기</Text></Pressable>}</View>
+            </>}
+            {panel === 'shape' && <>
+              <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Seg items={SHAPES.map((sh) => ({ k: sh.k, label: sh.label, icon: sh.icon }))} value={cfg.shape} onChange={(k) => onCfg({ shape: k as ShapeKind, tool: 'shape' })} /></View>
+              {sizeRow('굵기')}
+            </>}
+            {panel === 'text' && <>
+              <View style={styles.cardRow}><Seg items={TEXT_FONTS.map((f) => ({ k: f.k, label: f.label }))} value={textFont} onChange={(k) => onTextFont?.(k)} /></View>
+              <View style={styles.cardRow}><Text style={styles.rowLbl}>크기</Text><Text style={{ fontSize: 11, color: '#8E8E93' }}>가</Text><DragSlider min={8} max={48} step={1} value={cfg.width} onChange={(v) => onCfg({ width: Math.round(v) })} fill="#007AFF" thumb="#007AFF" /><Text style={{ fontSize: 19, color: '#8E8E93' }}>가</Text></View>
+              <View style={styles.cardRow}><Text numberOfLines={1} style={{ fontSize: Math.min(28, cfg.width), color: cfg.color, fontFamily: TEXT_FONTS.find((f) => f.k === textFont)?.family }}>가나다 Abc</Text></View>
+            </>}
+            {panel === 'color' && <>
+              <View style={[styles.cardRow, { flexWrap: 'wrap', gap: 7 }]}>{PALETTE.map((c) => <Pressable key={c} accessibilityLabel={`색상 ${c}`} onPress={() => onCfg({ color: c })} style={({ pressed }) => ({ width: 28, height: 28, borderRadius: 14, backgroundColor: c, borderWidth: c.toUpperCase() === cfg.color.toUpperCase() ? 3 : 1, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? '#007AFF' : 'rgba(0,0,0,0.12)', transform: [{ scale: pressed ? 0.88 : 1 }] })} />)}</View>
+              <View style={styles.cardRow}><View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } }} /><HueRow color={cfg.color} onChange={(c) => onCfg({ color: c })} /></View>
+              <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined }]}>대표색에 저장</Text><Row gap={6}>{quick.map((c, i) => <Pressable key={i} accessibilityLabel={`대표색 ${i + 1}에 저장`} onPress={() => setFav(i, cfg.color)} style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: c, borderWidth: 2, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? '#007AFF' : '#fff', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />)}</Row></View>
+              {!isEraser && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
+            </>}
+            {panel === 'snap' && <>
+              {toggleRow('획 보정 (손떨림 줄이기)', viewer.strokeSmoothing, (v) => settings.setViewer({ strokeSmoothing: v }))}
+              {toggleRow('직선 자동 보정 (끝에서 0.5초 멈춤)', viewer.lineSnap, (v) => settings.setViewer({ lineSnap: v }))}
+              {toggleRow('도형 자동 보정', viewer.shapeSnap, (v) => settings.setViewer({ shapeSnap: v }))}
+            </>}
+            {panel === 'lasso' && <>
+              <View style={styles.cardRow}><Seg items={[{ k: 'free', label: '자유형' }, { k: 'rect', label: '사각형' }]} value={viewer.lassoMode ?? 'free'} onChange={(k) => settings.setViewer({ lassoMode: k as 'free' | 'rect' })} /></View>
+              {toggleRow('부분 선택된 개체 포함', viewer.lassoPartial ?? true, (v) => settings.setViewer({ lassoPartial: v }))}
+              <Text style={{ fontSize: 12, color: '#8E8E93' }}>선택한 뒤 끌어서 이동 · 오른쪽 아래 점으로 크기 조절</Text>
+            </>}
+            <View style={styles.cardFooter}>
+              <Text style={{ flex: 1, fontSize: 11, color: '#8E8E93' }}>페이지를 터치하면 바로 적용돼요</Text>
+              <Pressable accessibilityLabel="취소" onPress={cancelPanel} style={({ pressed }) => [styles.cancelBtn, pressed && { opacity: 0.6 }]}><Text style={styles.cancelText}>취소</Text></Pressable>
+              <Pressable accessibilityLabel="적용" onPress={applyPanel} style={({ pressed }) => [styles.applyBtn, pressed && { opacity: 0.8 }]}><Text style={styles.applyText}>적용</Text></Pressable>
+            </View>
+          </View>
+        </View>
       )}
       <Dialog visible={confirm === 'page'} title="현재 페이지 필기를 모두 제거할까요?" message="버전 기록에서 복원할 수 있어요." onClose={() => setConfirm(null)} actions={[{ label: '취소', onPress: () => setConfirm(null) }, { label: '제거', variant: 'danger', onPress: () => { setConfirm(null); setPanel(null); onClear(); } }]} />
       <Dialog visible={confirm === 'all'} title="이 문서의 모든 필기를 제거할까요?" message="모든 페이지의 필기가 삭제됩니다. 되돌릴 수 없어요." onClose={() => setConfirm(null)} actions={[{ label: '취소', onPress: () => setConfirm(null) }, { label: '전체 제거', variant: 'danger', onPress: () => { setConfirm(null); setPanel(null); onClearAll?.(); } }]} />
@@ -120,6 +198,28 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   );
 }
 const styles = StyleSheet.create({
+  bar: { backgroundColor: 'rgba(255,255,255,0.96)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(60,60,67,0.22)', shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
+  barContent: { alignItems: 'flex-end', paddingHorizontal: 8, height: 64, gap: 6, flexGrow: 1 },
+  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 64, paddingRight: 4 },
+  roundBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#EFEFF4', alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
+  iconBtn: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 13 },
+  iconBtnActive: { backgroundColor: 'rgba(0,122,255,0.12)' },
+  toolTray: { flexDirection: 'row', alignItems: 'flex-end', height: 64, paddingHorizontal: 6, gap: 3 },
+  toolSlot: { width: 30, height: 60, overflow: 'hidden', alignItems: 'center' },
+  colorGrid: { width: 3 * 26 + 2 * 3, flexDirection: 'row', flexWrap: 'wrap', gap: 3, alignSelf: 'center', marginHorizontal: 6 },
+  swatch: { width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
+  swatchIn: { width: 19, height: 19, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(0,0,0,0.15)' },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 30, borderRadius: 15, backgroundColor: '#EFEFF4', marginBottom: 17 },
+  chipActive: { backgroundColor: 'rgba(0,122,255,0.14)' },
+  chipText: { fontSize: 12, fontWeight: '600', color: '#3A3A3C' },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, gap: 8, shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.15)' },
+  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 34 },
+  rowLbl: { width: 52, fontSize: 13, fontWeight: '600', color: '#3C3C43' },
+  cardFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(60,60,67,0.18)', paddingTop: 10, marginTop: 2 },
+  cancelBtn: { paddingHorizontal: 16, height: 34, borderRadius: 10, backgroundColor: '#EFEFF4', alignItems: 'center', justifyContent: 'center' },
+  cancelText: { fontSize: 14, fontWeight: '600', color: '#1C1C1E' },
+  applyBtn: { paddingHorizontal: 18, height: 34, borderRadius: 10, backgroundColor: '#007AFF', alignItems: 'center', justifyContent: 'center' },
+  applyText: { fontSize: 14, fontWeight: '700', color: '#FFFFFF' },
   tb: { width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center' }, tbActive: { backgroundColor: '#fff', borderWidth: 2, borderColor: '#2F6FED', shadowColor: '#2F6FED', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 3 }, sep: { width: 1, height: 22, backgroundColor: 'rgba(128,128,128,0.25)', marginHorizontal: 5 },
   dot: { width: 26, height: 26, borderRadius: 13, borderWidth: 2, alignItems: 'center', justifyContent: 'center', marginHorizontal: 1 }, widthBtn: { width: 34, height: 34, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginLeft: 2, backgroundColor: '#fff' },
   toggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, height: 30, borderRadius: 8, borderWidth: 1, borderColor: 'transparent', marginLeft: 4 },

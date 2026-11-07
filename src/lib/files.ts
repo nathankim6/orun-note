@@ -52,11 +52,21 @@ export async function deleteDocFiles(doc: Doc) { if (doc.kind === 'blank' || doc
 export async function storageUsage(): Promise<number> { return Object.values(useDocsStore.getState().docs).reduce((a, d) => a + d.size, 0); }
 export async function clearPageCache() { await PdfRenderer.clearCaches(); }
 
+/** Web/desktop download with progress. responseType 'blob' lets the browser keep big files in its blob store instead of JS memory. */
+function xhrGetBlob(url: string, onProgress?: (p: number) => void) {
+  return new Promise<Blob>((resolve, reject) => {
+    const x = new XMLHttpRequest(); x.open('GET', url); x.responseType = 'blob';
+    x.onprogress = (ev) => { if (ev.lengthComputable && ev.total > 0) onProgress?.(Math.min(0.99, ev.loaded / ev.total)); };
+    x.onload = () => { if (x.status >= 200 && x.status < 300) { onProgress?.(1); resolve(x.response as Blob); } else reject(new Error('다운로드 실패 ' + x.status)); };
+    x.onerror = () => reject(new Error('네트워크 문제로 받기가 끊겼어요. 연결을 확인하고 다시 시도해 주세요.'));
+    x.send();
+  });
+}
 /** Downloads a material through a short-lived signed URL and stores it encrypted like any other document. */
 export async function downloadMaterial(code: string | null, materialId: string, title: string, onProgress?: (p: number) => void, coverUrl?: string | null): Promise<Doc> {
   const r = await api.download(code, materialId);
   const coverUri = coverUrl ? await cacheCover(coverUrl) : null;
-  if (Platform.OS === 'web') { const res = await fetch(r.url); if (!res.ok) throw new Error('다운로드 실패 ' + res.status); const blob = await res.blob(); const url = URL.createObjectURL(blob); const d0 = await importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); if (coverUri) useDocsStore.getState().update(d0.id, { coverUri }); return { ...d0, coverUri: coverUri ?? undefined }; }
+  if (Platform.OS === 'web') { const blob = await xhrGetBlob(r.url, onProgress); const url = URL.createObjectURL(blob); const d0 = await importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); if (coverUri) useDocsStore.getState().update(d0.id, { coverUri }); return { ...d0, coverUri: coverUri ?? undefined }; }
   const tmp = `${FileSystem.cacheDirectory}dl-${materialId}.pdf`;
   const task = FileSystem.createDownloadResumable(r.url, tmp, {}, (ev) => { if (ev.totalBytesExpectedToWrite > 0) onProgress?.(ev.totalBytesWritten / ev.totalBytesExpectedToWrite); });
   const res = await task.downloadAsync(); if (!res || res.status !== 200) throw new Error('다운로드 실패 ' + (res?.status ?? ''));
@@ -65,14 +75,58 @@ export async function downloadMaterial(code: string | null, materialId: string, 
   if (coverUri) useDocsStore.getState().update(doc.id, { coverUri });
   return { ...doc, coverUri: coverUri ?? undefined };
 }
-/** Admin: uploads a local PDF to the shared bucket and registers it as a material. */
+/** Largest PDF the client will try to upload. The real ceiling is the Supabase storage file-size limit (plan + bucket setting). */
+export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+export const UPLOAD_LIMIT_MSG = '서버 업로드 한도를 넘었어요. Supabase 요금제(파일 크기 한도)를 올려야 해요.';
+const NET_UPLOAD_MSG = '네트워크 문제로 업로드가 끊겼어요. 연결을 확인하고 다시 시도해 주세요.';
+/** Storage answers 413 (or 400 with statusCode "413") and "The object exceeded the maximum allowed size" when the file is over the limit. */
+const isSizeLimit = (status: number, body: string) => status === 413 || /maximum allowed size|payload too large|entity too large|exceeded the maximum|"statusCode"\s*:\s*"413"/i.test(body);
+function uploadFailure(status: number, body: string): Error {
+  if (isSizeLimit(status, body)) { const e = new Error(UPLOAD_LIMIT_MSG); e.name = 'UploadLimitError'; return e; }
+  let msg = ''; try { const j = JSON.parse(body); msg = j?.message ?? j?.error ?? ''; } catch { msg = (body ?? '').replace(/<[^>]+>/g, ' ').trim(); }
+  return new Error(`업로드 실패 (${status || '네트워크'})${msg ? ' ' + String(msg).slice(0, 120) : ''}`);
+}
+/** Web/desktop: XHR streams the File from disk and reports upload progress (fetch has no upload progress). */
+function xhrPut(url: string, body: Blob, headers: Record<string, string>, onProgress?: (p: number) => void) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const x = new XMLHttpRequest(); x.open('PUT', url);
+    for (const [k, v] of Object.entries(headers)) x.setRequestHeader(k, v);
+    x.upload.onprogress = (ev) => { if (ev.lengthComputable && ev.total > 0) onProgress?.(Math.min(0.99, ev.loaded / ev.total)); };
+    x.onload = () => resolve({ status: x.status, body: String(x.responseText ?? '') });
+    x.onerror = () => reject(new Error(NET_UPLOAD_MSG)); x.onabort = () => reject(new Error('업로드를 취소했어요.')); x.ontimeout = () => reject(new Error(NET_UPLOAD_MSG));
+    x.send(body);
+  });
+}
+/** Admin: uploads a local PDF to the shared bucket and registers it as a material. Large files are streamed from disk
+ *  (native: expo-file-system upload task, web/desktop: XHR with the picked File), never read into JS memory. */
 export async function uploadMaterial(code: string | null, picked: { uri: string; name: string; size: number; file?: File }, title: string, onProgress?: (p: number) => void) {
-  if (picked.size > 50 * 1024 * 1024) throw new Error('파일이 50MB를 넘습니다 (무료 서버 한도). PDF를 압축하거나 나눠서 올려 주세요.');
-  const info = await PdfRenderer.getInfo(picked.uri).catch(() => ({ pageCount: 0 }));
+  let size = picked.size || picked.file?.size || 0;
+  if (!size && Platform.OS !== 'web') { const fi: any = await FileSystem.getInfoAsync(picked.uri).catch(() => null); if (fi?.exists && !fi.isDirectory) size = fi.size ?? 0; }
+  if (size > MAX_UPLOAD_BYTES) throw new Error('파일이 1GB를 넘어요. PDF를 압축하거나 나눠서 올려 주세요.');
+  // Page count for the library tile. Native engines map the file; pdf.js on web would load a huge file into memory,
+  // so very large web uploads skip it (students' devices read the real page count after downloading).
+  const info = Platform.OS === 'web' && size > 300 * 1024 * 1024 ? { pageCount: 0 } : await PdfRenderer.getInfo(picked.uri).catch(() => ({ pageCount: 0 }));
   const u = await api.materials.uploadUrl(code, title, picked.name);
-  if (Platform.OS === 'web') { const blob = picked.file ?? (await (await fetch(picked.uri)).blob()); const res = await fetch(u.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'application/pdf', 'x-upsert': 'true' }, body: blob }); if (!res.ok) throw new Error('업로드 실패 ' + res.status + ' ' + (await res.text()).slice(0, 120)); onProgress?.(1); }
-  else { const task = FileSystem.createUploadTask(u.uploadUrl, picked.uri, { httpMethod: 'PUT', headers: { 'Content-Type': 'application/pdf', 'x-upsert': 'true' }, uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT }, (ev) => { if (ev.totalBytesExpectedToSend > 0) onProgress?.(ev.totalBytesSent / ev.totalBytesExpectedToSend); }); const res = await task.uploadAsync(); if (!res || res.status >= 300) throw new Error('업로드 실패 ' + (res?.status ?? '') + ' ' + (res?.body ?? '').slice(0, 120)); }
-  const done = await api.materials.complete(code, u.materialId, picked.size, info.pageCount);
+  const headers = { 'Content-Type': 'application/pdf', 'x-upsert': 'true' }; // same headers as before (allowed by storage CORS)
+  try {
+    if (Platform.OS === 'web') {
+      const blob = picked.file ?? (await (await fetch(picked.uri)).blob());
+      const res = await xhrPut(u.uploadUrl, blob, headers, onProgress);
+      if (res.status < 200 || res.status >= 300) throw uploadFailure(res.status, res.body);
+    } else {
+      const task = FileSystem.createUploadTask(u.uploadUrl, picked.uri, { httpMethod: 'PUT', headers, uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT }, (ev) => { if (ev.totalBytesExpectedToSend > 0) onProgress?.(Math.min(0.99, ev.totalBytesSent / ev.totalBytesExpectedToSend)); });
+      let res: Awaited<ReturnType<typeof task.uploadAsync>>;
+      try { res = await task.uploadAsync(); } catch (e: any) { throw new Error(NET_UPLOAD_MSG + (e?.message ? ` (${String(e.message).slice(0, 80)})` : '')); }
+      if (!res || res.status < 200 || res.status >= 300) throw uploadFailure(res?.status ?? 0, res?.body ?? '');
+    }
+  } catch (e) {
+    api.materials.delete(code, u.materialId).catch(() => {}); // don't leave a half-registered material behind
+    throw e;
+  }
+  onProgress?.(1);
+  const done = await api.materials.complete(code, u.materialId, size, info.pageCount);
+  // native: the picker's cached copy of a big PDF is no longer needed
+  if (Platform.OS !== 'web' && picked.uri.startsWith(FileSystem.cacheDirectory ?? '§')) FileSystem.deleteAsync(picked.uri, { idempotent: true }).catch(() => {});
   return done.material;
 }
 

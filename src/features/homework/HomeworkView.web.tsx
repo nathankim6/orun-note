@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/theme';
 import type { HwSession } from '@/lib/api';
@@ -24,8 +24,8 @@ export function HomeworkView({ session }: { session: HwSession | null }) {
   // Plain browser (preview): the site can't be signed in from another origin, so show it inline with the student's code.
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, backgroundColor: 'rgba(255,255,255,0.85)', borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' }}>
-        <Text style={{ fontWeight: '700', color: colors.text }}>홈워크</Text>
+      <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, backgroundColor: 'rgba(249,249,249,0.97)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(60,60,67,0.29)' }}>
+        <Text style={{ fontWeight: '600', fontSize: 17, color: colors.text }}>홈워크</Text>
         {session && <><Text style={{ color: colors.textMuted, fontSize: 12 }}>학생 코드</Text><Pressable onPress={() => { navigator.clipboard?.writeText(session.code); setCopied(true); setTimeout(() => setCopied(false), 1500); }} style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, backgroundColor: colors.primarySoft }}><Text style={{ color: colors.primary, fontWeight: '800', letterSpacing: 2 }}>{session.code}{copied ? ' ✓' : ''}</Text></Pressable></>}
         <View style={{ flex: 1 }} />
         <Pressable onPress={() => window.open(HOMEWORK_URL, '_blank')} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><Ionicons name="open-outline" size={15} color={colors.primary} /><Text style={{ color: colors.primary, fontSize: 12, fontWeight: '600' }}>새 창</Text></Pressable>

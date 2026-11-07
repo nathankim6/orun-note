@@ -1,9 +1,41 @@
-// Web implementation backed by pdf.js. Page images are returned as data URLs.
+// Web implementation backed by pdf.js. Page images are returned as blob: URLs (encoded off the main thread by the browser).
 import type { PdfInfo, PdfOutlineItem } from './types';
 let lib: any = null; const docs = new Map<string, Promise<any>>();
 import * as pdfjsLib from 'pdfjs-dist';
 async function pdfjs() { if (lib) return lib; lib = pdfjsLib as any; lib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; return lib; }
-async function open(uri: string) { if (!docs.has(uri)) { docs.set(uri, (async () => { const p = await pdfjs(); const data = await (await fetch(uri)).arrayBuffer(); return p.getDocument({ data }).promise; })()); } return docs.get(uri)!; }
+async function open(uri: string) {
+  if (!docs.has(uri)) {
+    const p = (async () => { const l = await pdfjs(); const data = await (await fetch(uri)).arrayBuffer(); return l.getDocument({ data }).promise; })();
+    docs.set(uri, p); p.catch(() => { if (docs.get(uri) === p) docs.delete(uri); }); // a failed open can be retried
+  }
+  return docs.get(uri)!;
+}
+
+// One reusable canvas; renders are serialized on it (allocating a fresh multi-megapixel canvas per page is slow and churns memory).
+let canvasEl: HTMLCanvasElement | null = null; let canvasChain: Promise<unknown> = Promise.resolve();
+function withCanvas<T>(fn: (c: HTMLCanvasElement) => Promise<T>): Promise<T> {
+  const run = () => fn(canvasEl ?? (canvasEl = document.createElement('canvas')));
+  const p = canvasChain.then(run, run); canvasChain = p.catch(() => {}); return p;
+}
+function canvasUrl(c: HTMLCanvasElement, jpeg: boolean, quality: number): Promise<string> {
+  return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('canvas encode failed'))), jpeg ? 'image/jpeg' : 'image/png', quality));
+}
+async function paint(pg: any, vp: any, w: number, h: number, jpeg: boolean, quality: number): Promise<string> {
+  return withCanvas(async (canvas) => {
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { alpha: false })!; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    await pg.render({ canvasContext: ctx, viewport: vp }).promise;
+    return canvasUrl(canvas, jpeg, quality);
+  });
+}
+// Same image requested again (e.g. a remounted page or tile) -> same URL, no re-render. Bounded; old URLs are not revoked
+// because a still-mounted <img> may be using them.
+const images = new Map<string, Promise<string>>();
+function memo(key: string, make: () => Promise<string>): Promise<string> {
+  let p = images.get(key);
+  if (!p) { p = make(); images.set(key, p); p.catch(() => images.delete(key)); if (images.size > 400) { const first = images.keys().next().value; if (first !== undefined) images.delete(first); } }
+  return p;
+}
 
 /** pdf.js returns one item per glyph run; many Korean PDFs position every syllable separately.
  *  Join by geometry: no space when the next run starts where the previous one ended, a space for a real gap, a newline for a new line. */
@@ -27,9 +59,26 @@ function joinItems(items: any[]): string {
 export default {
   // Web is a development/preview target only: no at-rest encryption is applied here.
   async importFile(srcUri: string, _id: string) { const blob = await (await fetch(srcUri)).blob(); return { uri: srcUri, size: blob.size }; },
-  async deleteFile(_uri: string) {}, async fileExists(_uri: string) { return true; }, async clearCaches() { docs.clear(); },
+  async deleteFile(uri: string) { const p = docs.get(uri); docs.delete(uri); p?.then((d: any) => d.destroy?.()).catch(() => {}); }, async fileExists(_uri: string) { return true; }, async clearCaches() { docs.clear(); images.clear(); },
   async getInfo(uri: string): Promise<PdfInfo> { const doc = await open(uri); const pages = []; for (let i = 1; i <= doc.numPages; i++) { const pg = await doc.getPage(i); const vp = pg.getViewport({ scale: 1 }); pages.push({ width: vp.width, height: vp.height }); } let title: string | undefined; try { title = (await doc.getMetadata())?.info?.Title; } catch {} return { pageCount: doc.numPages, pages, title }; },
-  async renderPage(uri: string, index: number, width: number): Promise<string> { const doc = await open(uri); const pg = await doc.getPage(index + 1); const base = pg.getViewport({ scale: 1 }); const vp = pg.getViewport({ scale: width / base.width }); const canvas = document.createElement('canvas'); canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height); const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); await pg.render({ canvasContext: ctx, viewport: vp }).promise; return canvas.toDataURL('image/png'); },
+  /** Whole page `width` px wide. PNG up to 1600 px, JPEG 0.92 above (much faster to encode). */
+  renderPage(uri: string, index: number, width: number): Promise<string> {
+    return memo(`${uri}|${index}|${width}`, async () => {
+      const doc = await open(uri); const pg = await doc.getPage(index + 1); const base = pg.getViewport({ scale: 1 }); const vp = pg.getViewport({ scale: width / base.width });
+      return paint(pg, vp, Math.ceil(vp.width), Math.ceil(vp.height), width > 1600, 0.92);
+    });
+  },
+  /** `w`×`h` px window (top-left `x`,`y`) of the page scaled to `pageWidthPx` wide, clamped to the page. JPEG 0.9. */
+  renderRegion(uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string> {
+    return memo(`${uri}|${index}|${pageWidthPx}|r${x}_${y}_${w}_${h}`, async () => {
+      const doc = await open(uri); const pg = await doc.getPage(index + 1); const base = pg.getViewport({ scale: 1 });
+      const fullW = Math.max(1, Math.round(pageWidthPx)); const scale = fullW / base.width; const fullH = Math.max(1, Math.round(base.height * scale));
+      const x0 = Math.min(Math.max(0, Math.round(x)), fullW - 1), y0 = Math.min(Math.max(0, Math.round(y)), fullH - 1);
+      const rw = Math.max(1, Math.min(Math.round(w), fullW - x0)), rh = Math.max(1, Math.min(Math.round(h), fullH - y0));
+      const vp = pg.getViewport({ scale, offsetX: -x0, offsetY: -y0 });
+      return paint(pg, vp, rw, rh, true, 0.9);
+    });
+  },
   async getPageText(uri: string, index: number): Promise<string> { const doc = await open(uri); const pg = await doc.getPage(index + 1); const tc = await pg.getTextContent(); return joinItems(tc.items); },
   async getWords(uri: string, index: number) {
     const lib = await pdfjs(); const doc = await open(uri); const pg = await doc.getPage(index + 1); const vp = pg.getViewport({ scale: 1 }); const tc = await pg.getTextContent();

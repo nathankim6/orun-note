@@ -68,7 +68,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // Finger input draws only when the user enabled it; stylus (Apple Pencil / S Pen) and mouse always draw.
   // Finger input never draws: touch is reserved for pinch-zoom and page scrolling. Only stylus (Apple Pencil / S Pen) draws; mouse is allowed for web/desktop.
   const allowPointer = (pointerType: any) => (Platform.OS === 'web' && pointerType !== PointerType.TOUCH) || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE || cfg.tool === 'select'; // the cursor tool (select/move/define) also works with a finger
-  const rejected = useRef(false);
+  const rejected = useRef(false); const lastPe = useRef<PseudoEvt | null>(null);
+  useEffect(() => () => { if (activeId.current != null) penSession.value = { ...penSession.value, writing: false }; }, []);
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
   const clearDwell = () => { if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null; } };
@@ -135,11 +136,11 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   };
   const endAt = (e: PseudoEvt) => { clearDwell(); if (rejected.current) { liveRef.current = []; setLive([]); return; } const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType);
       if (cfg.tool === 'select' || cfg.tool === 'lasso') { const end = toPage(e.x, e.y); const a = selStart.current; const moved = dist(a, end) > 4 / s; const abs = { x: (e as any).absoluteX ?? e.x, y: (e as any).absoluteY ?? e.y };
-        if (selMode.current === 'move') { if (moved) applyMove(end.x - a.x, end.y - a.y); else if (cfg.tool === 'select') lookupAt(end, abs); setDragOff(null); }
+        if (selMode.current === 'move') { if (moved) applyMove(end.x - a.x, end.y - a.y); setDragOff(null); }
         else if (selMode.current === 'resize') { const ds = dragScaleRef.current; if (ds) applyScale(ds.f, ds.ox, ds.oy); setDragScale(null); }
         else if (selMode.current === 'lasso') { const poly = [...lassoRef.current, end]; lassoRef.current = []; setLasso([]); const span = poly.length > 1 ? Math.max(...poly.map((q) => dist(poly[0], q))) : 0; if (poly.length > 3 && span > 8 / s) selectWhere((q) => pointInPolygon(q, poly)); else setPasteAt(end); }
-        else if (selMode.current === 'text') { const ws = moved ? wordsBetween(words ?? null, { x: a.x / pageW, y: a.y / pageH }, { x: end.x / pageW, y: end.y / pageH }) : []; if (!moved) lookupAt(end, abs); else if (ws.length && onLookup) { setTextSel(ws); onLookup(ws.map((w) => w.t).join(' ').replace(/\s+([,.;:!?])/g, '$1').replace(/^[^A-Za-z]+|[^A-Za-z.!?]+$/g, ''), abs, ws.map((w) => ({ x: w.x * pageW, y: w.y * pageH, w: w.w * pageW, h: w.h * pageH }))); } }
-        else { const m = marqueeRef.current; marqueeRef.current = null; setMarquee(null); if (m && moved) { const r = { x: Math.min(m.a.x, end.x), y: Math.min(m.a.y, end.y), w: Math.abs(end.x - m.a.x), h: Math.abs(end.y - m.a.y) }; selectWhere((q) => inRect(q, r)); } else if (cfg.tool === 'lasso') setPasteAt(end); else lookupAt(end, abs); }
+        else if (selMode.current === 'text') { const ws = moved ? wordsBetween(words ?? null, { x: a.x / pageW, y: a.y / pageH }, { x: end.x / pageW, y: end.y / pageH }) : []; if (moved && ws.length && onLookup) { setTextSel(ws); onLookup(ws.map((w) => w.t).join(' ').replace(/\s+([,.;:!?])/g, '$1').replace(/^[^A-Za-z]+|[^A-Za-z.!?]+$/g, ''), abs, ws.map((w) => ({ x: w.x * pageW, y: w.y * pageH, w: w.w * pageW, h: w.h * pageH }))); } }
+        else { const m = marqueeRef.current; marqueeRef.current = null; setMarquee(null); if (m && moved) { const r = { x: Math.min(m.a.x, end.x), y: Math.min(m.a.y, end.y), w: Math.abs(end.x - m.a.x), h: Math.abs(end.y - m.a.y) }; selectWhere((q) => inRect(q, r)); } else if (cfg.tool === 'lasso') setPasteAt(end); }
         selMode.current = null; liveRef.current = []; setLive([]); return; } if (erasing.current) { erasing.current = false; if (eraseBefore.current && eraseBefore.current !== strokesRef.current) { undoStack.current.push({ strokes: eraseBefore.current, textBoxes: textRef.current }); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); } eraseBefore.current = null; const isTap = pts.length > 0 && Date.now() - startT.current < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s; if (isTap) { const hit = strokesHit(eraseCands(), pts[0], eraserR); if (hit.length) commit(strokesRef.current.filter((st) => !hit.includes(st.id))); else onTap?.(pts[0]); } }
       else finish(pts, pointerOk);
       setLive([]); liveRef.current = []; if (cfg.tool === 'laser') setTimeout(() => setLaser([]), 600); 
@@ -152,21 +153,21 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       const t = e.changedTouches[e.changedTouches.length - 1]; if (!t) return;
       if (!allowPointer(e.pointerType)) { rejected.current = true; return; } // finger: never draws; let the document scroll/zoom (that cancels us)
       rejected.current = false; activeId.current = t.id; activeType.current = e.pointerType; pressureRef.current = undefined;
-      penSession.value = { ...penSession.value, writing: true, byPen: e.pointerType === PointerType.STYLUS, at: Date.now() };
-      sm.activate(); beginAt(pseudo(t));
+      penSession.value = { ...penSession.value, writing: true, byPen: e.pointerType === PointerType.STYLUS, at: Date.now(), since: Date.now() };
+      sm.activate(); { const pe = pseudo(t); lastPe.current = pe; beginAt(pe); }
     })
-    .onTouchesMove((e) => { if (activeId.current == null) return; const t = e.allTouches.find((x) => x.id === activeId.current); if (t) moveTo(pseudo(t)); })
+    .onTouchesMove((e) => { if (activeId.current == null) return; const t = e.allTouches.find((x) => x.id === activeId.current) ?? (e.allTouches.length === 1 ? e.allTouches[0] : undefined); if (t) { const pe = pseudo(t); lastPe.current = pe; moveTo(pe); } })
     .onTouchesUp((e, sm) => {
-      if (activeId.current == null) return; const t = e.changedTouches.find((x) => x.id === activeId.current); if (!t) return;
+      if (activeId.current == null) return; const t = e.changedTouches.find((x) => x.id === activeId.current) ?? (e.allTouches.length <= 1 ? e.changedTouches[0] : undefined); if (!t) return;
       activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at };
-      endAt(pseudo(t));
+      endAt(pseudo(t)); lastPe.current = null;
       const remaining = e.allTouches.filter((a) => !e.changedTouches.some((c) => c.id === a.id)); if (!remaining.length) sm.end();
     })
     .onTouchesCancelled(() => { if (activeId.current != null) abortStroke(); })
     .onUpdate((e) => { const pr = (e as any).stylusData?.pressure; if (typeof pr === 'number' && pr > 0 && (((e as any).numberOfPointers ?? 1) === 1)) pressureRef.current = pr; })
-    .onFinalize(() => { clearDwell(); if (activeId.current != null) abortStroke(); }),  [enabled, cfg, s, finish, eraserR, onStrokes, commit, lasso, onTap, fingerDraw, lineSnap, selection, selText, selImg, words, onLookup, marquee, width, height, opts, dragScale]);
+    .onFinalize((_e, success) => { clearDwell(); if (activeId.current != null) { const pe = lastPe.current; if (success && pe) { activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; endAt(pe); } else abortStroke(); } lastPe.current = null; }),  [enabled, cfg, s, finish, eraserR, onStrokes, commit, lasso, onTap, fingerDraw, lineSnap, selection, selText, selImg, words, onLookup, marquee, width, height, opts, dragScale]);
   const longPress = useMemo(() => Gesture.LongPress().enabled(enabled && !!onLongPress).minDuration(450).runOnJS(true).onStart((e) => onLongPress?.(toPage(e.x, e.y))), [enabled, onLongPress, s]);
-  const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && (!!onDoubleTap || !!words?.length)).numberOfTaps(2).maxDelay(280).runOnJS(true).onStart((e) => { const p = toPage(e.x, e.y); if (lookupAt(p, { x: e.absoluteX, y: e.absoluteY })) { lastLookupAt = Date.now(); return; } onDoubleTap?.(p); }), [enabled, onDoubleTap, s, words, onLookup, width, height]);
+  const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && cfg.tool === 'select' && (!!onDoubleTap || !!words?.length)).numberOfTaps(2).maxDelay(280).runOnJS(true).onStart((e) => { const p = toPage(e.x, e.y); if (lookupAt(p, { x: e.absoluteX, y: e.absoluteY })) { lastLookupAt = Date.now(); return; } onDoubleTap?.(p); }), [enabled, onDoubleTap, s, words, onLookup, width, height, cfg.tool]);
   const composed = useMemo(() => Gesture.Simultaneous(pan, longPress, doubleTap), [pan, longPress, doubleTap]);
 
   const livePath = useMemo(() => { if (live.length === 0) return null; if (cfg.tool === 'shape' && live.length >= 2) return shapePath(cfg.shape, live[0], live[1], s); if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') return null; return pathFromPoints(live, s); }, [live, cfg, s]);

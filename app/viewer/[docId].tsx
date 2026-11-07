@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator } from 'react-native';
+import { Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,7 +10,7 @@ import { Tool, Stroke, TextBox } from '@/data/types';
 import { useDocsStore } from '@/store/docs';
 import { inkKey, useInkStore } from '@/store/ink';
 import { useSettingsStore } from '@/store/settings';
-import { PdfPage } from '@/features/viewer/PdfPage';
+import { PdfPage, prefetchPage, PageTile } from '@/features/viewer/PdfPage';
 import { DocumentView, DocHandle, PageBox } from '@/features/viewer/DocumentView';
 import { ZoomPad, PadFrame, PadRegion } from '@/features/viewer/ZoomPad';
 import type { InkOpts } from '@/features/viewer/InkCanvas';
@@ -41,7 +41,7 @@ export default function Viewer() {
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
   const [layout, setLayout] = useState(prefs.defaultLayoutMode); const [fullscreen, setFullscreen] = useState(false);
   const docRef = useRef<DocHandle>(null); const [zoomPct, setZoomPct] = useState(1);
-  const [locked, setLocked] = useState(false); const [zoomPad, setZoomPad] = useState(false); const padInk = useRef<any>(null); const [padHist, setPadHist] = useState({ canUndo: false, canRedo: false }); const [padRegions, setPadRegions] = useState<Record<number, PadRegion>>({});
+  const [locked, setLocked] = useState(false); const [dismissKey, setDismissKey] = useState(0); const panelOpen = useRef(false); const [zoomPad, setZoomPad] = useState(false); const padInk = useRef<any>(null); const [padHist, setPadHist] = useState({ canUndo: false, canRedo: false }); const [padRegions, setPadRegions] = useState<Record<number, PadRegion>>({});
   // Samsung-Notes handwriting options (stable object so the canvas gestures are not rebuilt every render)
   const inkOpts = useMemo<InkOpts>(() => ({ fixedWidth: !!prefs.fixedWidth, straightHighlighter: !!prefs.straightHighlighter, eraseHighlighterOnly: !!prefs.eraseHighlighterOnly, lassoMode: prefs.lassoMode ?? 'free', lassoPartial: prefs.lassoPartial ?? true, neatShape: !!prefs.shapeSnap }), [prefs.fixedWidth, prefs.straightHighlighter, prefs.eraseHighlighterOnly, prefs.lassoMode, prefs.lassoPartial, prefs.shapeSnap]);
   const pageSizes = useMemo(() => (doc?.pages ?? []).map((p) => ({ width: p.width, height: p.height })), [doc?.pages]);
@@ -67,7 +67,7 @@ export default function Viewer() {
   if (missing) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: 24 }}><Ionicons name="document-lock-outline" size={48} color={colors.textFaint} /><T variant="h3" style={{ marginTop: 12 }}>PDF 파일을 찾을 수 없어요</T><Muted center style={{ marginTop: 6 }}>원본 파일이 삭제되었거나 (웹) 브라우저 저장소가 비워졌어요. 다시 가져와 주세요.</Muted><Button title="내 서재로" style={{ marginTop: 16 }} onPress={() => router.replace('/(tabs)')} /></View>;
 
   const leftW = isTablet ? 300 : 0;
-  const toolbarH = fullscreen ? 0 : 50; const headerH = fullscreen ? 0 : 44; const tabsH = store.openTabs.length > 1 && !fullscreen ? 34 : 0; const bottomH = 40;
+  const toolbarH = fullscreen ? 0 : 64; const headerH = fullscreen ? 0 : 44; const tabsH = store.openTabs.length > 1 && !fullscreen ? 34 : 0; const bottomH = 40;
   const availW = winW - (leftTab && isTablet ? leftW : 0); const padH = zoomPad ? Math.round(Math.min(250, Math.max(170, winH * 0.27))) : 0;
   const availH = winH - insets.top - insets.bottom - toolbarH - headerH - tabsH - bottomH - padH;
   const docMode = layout === 'twoPage' && availW > 700 ? 'twoPage' : layout === 'horizontal' ? 'horizontal' : 'vertical';
@@ -91,9 +91,9 @@ export default function Viewer() {
   undoKeys.current = { undo: () => (zoomPad ? padInk.current?.undo() : inkRefs.current[String(pageIndex)]?.undo()), redo: () => (zoomPad ? padInk.current?.redo() : inkRefs.current[String(pageIndex)]?.redo()) };
 
   // Page content at resolution `rs` (the DocumentView scales it back down; keeps ink and PDF crisp when zoomed).
-  const renderPage = (pi: number, box: PageBox, rs: number) => { const s = box.s * rs, w = box.w * rs, h = box.h * rs; const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
+  const renderPage = (pi: number, box: PageBox, rs: number, tile?: PageTile) => { const s = box.s * rs, w = box.w * rs, h = box.h * rs; const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}>
-      <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} template={doc.template} />
+      <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} template={doc.template} renderScale={1 / rs} tile={tile} />
       {/* frame for 간편 입력창 is rendered after the ink layer (below) */}
       <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} opts={inkOpts} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
@@ -108,7 +108,7 @@ export default function Viewer() {
   const pageInk = ink.pages[inkKey(doc.id, cycle, String(pageIndex))];
 
   return (
-    <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E6EDF7', paddingTop: insets.top }}>
+    <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE', paddingTop: insets.top }}>
       {/* The toolbar floats above the page so opening a tool's option row overlays the page instead of pushing it down. */}
       {!fullscreen && <View style={{ height: toolbarH }} />}
       {tabsH > 0 && (
@@ -117,7 +117,7 @@ export default function Viewer() {
           <Pressable onPress={() => setSheet('tabs')} style={{ paddingHorizontal: 10, height: 30, justifyContent: 'center' }}><Ionicons name="add" size={18} color={colors.textMuted} /></Pressable>
         </ScrollView>)}
       {!fullscreen && (
-        <View style={{ height: headerH, backgroundColor: 'rgba(255,255,255,0.6)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6 }}>
+        <View style={{ height: headerH, backgroundColor: '#F9F9FB', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(60,60,67,0.2)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6 }}>
           <IconButton icon="menu-outline" active={!!leftTab} onPress={() => setLeftTab(leftTab ? null : 'pages')} label="좌측 패널" />
           <Pressable onPress={() => setSheet('cycle')} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: colors.surfaceAlt }}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{cycle}회독</Text><Ionicons name="chevron-down" size={12} color={colors.textMuted} /></Pressable>
           <Pressable onPress={() => setSheet('info')} style={{ flex: 1, marginLeft: 8 }}><Text numberOfLines={1} style={{ fontWeight: '700', color: colors.text, fontSize: 14 }}>{doc.title}</Text></Pressable>
@@ -126,19 +126,19 @@ export default function Viewer() {
           <IconButton icon="ellipsis-horizontal" onPress={() => setSheet('more')} label="더보기" />
           <IconButton icon="expand-outline" onPress={() => setFullscreen(true)} label="전체 화면" />
         </View>)}
-      <View style={{ flex: 1, flexDirection: 'row' }}>
+      <View style={{ flex: 1, flexDirection: 'row' }} onStartShouldSetResponderCapture={() => { if (panelOpen.current) setDismissKey((k) => k + 1); return false; }}>
         {leftTab && isTablet && <LeftPanel tab={leftTab} setTab={setLeftTab} width={leftW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={goto} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} />}
         {/* Narrow screens (phones / split view): the same panel as a modal sheet so the ≡ button always shows the page grid */}
         {leftTab && !isTablet && <Modal visible transparent animationType="slide" onRequestClose={() => setLeftTab(null)}><Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }} onPress={() => setLeftTab(null)} /><View style={{ height: '70%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Modal>}
         <View style={{ flex: 1 }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
             : <DocumentView ref={docRef} key={doc.id} width={availW} height={availH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} renderPage={renderPage} dark={dark}
-                mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled} onPageChange={setPageIndex} onZoomSettled={setZoomPct} locked={locked}
+                mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled} onPrefetch={(i, box) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct} locked={locked}
                 onPullAddPage={doc.kind === 'blank' ? () => { addBlankPages(doc, 1); toast('새 페이지를 추가했어요'); } : undefined} />}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
         </View>
       </View>
-      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} locked={locked} onLock={() => { setLocked((v) => { toast(v ? '캔버스 고정을 해제했습니다.' : '캔버스를 고정했습니다. 확대/축소와 이동이 잠겨요.'); return !v; }); }} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
+      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} locked={locked} onLock={() => { setLocked((v) => { toast(v ? '캔버스 고정을 해제했습니다.' : '캔버스를 고정했습니다. 확대/축소와 이동이 잠겨요.'); return !v; }); }} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
       {lookup && <WordLookup text={lookup.text} anchor={lookup.abs} onClose={() => setLookup(null)} onLookup={(q) => setLookup((l) => l && { ...l, text: q })} onHighlight={() => { const k = lookup.k; const add = lookup.rects.map((r) => ({ id: Math.random().toString(36).slice(2, 10), tool: 'highlighter' as Tool, color: '#FDE68A', width: r.h * 0.95, opacity: 0.45, points: [{ x: r.x, y: r.y + r.h / 2 }, { x: r.x + r.w, y: r.y + r.h / 2 }], createdAt: Date.now() })); ink.setStrokes(k, [...(ink.pages[k]?.strokes ?? []), ...add]); setLookup(null); toast('형광펜으로 표시했어요'); }} />}
       {zoomPad && uri && (() => { const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = ink.pages[k]; return (
         <ZoomPad height={padH} uri={uri} pageW={pageAt(pageIndex).width} pageH={pageAt(pageIndex).height} sourceIndex={pageAt(pageIndex).index} template={doc.template}

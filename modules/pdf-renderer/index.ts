@@ -9,6 +9,8 @@ type Native = {
   getInfo(uri: string): Promise<PdfInfo>; renderPage(uri: string, index: number, width: number): Promise<string>;
   getPageText(uri: string, index: number): Promise<string>; getOutline(uri: string): Promise<PdfOutlineItem[]>;
   getWords(uri: string, index: number): Promise<PdfWord[]>;
+  /** Missing on app binaries built before it existed (JS updated over the air). */
+  renderRegion?(uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string>;
 };
 let impl: Native;
 if (Platform.OS === 'web') { impl = require('./src/web').default as Native; }
@@ -17,7 +19,7 @@ else {
   catch (e) {
     // Native module missing from this build: fail per call instead of crashing at startup.
     const missing = () => Promise.reject(new Error('PDF 네이티브 모듈이 이 빌드에 포함되지 않았습니다. 앱을 다시 빌드해 주세요.'));
-    impl = { importFile: missing, deleteFile: missing, fileExists: async () => false, clearCaches: async () => {}, getInfo: missing, renderPage: missing, getPageText: missing, getOutline: missing, getWords: async () => [] } as unknown as Native;
+    impl = { importFile: missing, deleteFile: missing, fileExists: async () => false, clearCaches: async () => {}, getInfo: missing, renderPage: missing, renderRegion: missing, getPageText: missing, getOutline: missing, getWords: async () => [] } as unknown as Native;
     console.error('PdfRenderer native module unavailable', e);
   }
 }
@@ -29,8 +31,15 @@ export const PdfRenderer = {
   fileExists: (uri: string) => impl.fileExists(uri).catch(() => false),
   clearCaches: () => impl.clearCaches().catch(() => {}),
   getInfo: (uri: string) => impl.getInfo(uri),
-  /** Renders one page to a PNG and returns a file:// or data: URI. `width` is the target pixel width. */
+  /** Renders one page and returns a file:// (native) or blob: (web) URI; cached on disk/memory, so repeat calls are instant.
+   *  `width` is the target pixel width. PNG up to 1600 px, JPEG above. */
   renderPage: (uri: string, index: number, width: number) => impl.renderPage(uri, index, Math.round(width)),
+  /** Renders only the `w`×`h` px window whose top-left is (`x`,`y`) of the page as it looks when the whole page is `pageWidthPx`
+   *  wide (clamped to the page) — sharp tiles for zoomed-in views without rasterizing the whole page. JPEG, cached like renderPage. */
+  renderRegion: (uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string> =>
+    impl.renderRegion ? impl.renderRegion(uri, index, Math.round(pageWidthPx), Math.round(x), Math.round(y), Math.max(1, Math.round(w)), Math.max(1, Math.round(h))) : Promise.reject(new Error('renderRegion is not available in this app build')),
+  /** False on app binaries built before renderRegion existed: fall back to renderPage. */
+  hasRenderRegion: () => typeof impl.renderRegion === 'function',
   getPageText: (uri: string, index: number) => impl.getPageText(uri, index).catch(() => ''),
   getOutline: (uri: string) => impl.getOutline(uri).catch(() => [] as PdfOutlineItem[]),
   /** Words on a page with rectangles normalized to the page (0..1, top-left). Empty when the PDF has no text layer (scans). */
