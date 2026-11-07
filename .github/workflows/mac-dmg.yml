@@ -1,0 +1,42 @@
+name: macOS installer (dmg)
+on:
+  push: { branches: [main], paths: ['app/**', 'src/**', 'desktop/**', 'modules/pdf-renderer/src/**', 'package.json', 'package-lock.json', 'app.json', '.github/workflows/mac-dmg.yml'] }
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Export web app
+        run: npx expo export --platform web --output-dir desktop/app
+      - name: Package app (universal: Apple Silicon + Intel)
+        working-directory: desktop
+        env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --mac dir --universal --publish never
+          APP=$(ls -d release/mac-universal/*.app | head -1); echo "APP=$APP" >> $GITHUB_ENV
+      - name: Ad-hoc sign (required for Apple Silicon) and verify
+        working-directory: desktop
+        run: |
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          lipo -archs "$APP/Contents/MacOS/"* | head -3
+      - name: Build DMG
+        working-directory: desktop
+        env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }
+        run: npx electron-builder --mac dmg --universal --prepackaged "$APP" --publish never
+      - uses: actions/upload-artifact@v4
+        with: { name: orun-note-mac-dmg, path: desktop/release/*.dmg, retention-days: 30 }
+      - name: Publish to GitHub Release
+        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        run: |
+          VER=$(node -p "require('./desktop/package.json').version"); TAG="v${VER}-mac"
+          gh release create "$TAG" desktop/release/*.dmg --title "옳은Note ${VER} (macOS)" --notes "옳은Note macOS 설치 파일 (Apple Silicon·Intel 공용, macOS 11 이상). Apple 개발자 서명이 없는 앱이라 처음 열 때 Finder에서 앱을 우클릭 → '열기'를 누르세요." || gh release upload "$TAG" desktop/release/*.dmg --clobber

@@ -27,11 +27,13 @@ function openHomework(url) {
 const doneHtml = '<!doctype html><meta charset="utf-8"><title>옳은Note</title><body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0;background:#eef3fa;color:#172033"><div style="text-align:center"><h2>로그인이 완료됐어요</h2><p>이 창을 닫고 옳은Note 앱으로 돌아가세요.</p></div></body>';
 
 function serve(req, res) {
-  const u = new URL(req.url, 'http://localhost'); const isElectron = /Electron/.test(req.headers['user-agent'] || '');
+  const u = new URL(req.url, 'http://localhost');
+  // The app window's user agent carries 'OrunNoteDesktop/x' (Electron/x is stripped below); anything else is the system browser.
+  const fromApp = /OrunNoteDesktop|Electron/.test(req.headers['user-agent'] || '');
   // Sign-in finished in the system browser: hand the result to the app window (which holds the PKCE verifier).
-  if (u.pathname === '/auth/callback' && !isElectron) {
+  if (u.pathname === '/auth/callback' && !fromApp) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(doneHtml);
-    if (win && (u.searchParams.get('code') || u.searchParams.get('error'))) { win.loadURL(`http://localhost:${port}/auth/callback${u.search}`); if (win.isMinimized()) win.restore(); win.focus(); }
+    if (win && (u.searchParams.get('code') || u.searchParams.get('error'))) { win.loadURL(`http://localhost:${port}/auth/callback${u.search}`); if (win.isMinimized()) win.restore(); if (process.platform === 'darwin') app.focus({ steal: true }); win.focus(); }
     return;
   }
   let rel = decodeURIComponent(u.pathname); if (rel.endsWith('/')) rel += 'index.html';
@@ -52,7 +54,9 @@ function isAppUrl(u) { try { const x = new URL(u); return x.hostname === 'localh
 async function createWindow() {
   win = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, backgroundColor: '#EEF3FA', title: '옳은Note', icon: path.join(__dirname, 'build', 'icon.ico'), autoHideMenuBar: true, show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: false, spellcheck: false } });
-  Menu.setApplicationMenu(null);
+  // Windows: no menu bar. macOS: keep a minimal menu, otherwise Cmd+C/V/X/Z and Cmd+Q stop working in text fields.
+  if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { label: '창', submenu: [{ role: 'minimize' }, { role: 'togglefullscreen' }, { role: 'close' }] }]));
+  else Menu.setApplicationMenu(null);
   // Block screen capture / recording of the window (Windows: excluded from capture).
   win.setContentProtection(true);
   // Google rejects embedded browsers; also avoid shipping an "Electron" user agent to the web app's own requests.

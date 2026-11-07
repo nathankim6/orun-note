@@ -94,7 +94,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
       </ScrollView>
 
       {panel && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.05)', backgroundColor: 'rgba(255,255,255,0.6)' }} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 10, minHeight: 46, gap: 12, flexGrow: 1 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.05)', backgroundColor: 'rgba(255,255,255,0.97)', shadowColor: '#0F172A', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6 }} contentContainerStyle={{ alignItems: 'center', paddingHorizontal: 10, minHeight: 46, gap: 12, flexGrow: 1 }}>
           {(panel === 'pen' || panel === 'highlighter') && <><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k as Panel); }} /><WidthSlider />{cfg.tool !== 'highlighter' && <OpacitySlider />}
             {cfg.tool === 'pen' ? <Seg items={[{ k: 'var', label: '가변 굵기' }, { k: 'fix', label: '고정 굵기' }]} value={viewer.fixedWidth ? 'fix' : 'var'} onChange={(k) => settings.setViewer({ fixedWidth: k === 'fix' })} /> : <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}
             <View style={{ width: 1, height: 26, backgroundColor: 'rgba(0,0,0,0.1)' }} />

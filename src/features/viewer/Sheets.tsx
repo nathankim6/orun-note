@@ -13,8 +13,8 @@ export function SettingsSheet({ visible, onClose, layout, setLayout }: { visible
   return (
     <Sheet visible={visible} onClose={onClose} title="뷰어 설정">
       <Muted variant="label">레이아웃</Muted>
-      <Row style={{ marginTop: 8, flexWrap: 'wrap' }} gap={8}>{([['vertical', '세로 페이지', 'phone-portrait-outline'], ['horizontal', '가로 페이지', 'phone-landscape-outline'], ['continuous', '연속 스크롤', 'reorder-four-outline'], ['twoPage', '두 페이지', 'book-outline']] as const).map(([k, l, i]) => <Pressable key={k} onPress={() => setLayout(k)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1.5, borderColor: layout === k ? colors.primary : colors.border }}><Ionicons name={i} size={16} color={layout === k ? colors.primary : colors.textMuted} /><Text style={{ color: layout === k ? colors.primary : colors.text, fontWeight: '600', fontSize: 13 }}>{l}</Text></Pressable>)}</Row>
-      <Item k="twoPageStartOdd" title="두 페이지 보기: 홀수 페이지부터" desc="끄면 짝수 페이지부터 나란히 보여요" />
+      <Row style={{ marginTop: 8, flexWrap: 'wrap' }} gap={8}>{([['vertical', '상하 스크롤', 'reorder-four-outline'], ['horizontal', '좌우 넘기기', 'phone-landscape-outline'], ['twoPage', '2페이지씩 좌우', 'book-outline']] as const).map(([k, l, i]) => <Pressable key={k} onPress={() => setLayout(k)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1.5, borderColor: (layout === 'continuous' ? 'vertical' : layout) === k ? colors.primary : 'rgba(15,23,42,0.12)' }}><Ionicons name={i} size={16} color={(layout === 'continuous' ? 'vertical' : layout) === k ? colors.primary : colors.textMuted} /><Text style={{ color: layout === k ? colors.primary : colors.text, fontWeight: '600', fontSize: 13 }}>{l}</Text></Pressable>)}</Row>
+      <Item k="twoPageStartOdd" title="2페이지씩 보기: 1쪽을 왼쪽에" desc="끄면 1쪽을 표지처럼 따로 보여주고 2·3쪽부터 나란히 보여요" />
       <Muted variant="label" style={{ marginTop: 14 }}>필기</Muted>
       <Item k="strokeSmoothing" title="획 보정" desc="손떨림을 줄여 부드러운 선으로 그려요" />
       <Item k="lineSnap" title="직선 보정" desc="끝점에서 0.5초 머무르면 직선으로 바뀌고, 거의 직선인 획도 보정" />

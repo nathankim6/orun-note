@@ -3,7 +3,7 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { View } from 'react-native';
+import { View, Platform } from 'react-native';
 import { useTheme } from '@/theme';
 import { useDocsStore } from '@/store/docs';
 import { useSession } from '@/store/session';
@@ -22,6 +22,13 @@ if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
     if (!isFatal && prev) prev(err, isFatal);
     console.error('Unhandled JS error', err);
   });
+}
+
+// Web/desktop: the browser's rectangular focus ring sits inside our rounded inputs and looks broken; inputs show focus via their own border.
+if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getElementById('orun-web-css')) {
+  const st = document.createElement('style'); st.id = 'orun-web-css';
+  st.textContent = 'input:focus,textarea:focus{outline:none!important}html,body{overscroll-behavior:none}';
+  document.head.appendChild(st);
 }
 
 export default function RootLayout() {

@@ -130,7 +130,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     fit: () => zoomJS(1, W / 2, H / 2),
     fitPage: () => { const bx = L.boxes[curRef.current]; if (!bx) return; const zz = Math.min(1, (H - 2 * M) / bx.h, (W - 2 * M) / bx.w); const b = bounds(zz); const cfg = { duration: 260, easing: Easing.out(Easing.cubic) }; z.value = withTiming(zz, cfg); tx.value = withTiming(Math.min(b.maxX, Math.max(b.minX, W / 2 - (bx.x + bx.w / 2) * zz)), cfg); ty.value = withTiming(Math.min(b.maxY, Math.max(b.minY, H / 2 - (bx.y + bx.h / 2) * zz)), cfg); settledJS(zz); },
     getZoom: () => z.value,
-  }), [place, zoomJS, mode, W, H]);
+  }), [place, zoomJS, mode, W, H, L, bounds, settledJS]);
 
   // ---------- gestures ----------
   /** Palm rejection: true while the pen hovers / writes / was just lifted — finger & palm contacts are then ignored. */

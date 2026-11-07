@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle, TextStyle, StyleProp, Modal, ScrollView } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TextInputProps, View, ViewStyle, TextStyle, StyleProp, Modal, ScrollView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, radius, spacing, type } from '@/theme';
 import { glass } from '@/theme';
@@ -120,7 +120,7 @@ export function ListItem({ title, subtitle, icon, right, onPress, danger, value 
 export function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   const { colors } = useTheme();
   return (
-    <Pressable onPress={() => onChange(!value)} style={[styles.toggle, { backgroundColor: value ? colors.primary : colors.border }]}>
+    <Pressable onPress={() => onChange(!value)} style={[styles.toggle, { backgroundColor: value ? colors.primary : 'rgba(15,23,42,0.18)' }]}>
       <View style={[styles.knob, { alignSelf: value ? 'flex-end' : 'flex-start' }]} />
     </Pressable>
   );
@@ -131,8 +131,8 @@ export function Sheet({ visible, onClose, children, title, height }: { visible: 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={[styles.backdrop, { backgroundColor: colors.overlay }]} onPress={onClose} />
-      <View style={[styles.sheet, { backgroundColor: 'rgba(255,255,255,0.92)', maxHeight: (height as any) ?? '85%', borderTopLeftRadius: 28, borderTopRightRadius: 28 }]}>
-        <View style={[styles.handle, { backgroundColor: colors.border }]} />
+      <View style={[styles.sheet, Platform.OS === 'web' ? ({ backdropFilter: 'blur(24px) saturate(1.3)', WebkitBackdropFilter: 'blur(24px) saturate(1.3)' } as any) : null, { backgroundColor: 'rgba(255,255,255,0.97)', maxHeight: (height as any) ?? '85%', borderTopLeftRadius: 28, borderTopRightRadius: 28 }]}>
+        <View style={[styles.handle, { backgroundColor: 'rgba(15,23,42,0.15)' }]} />
         {!!title && <Row justify="space-between" style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.sm }}><T variant="h3">{title}</T><IconButton icon="close" onPress={onClose} /></Row>}
         <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}>{children}</ScrollView>
       </View>

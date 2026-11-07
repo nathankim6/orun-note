@@ -4,13 +4,33 @@ let lib: any = null; const docs = new Map<string, Promise<any>>();
 import * as pdfjsLib from 'pdfjs-dist';
 async function pdfjs() { if (lib) return lib; lib = pdfjsLib as any; lib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; return lib; }
 async function open(uri: string) { if (!docs.has(uri)) { docs.set(uri, (async () => { const p = await pdfjs(); const data = await (await fetch(uri)).arrayBuffer(); return p.getDocument({ data }).promise; })()); } return docs.get(uri)!; }
+
+/** pdf.js returns one item per glyph run; many Korean PDFs position every syllable separately.
+ *  Join by geometry: no space when the next run starts where the previous one ended, a space for a real gap, a newline for a new line. */
+function joinItems(items: any[]): string {
+  let out = ''; let px = 0, py = 0, pw = 0, ph = 0, has = false;
+  for (const it of items) {
+    const str: string = it.str ?? ''; if (!str) { if (it.hasEOL) out += '\n'; continue; }
+    const x = it.transform?.[4] ?? 0, y = it.transform?.[5] ?? 0, h = Math.abs(it.transform?.[3] ?? it.height ?? 10) || 10;
+    if (has) {
+      const newLine = Math.abs(y - py) > Math.max(ph, h) * 0.6;
+      const gap = x - (px + pw);
+      if (newLine) out += out.endsWith('\n') ? '' : '\n';
+      else if (gap > Math.max(ph, h) * 0.18 && !out.endsWith(' ') && !str.startsWith(' ')) out += ' ';
+    }
+    out += str; px = x; py = y; pw = it.width ?? 0; ph = h; has = true;
+    if (it.hasEOL) out += '\n';
+  }
+  return out.replace(/[ \t]+\n/g, '\n');
+}
+
 export default {
   // Web is a development/preview target only: no at-rest encryption is applied here.
   async importFile(srcUri: string, _id: string) { const blob = await (await fetch(srcUri)).blob(); return { uri: srcUri, size: blob.size }; },
   async deleteFile(_uri: string) {}, async fileExists(_uri: string) { return true; }, async clearCaches() { docs.clear(); },
   async getInfo(uri: string): Promise<PdfInfo> { const doc = await open(uri); const pages = []; for (let i = 1; i <= doc.numPages; i++) { const pg = await doc.getPage(i); const vp = pg.getViewport({ scale: 1 }); pages.push({ width: vp.width, height: vp.height }); } let title: string | undefined; try { title = (await doc.getMetadata())?.info?.Title; } catch {} return { pageCount: doc.numPages, pages, title }; },
   async renderPage(uri: string, index: number, width: number): Promise<string> { const doc = await open(uri); const pg = await doc.getPage(index + 1); const base = pg.getViewport({ scale: 1 }); const vp = pg.getViewport({ scale: width / base.width }); const canvas = document.createElement('canvas'); canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height); const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); await pg.render({ canvasContext: ctx, viewport: vp }).promise; return canvas.toDataURL('image/png'); },
-  async getPageText(uri: string, index: number): Promise<string> { const doc = await open(uri); const pg = await doc.getPage(index + 1); const tc = await pg.getTextContent(); return tc.items.map((it: any) => it.str).join(' '); },
+  async getPageText(uri: string, index: number): Promise<string> { const doc = await open(uri); const pg = await doc.getPage(index + 1); const tc = await pg.getTextContent(); return joinItems(tc.items); },
   async getWords(uri: string, index: number) {
     const lib = await pdfjs(); const doc = await open(uri); const pg = await doc.getPage(index + 1); const vp = pg.getViewport({ scale: 1 }); const tc = await pg.getTextContent();
     const out: { t: string; x: number; y: number; w: number; h: number }[] = [];

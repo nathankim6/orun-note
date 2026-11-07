@@ -32,12 +32,12 @@ export default function Settings() {
         <SectionHeader title="보기 옵션 (뷰어 기본값)" />
         <Card>
           <Muted variant="label">기본 레이아웃</Muted>
-          <Row style={{ marginTop: 8, flexWrap: 'wrap' }}>{([['vertical', '세로 페이지'], ['horizontal', '가로 페이지'], ['continuous', '연속 스크롤'], ['twoPage', '두 페이지']] as const).map(([k, l]) => <Chip key={k} label={l} active={s.viewer.defaultLayoutMode === k} onPress={() => s.setViewer({ defaultLayoutMode: k })} />)}</Row>
+          <Row style={{ marginTop: 8, flexWrap: 'wrap' }}>{([['vertical', '상하 스크롤'], ['horizontal', '좌우 넘기기'], ['twoPage', '2페이지씩 좌우']] as const).map(([k, l]) => <Chip key={k} label={l} active={(s.viewer.defaultLayoutMode === 'continuous' ? 'vertical' : s.viewer.defaultLayoutMode) === k} onPress={() => s.setViewer({ defaultLayoutMode: k })} />)}</Row>
           <Item k="strokeSmoothing" title="획 보정" desc="부드러운 곡선으로 그려요" />
           <Item k="lineSnap" title="직선 보정" desc="끝점에서 0.5초 머무르면 직선으로" />
           <Item k="penAutoReturn" title="펜 자동 복귀" desc="도형·텍스트 후 펜으로 복귀" />
           <Item k="doubleTapZoomEnabled" title="더블탭으로 확대" desc="두 번 탭하면 2배 확대/원복" />
-          <Item k="twoPageStartOdd" title="두 페이지 보기: 홀수 페이지부터" desc="" />
+          <Item k="twoPageStartOdd" title="2페이지씩 보기: 1쪽을 왼쪽에" desc="끄면 1쪽을 표지처럼 따로 보여줘요" />
           <Button title="보기 옵션 초기화" variant="ghost" style={{ marginTop: 8 }} onPress={() => { s.resetViewer(); showToast('기본값으로 되돌렸어요'); }} />
         </Card>
         <SectionHeader title="저장 공간" />

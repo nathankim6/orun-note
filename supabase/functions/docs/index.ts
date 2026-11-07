@@ -11,6 +11,8 @@ const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const fail = (message: string, status = 400) => json({ ok: false, error: message }, status);
 const normStudentCode = (c: unknown) => String(c ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+/** Mac file names arrive decomposed (NFD); store and return composed Hangul (NFC) so search and sorting work. */
+const nfc = (v: unknown) => String(v ?? '').normalize('NFC');
 const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
 
 // ---- orunhomework.com (live roster) ----
@@ -89,7 +91,8 @@ async function resolve(body: any): Promise<{ who: Who | null; authed?: { email: 
   return { who: { role: "student", email: authed.email, student: st, label: st.name }, authed };
 }
 // Attach short-lived signed URLs for cover images (admin-uploaded; otherwise the client shows page 1).
-async function withCovers(list: any[]) {
+async function withCovers(list0: any[]) {
+  const list = list0.map((m) => ({ ...m, title: nfc(m.title), file_name: nfc(m.file_name) }));
   const paths = list.map((m) => m.cover_path).filter(Boolean); if (!paths.length) return list;
   const { data } = await supa.storage.from(BUCKET).createSignedUrls(paths, 3600); const map = new Map((data ?? []).map((d: any) => [d.path, d.signedUrl]));
   return list.map((m) => ({ ...m, cover_url: m.cover_path ? map.get(m.cover_path) ?? null : null }));
@@ -185,7 +188,7 @@ Deno.serve(async (req) => {
       case "admins.add": { const e = normEmail(body.email); if (!/^[^@]+@[^@]+\.[^@]+$/.test(e)) return fail("이메일 형식이 아닙니다"); const { error } = await supa.from("admin_emails").upsert({ email: e, label: String(body.label ?? "") }); if (error) return fail(error.message); return json({ ok: true }); }
       case "admins.remove": { const { error } = await supa.from("admin_emails").delete().eq("email", normEmail(body.email)); if (error) return fail(error.message); return json({ ok: true }); }
       case "materials.uploadUrl": {
-        const title = String(body.title ?? "").trim() || "제목 없음"; const fileName = String(body.fileName ?? "file.pdf");
+        const title = nfc(body.title).trim() || "제목 없음"; const fileName = nfc(body.fileName ?? "file.pdf");
         const id = crypto.randomUUID(); const path = `${id}.pdf`;
         const { data: s, error } = await supa.storage.from(BUCKET).createSignedUploadUrl(path); if (error || !s) return fail("업로드 URL 생성 실패: " + (error?.message ?? ""), 500);
         const { error: e2 } = await supa.from("materials").insert({ id, title, file_name: fileName, storage_path: path, ready: false }); if (e2) return fail(e2.message);
@@ -196,7 +199,7 @@ Deno.serve(async (req) => {
         const { data, error } = await supa.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true }); if (error || !data) return fail("표지 업로드 URL 생성 실패: " + (error?.message ?? ""), 500);
         await supa.from("materials").update({ cover_path: path }).eq("id", id); return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token }); }
       case "materials.coverClear": { const { data: m } = await supa.from("materials").select("cover_path").eq("id", String(body.id)).maybeSingle(); if (m?.cover_path) await supa.storage.from(BUCKET).remove([m.cover_path]); await supa.from("materials").update({ cover_path: null }).eq("id", String(body.id)); return json({ ok: true }); }
-      case "materials.rename": { const { data, error } = await supa.from("materials").update({ title: String(body.title ?? "") }).eq("id", String(body.id)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
+      case "materials.rename": { const { data, error } = await supa.from("materials").update({ title: nfc(body.title) }).eq("id", String(body.id)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
       case "materials.delete": {
         const { data: m } = await supa.from("materials").select("storage_path,cover_path").eq("id", String(body.id)).maybeSingle();
         if (m) await supa.storage.from(BUCKET).remove([m.storage_path, ...(m.cover_path ? [m.cover_path] : [])]);

@@ -31,7 +31,8 @@ export async function pickAndImportPdf(): Promise<Doc | null> {
   return importPdf({ uri: a.uri, name: a.name, size: a.size ?? 0, file: (a as any).file as File | undefined });
 }
 
-export async function importPdf({ uri, name, size, file, title, subject, materialId }: { uri: string; name: string; size: number; file?: File; title?: string; subject?: string; materialId?: string }): Promise<Doc> {
+export async function importPdf({ uri, name: name0, size, file, title: title0, subject, materialId }: { uri: string; name: string; size: number; file?: File; title?: string; subject?: string; materialId?: string }): Promise<Doc> {
+  const name = name0.normalize('NFC'); const title = title0?.normalize('NFC'); // Mac file names are decomposed (NFD)
   const store = useDocsStore.getState(); const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
   let finalUri = uri;
   if (Platform.OS === 'web') { const blob = file ?? (await (await fetch(uri)).blob()); await idb.put(id, blob); finalUri = URL.createObjectURL(blob); webUrls.set(id, finalUri); size = size || blob.size; }

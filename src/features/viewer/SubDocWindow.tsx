@@ -27,7 +27,7 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose }: { mode
   const style = useAnimatedStyle(() => ({ left: x.value, top: y.value, width: w.value, height: h.value }));
   const pg = doc?.pages[page]; const contentW = size.w - 2; const contentH = size.h - 44 - 2; const scale = pg ? Math.min(contentW / pg.width, contentH / pg.height) : 1;
   return (
-    <Animated.View style={[{ position: 'absolute', borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.96)', borderWidth: 1, borderColor: 'rgba(47,111,237,0.35)', shadowColor: '#1B3B7A', shadowOpacity: 0.25, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 12, zIndex: 50 }, style]}>
+    <Animated.View style={[{ position: 'absolute', borderRadius: 16, overflow: 'hidden', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: 'rgba(47,111,237,0.35)', shadowColor: '#1B3B7A', shadowOpacity: 0.25, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 12, zIndex: 50 }, style]}>
       <GestureDetector gesture={drag}>
         <View style={{ height: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, gap: 6, backgroundColor: 'rgba(47,111,237,0.08)', borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.06)' }} collapsable={false}>
           <Ionicons name="albums-outline" size={16} color={colors.primary} />

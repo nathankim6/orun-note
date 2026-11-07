@@ -1,12 +1,13 @@
 {
   "name": "orun-note-desktop",
   "version": "1.5.0",
-  "description": "옳은Note for Windows",
+  "description": "옳은Note desktop (Windows / macOS)",
   "author": "ORUN ACADEMY",
   "main": "main.js",
   "private": true,
   "scripts": {
-    "dist": "electron-builder --win nsis --x64 --publish never"
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dir --universal --publish never"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -46,6 +47,43 @@
       "shortcutName": "옳은Note",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.education",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "11.0",
+      "artifactName": "OrunNote-${version}-mac.${ext}"
+    },
+    "dmg": {
+      "title": "옳은Note ${version}",
+      "artifactName": "OrunNote-${version}-mac.${ext}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 200
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
     }
   }
 }

@@ -45,7 +45,9 @@ export default function Library() {
   useEffect(() => { refresh(); }, [role]);
   const localByMaterial = useMemo(() => Object.fromEntries(Object.values(docs).filter((d) => d.materialId).map((d) => [d.materialId!, d])), [docs]);
   const pending = useMemo(() => materials.filter((m) => !localByMaterial[m.id]), [materials, localByMaterial]);
-  const list = useMemo(() => Object.values(docs).filter((d) => (folder === 'all' ? true : folder === 'fav' ? d.favorite : d.folderId === folder) && (!q || d.title.toLowerCase().includes(q.toLowerCase()) || d.fileName.toLowerCase().includes(q.toLowerCase()))).sort((a, b) => sort === 'title' ? a.title.localeCompare(b.title) : sort === 'added' ? (b.createdAt > a.createdAt ? 1 : -1) : ((b.lastOpenedAt ?? b.createdAt) > (a.lastOpenedAt ?? a.createdAt) ? 1 : -1)), [docs, folder, q, sort]);
+  const qn = q.normalize('NFC').trim().toLowerCase();
+  const pendingShown = useMemo(() => (folder === 'all' ? pending.filter((m) => !qn || String(m.title ?? '').normalize('NFC').toLowerCase().includes(qn)) : []), [pending, folder, qn]);
+  const list = useMemo(() => Object.values(docs).filter((d) => (folder === 'all' ? true : folder === 'fav' ? d.favorite : d.folderId === folder) && (!q || d.title.normalize('NFC').toLowerCase().includes(q.normalize('NFC').toLowerCase()) || d.fileName.normalize('NFC').toLowerCase().includes(q.normalize('NFC').toLowerCase()))).sort((a, b) => sort === 'title' ? a.title.normalize('NFC').localeCompare(b.title.normalize('NFC'), 'ko') : sort === 'added' ? (b.createdAt > a.createdAt ? 1 : -1) : ((b.lastOpenedAt ?? b.createdAt) > (a.lastOpenedAt ?? a.createdAt) ? 1 : -1)), [docs, folder, q, sort]);
   const tileW = Math.floor((width - (isTablet ? 90 : 0) - 32 - (columns - 1) * 16) / columns);
   const recent = Object.values(docs).filter((d) => d.lastOpenedAt).sort((a, b) => (b.lastOpenedAt! > a.lastOpenedAt! ? 1 : -1))[0];
   const strokeCount = (d: Doc) => Object.entries(inkPages).filter(([k]) => k.startsWith(d.id + ':')).reduce((a, [, p]) => a + p.strokes.length, 0);
@@ -70,10 +72,10 @@ export default function Library() {
           <Chip label="폴더 추가" icon="add" onPress={() => setFolderSheet(true)} />
         </ScrollView>
         <Row justify="space-between" style={{ marginTop: 14, marginBottom: 6 }}>
-          <Muted variant="caption">{list.length + (folder === 'all' && !q ? pending.length : 0)}개{materialsAt ? ` · 목록 ${timeAgo(materialsAt)} 갱신` : ''}</Muted>
+          <Muted variant="caption">{list.length + pendingShown.length}개{materialsAt ? ` · 목록 ${timeAgo(materialsAt)} 갱신` : ''}</Muted>
           <Row gap={10}>{([['recent', '최근 열람순'], ['title', '제목순'], ['added', '추가순']] as const).map(([k, l]) => <Pressable key={k} onPress={() => setSort(k)}><Text style={{ color: sort === k ? colors.primary : colors.textMuted, fontSize: 12, fontWeight: '600' }}>{l}</Text></Pressable>)}{folder !== 'all' && folder !== 'fav' && <Pressable onPress={() => { deleteFolder(folder); setFolder('all'); }}><Text style={{ color: colors.danger, fontSize: 12, fontWeight: '600' }}>폴더 삭제</Text></Pressable>}</Row>
         </Row>
-        {list.length === 0 && pending.length === 0 ? (
+        {list.length === 0 && pendingShown.length === 0 ? (
           <View style={{ alignItems: 'center', paddingVertical: 30 }}>
             <Logo size={56} withText={false} />
             <T variant="h2" style={{ marginTop: 16 }}>{role === 'admin' ? '아직 교재가 없어요' : '배정된 교재가 아직 없어요'}</T>
@@ -82,7 +84,7 @@ export default function Library() {
           </View>
         ) : (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-            {folder === 'all' && !q && pending.map((m) => <MaterialTile key={'m' + m.id} m={m} width={tileW} progress={dl[m.id]} onDownload={() => doDownload(m)} />)}
+            {pendingShown.map((m) => <MaterialTile key={'m' + m.id} m={m} width={tileW} progress={dl[m.id]} onDownload={() => doDownload(m)} />)}
             {list.map((d) => { const sel = selected.includes(d.id); return (
               <Pressable key={d.id} onPress={() => (select ? toggleSel(d.id) : open(d))} onLongPress={() => { setSelect(true); toggleSel(d.id); }} style={{ width: tileW }}>
                 <View><Cover doc={d} width={tileW} />

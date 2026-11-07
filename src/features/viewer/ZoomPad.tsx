@@ -16,11 +16,12 @@ export type PadRegion = { x: number; y: number; w: number };
  * Writing in it lands inside the blue frame on the page; reaching the right edge auto-advances the frame,
  * and the end of a line wraps to the next line.
  */
-export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, region, setRegion, strokes, textBoxes, images, onStrokes, onTextBoxes, onImages, cfg, opts, textFont, onClose }: {
+export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, region, setRegion, strokes, textBoxes, images, onStrokes, onTextBoxes, onImages, cfg, opts, textFont, onClose, historyRef, onHistory }: {
   height: number; uri: string | null; pageW: number; pageH: number; sourceIndex: number; template?: any;
   region: PadRegion; setRegion: (r: PadRegion) => void;
   strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; onStrokes: (s: Stroke[]) => void; onTextBoxes: (t: TextBox[]) => void; onImages: (i: ImageBox[]) => void;
   cfg: ToolConfig; opts: InkOpts; textFont: string; onClose: () => void;
+  /** undo/redo of strokes written in the pad (the toolbar routes 되돌리기/다시하기 here while the pad is open) */ historyRef?: any; onHistory?: (h: { canUndo: boolean; canRedo: boolean }) => void;
 }) {
   const { colors } = useTheme(); const [padW, setPadW] = useState(0);
   const innerH = height - 16; const k = padW > 0 ? padW / region.w : 1; const regionH = innerH / k;
@@ -41,7 +42,7 @@ export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, regi
           <View style={{ position: 'absolute', left: -region.x * k, top: -region.y * k, width: pageW * k, height: pageH * k }}>
             <PdfPage uri={uri} index={sourceIndex} width={pageW * k} height={pageH * k} template={template} />
             <InkCanvas width={pageW * k} height={pageH * k} s={k} strokes={strokes} textBoxes={textBoxes} images={images} onImages={onImages} textFont={textFont} opts={opts}
-              cfg={cfg} enabled fingerDraw={false} lineSnap onStrokes={handleStrokes} onTextBoxes={onTextBoxes} />
+              cfg={cfg} enabled fingerDraw={false} lineSnap onStrokes={handleStrokes} onTextBoxes={onTextBoxes} historyRef={historyRef} onHistory={onHistory} />
           </View>
         )}
         <View pointerEvents="none" style={[styles.advance, { width: padW * 0.2 }]} />
@@ -93,7 +94,7 @@ export function PadFrame({ region, regionH, s, pageW, pageH, setRegion }: { regi
 }
 
 const styles = StyleSheet.create({
-  wrap: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.92)', borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.08)', padding: 8, gap: 8 },
+  wrap: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.98)', borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.08)', padding: 8, gap: 8 },
   pad: { flex: 1, overflow: 'hidden', backgroundColor: '#fff', borderRadius: 12, borderWidth: 2, borderColor: '#2F6FED' },
   advance: { position: 'absolute', right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(47,111,237,0.07)', borderLeftWidth: 1, borderLeftColor: 'rgba(47,111,237,0.35)', borderStyle: 'dashed' },
   controls: { width: 84, justifyContent: 'center', alignItems: 'center', gap: 4 },

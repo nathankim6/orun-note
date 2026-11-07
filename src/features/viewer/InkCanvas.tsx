@@ -12,7 +12,7 @@ import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoi
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
 
-export type InkHandle = { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
+export type InkHandle = { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean; /** add/replace page images as one undoable step */ commitImages?: (next: ImageBox[]) => void };
 type Props = {
   width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[]; onImages?: (next: ImageBox[]) => void; textFont?: string;
   /** Samsung-Notes handwriting options */ opts?: InkOpts;
@@ -44,14 +44,21 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const clearSel = () => { setSelection([]); setSelText([]); setSelImg([]); setPasteAt(null); onSelectionChange?.([]); };
   const lookupAt = (p: Point, abs: { x: number; y: number }) => { const w = wordAt(words ?? null, p.x / pageW, p.y / pageH); if (!w || !onLookup) return false; const t = cleanWord(w.t); if (!/[A-Za-z]/.test(t)) return false; setTextSel([w]); onLookup(t, abs, [{ x: w.x * pageW, y: w.y * pageH, w: w.w * pageW, h: w.h * pageH }]); return true; };
   const liveRef = useRef<Point[]>([]); const startT = useRef(0); const strokesRef = useRef(strokes); strokesRef.current = strokes; const textRef = useRef(textBoxes); textRef.current = textBoxes;
-  const undoStack = useRef<{ strokes: Stroke[]; textBoxes: TextBox[] }[]>([]); const redoStack = useRef<typeof undoStack.current>([]);
-  const pushHistory = useCallback(() => { undoStack.current.push({ strokes: strokesRef.current, textBoxes: textRef.current }); if (undoStack.current.length > 60) undoStack.current.shift(); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); }, [onHistory]);
+  const undoStack = useRef<{ strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[] }[]>([]); const redoStack = useRef<typeof undoStack.current>([]);
+  const pushSnap = useCallback((sn: { strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[] }) => { undoStack.current.push(sn); if (undoStack.current.length > 60) undoStack.current.shift(); redoStack.current = []; onHistory?.({ canUndo: true, canRedo: false }); }, [onHistory]);
+  const pushHistory = useCallback(() => pushSnap({ strokes: strokesRef.current, textBoxes: textRef.current, images: imagesRef.current }), [pushSnap]);
+  /** One user action = one undo step, whatever mix of strokes / text / images it touches. */
+  const commitAll = useCallback((n: { strokes?: Stroke[]; texts?: TextBox[]; images?: ImageBox[] }) => { if (!n.strokes && !n.texts && !n.images) return; pushHistory(); if (n.strokes) onStrokes(n.strokes); if (n.texts) onTextBoxes(n.texts); if (n.images) onImages?.(n.images); }, [pushHistory, onStrokes, onTextBoxes, onImages]);
   const commit = useCallback((next: Stroke[]) => { pushHistory(); onStrokes(next); }, [onStrokes, pushHistory]);
+  /** Text editing records ONE undo step per finished edit: the page as it was before the box was created/opened. */
+  const editBase = useRef<TextBox[] | null>(null);
+  const pushTextBase = useCallback((base: TextBox[]) => pushSnap({ strokes: strokesRef.current, textBoxes: base, images: imagesRef.current }), [pushSnap]);
   const commitText = useCallback((next: TextBox[]) => { pushHistory(); onTextBoxes(next); }, [onTextBoxes, pushHistory]);
   useEffect(() => { if (historyRef) historyRef.current = {
-    undo: () => { const prev = undoStack.current.pop(); if (!prev) return; redoStack.current.push({ strokes: strokesRef.current, textBoxes: textRef.current }); onStrokes(prev.strokes); onTextBoxes(prev.textBoxes); onHistory?.({ canUndo: undoStack.current.length > 0, canRedo: true }); },
-    redo: () => { const next = redoStack.current.pop(); if (!next) return; undoStack.current.push({ strokes: strokesRef.current, textBoxes: textRef.current }); onStrokes(next.strokes); onTextBoxes(next.textBoxes); onHistory?.({ canUndo: true, canRedo: redoStack.current.length > 0 }); },
+    undo: () => { const prev = undoStack.current.pop(); if (!prev) return; redoStack.current.push({ strokes: strokesRef.current, textBoxes: textRef.current, images: imagesRef.current }); onStrokes(prev.strokes); onTextBoxes(prev.textBoxes); if (prev.images && onImages) onImages(prev.images); onHistory?.({ canUndo: undoStack.current.length > 0, canRedo: true }); },
+    redo: () => { const next = redoStack.current.pop(); if (!next) return; undoStack.current.push({ strokes: strokesRef.current, textBoxes: textRef.current, images: imagesRef.current }); onStrokes(next.strokes); onTextBoxes(next.textBoxes); if (next.images && onImages) onImages(next.images); onHistory?.({ canUndo: true, canRedo: redoStack.current.length > 0 }); },
     get canUndo() { return undoStack.current.length > 0; }, get canRedo() { return redoStack.current.length > 0; },
+    commitImages: (next: ImageBox[]) => commitAll({ images: next }),
   }; });
   const toPage = (x: number, y: number): Point => ({ x: x / s, y: y / s });
   // stylus pressure (0..1) from Apple Pencil / S Pen; absent for touch/mouse
@@ -71,7 +78,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     const t = Date.now() - startT.current; const tool = cfg.tool;
     if (!pointerOk) return;
     const isTap = pts.length > 0 && t < 260 && dist(pts[0], pts[pts.length - 1]) < 5 / s && boundsOf(pts).w < 6 / s && boundsOf(pts).h < 6 / s;
-    if (isTap) { if (tool === 'text') { const p = pts[0]; const tb: TextBox = { id: uid(), rect: { x: p.x, y: p.y, w: 180, h: 40 }, text: '', color: cfg.color, size: Math.max(8, cfg.width >= 8 ? cfg.width : 14), font: textFont, createdAt: Date.now() }; commitText([...textRef.current, tb]); setEditing(tb.id); return; } if (onTap?.(pts[0])) return; if (tool === 'lasso') { setSelection([]); onSelectionChange?.([]); return; } if (!isDrawingTool) return; }
+    if (isTap) { if (tool === 'text') { const p = pts[0]; const tb: TextBox = { id: uid(), rect: { x: p.x, y: p.y, w: 180, h: 40 }, text: '', color: cfg.color, size: Math.max(8, cfg.width >= 8 ? cfg.width : 14), font: textFont, createdAt: Date.now() }; editBase.current = textRef.current; onTextBoxes([...textRef.current, tb]); setEditing(tb.id); return; } if (onTap?.(pts[0])) return; if (tool === 'lasso') { setSelection([]); onSelectionChange?.([]); return; } if (!isDrawingTool) return; }
     if (readOnly) return;
     if (isDrawingTool) {
       let points = pts; let poly = false;
@@ -176,35 +183,41 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   }
   function applyScale(f: number, ox: number, oy: number) {
     const sc = (q: Point): Point => ({ ...q, x: ox + (q.x - ox) * f, y: oy + (q.y - oy) * f });
-    if (selection.length) commit(strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, width: Math.max(0.3, st.width * f), points: st.points.map(sc) } : st)));
-    if (selText.length) commitText(textRef.current.map((t) => (selText.includes(t.id) ? { ...t, size: Math.max(6, t.size * f), rect: { ...t.rect, x: ox + (t.rect.x - ox) * f, y: oy + (t.rect.y - oy) * f, w: t.rect.w * f } } : t)));
-    if (selImg.length) onImages?.(imagesRef.current.map((im) => (selImg.includes(im.id) ? { ...im, rect: { x: ox + (im.rect.x - ox) * f, y: oy + (im.rect.y - oy) * f, w: im.rect.w * f, h: im.rect.h * f } } : im)));
+    commitAll({
+      strokes: selection.length ? strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, width: Math.max(0.3, st.width * f), points: st.points.map(sc) } : st)) : undefined,
+      texts: selText.length ? textRef.current.map((t) => (selText.includes(t.id) ? { ...t, size: Math.max(6, t.size * f), rect: { ...t.rect, x: ox + (t.rect.x - ox) * f, y: oy + (t.rect.y - oy) * f, w: t.rect.w * f } } : t)) : undefined,
+      images: selImg.length ? imagesRef.current.map((im) => (selImg.includes(im.id) ? { ...im, rect: { x: ox + (im.rect.x - ox) * f, y: oy + (im.rect.y - oy) * f, w: im.rect.w * f, h: im.rect.h * f } } : im)) : undefined,
+    });
   }
   function copySel() { const b = combinedBounds(); if (!b) return; CLIP = { strokes: strokesRef.current.filter((st) => selection.includes(st.id)).map((st) => ({ ...st, points: st.points.map((q) => ({ ...q })) })), textBoxes: textRef.current.filter((t) => selText.includes(t.id)).map((t) => ({ ...t, rect: { ...t.rect } })), images: imagesRef.current.filter((im) => selImg.includes(im.id)).map((im) => ({ ...im, rect: { ...im.rect } })), b }; }
   function pasteClip(at?: Point) {
     if (!CLIP) return; const c = CLIP; const dx = at ? at.x - c.b.x : 18, dy = at ? at.y - c.b.y : 18; const mv = (q: Point): Point => ({ ...q, x: q.x + dx, y: q.y + dy });
     const ns = c.strokes.map((st) => ({ ...st, id: uid(), points: st.points.map(mv), createdAt: Date.now() })); const nt = c.textBoxes.map((t) => ({ ...t, id: uid(), rect: { ...t.rect, x: t.rect.x + dx, y: t.rect.y + dy }, createdAt: Date.now() })); const ni = c.images.map((im) => ({ ...im, id: uid(), rect: { ...im.rect, x: im.rect.x + dx, y: im.rect.y + dy }, createdAt: Date.now() }));
-    if (ns.length) commit([...strokesRef.current, ...ns]); if (nt.length) commitText([...textRef.current, ...nt]); if (ni.length) onImages?.([...imagesRef.current, ...ni]);
+    commitAll({ strokes: ns.length ? [...strokesRef.current, ...ns] : undefined, texts: nt.length ? [...textRef.current, ...nt] : undefined, images: ni.length ? [...imagesRef.current, ...ni] : undefined });
     setPasteAt(null); setSelection(ns.map((x) => x.id)); setSelText(nt.map((x) => x.id)); setSelImg(ni.map((x) => x.id)); onSelectionChange?.(ns.map((x) => x.id));
   }
-  function recolorSel() { if (selection.length) commit(strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, color: cfg.color } : st))); if (selText.length) commitText(textRef.current.map((t) => (selText.includes(t.id) ? { ...t, color: cfg.color } : t))); }
-  function reorderSel(front: boolean) { const sel = strokesRef.current.filter((st) => selection.includes(st.id)), rest = strokesRef.current.filter((st) => !selection.includes(st.id)); commit(front ? [...rest, ...sel] : [...sel, ...rest]); if (selImg.length) { const si = imagesRef.current.filter((im) => selImg.includes(im.id)), ri = imagesRef.current.filter((im) => !selImg.includes(im.id)); onImages?.(front ? [...ri, ...si] : [...si, ...ri]); } }
+  function recolorSel() { commitAll({ strokes: selection.length ? strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, color: cfg.color } : st)) : undefined, texts: selText.length ? textRef.current.map((t) => (selText.includes(t.id) ? { ...t, color: cfg.color } : t)) : undefined }); }
+  function reorderSel(front: boolean) { const sel = strokesRef.current.filter((st) => selection.includes(st.id)), rest = strokesRef.current.filter((st) => !selection.includes(st.id)); const si = imagesRef.current.filter((im) => selImg.includes(im.id)), ri = imagesRef.current.filter((im) => !selImg.includes(im.id)); commitAll({ strokes: sel.length ? (front ? [...rest, ...sel] : [...sel, ...rest]) : undefined, images: si.length ? (front ? [...ri, ...si] : [...si, ...ri]) : undefined }); }
   function selectAll() { setPasteAt(null); setSelection(strokesRef.current.map((st) => st.id)); setSelText(textRef.current.map((t) => t.id)); setSelImg(imagesRef.current.map((im) => im.id)); onSelectionChange?.(strokesRef.current.map((st) => st.id)); }
   function applyMove(dx: number, dy: number) {
-    if (selection.length) commit(strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, points: st.points.map((q) => ({ ...q, x: q.x + dx, y: q.y + dy })) } : st)));
-    if (selText.length) commitText(textRef.current.map((t) => (selText.includes(t.id) ? { ...t, rect: { ...t.rect, x: t.rect.x + dx, y: t.rect.y + dy } } : t)));
-    if (selImg.length) onImages?.(imagesRef.current.map((im) => (selImg.includes(im.id) ? { ...im, rect: { ...im.rect, x: im.rect.x + dx, y: im.rect.y + dy } } : im)));
+    commitAll({
+      strokes: selection.length ? strokesRef.current.map((st) => (selection.includes(st.id) ? { ...st, points: st.points.map((q) => ({ ...q, x: q.x + dx, y: q.y + dy })) } : st)) : undefined,
+      texts: selText.length ? textRef.current.map((t) => (selText.includes(t.id) ? { ...t, rect: { ...t.rect, x: t.rect.x + dx, y: t.rect.y + dy } } : t)) : undefined,
+      images: selImg.length ? imagesRef.current.map((im) => (selImg.includes(im.id) ? { ...im, rect: { ...im.rect, x: im.rect.x + dx, y: im.rect.y + dy } } : im)) : undefined,
+    });
   }
   const selBoundsRaw = combinedBounds();
   const selBounds = selBoundsRaw && dragOff ? { ...selBoundsRaw, x: selBoundsRaw.x + dragOff.x, y: selBoundsRaw.y + dragOff.y } : selBoundsRaw && dragScale ? { x: dragScale.ox + (selBoundsRaw.x - dragScale.ox) * dragScale.f, y: dragScale.oy + (selBoundsRaw.y - dragScale.oy) * dragScale.f, w: selBoundsRaw.w * dragScale.f, h: selBoundsRaw.h * dragScale.f } : selBoundsRaw;
   const selTransform = dragOff ? `translate(${dragOff.x * s},${dragOff.y * s})` : dragScale ? `translate(${dragScale.ox * s},${dragScale.oy * s}) scale(${dragScale.f}) translate(${-dragScale.ox * s},${-dragScale.oy * s})` : undefined;
   const xfBox = <T extends { rect: { x: number; y: number; w: number; h: number } }>(o: T, sel: boolean): T => (!sel ? o : dragOff ? { ...o, rect: { ...o.rect, x: o.rect.x + dragOff.x, y: o.rect.y + dragOff.y } } : dragScale ? { ...o, rect: { x: dragScale.ox + (o.rect.x - dragScale.ox) * dragScale.f, y: dragScale.oy + (o.rect.y - dragScale.oy) * dragScale.f, w: o.rect.w * dragScale.f, h: o.rect.h * dragScale.f } } : o);
-  const deleteAll = () => { if (selection.length) commit(strokesRef.current.filter((st) => !selection.includes(st.id))); if (selText.length) commitText(textRef.current.filter((t) => !selText.includes(t.id))); if (selImg.length) onImages?.(imagesRef.current.filter((im) => !selImg.includes(im.id))); clearSel(); };
+  const deleteAll = () => { commitAll({ strokes: selection.length ? strokesRef.current.filter((st) => !selection.includes(st.id)) : undefined, texts: selText.length ? textRef.current.filter((t) => !selText.includes(t.id)) : undefined, images: selImg.length ? imagesRef.current.filter((im) => !selImg.includes(im.id)) : undefined }); clearSel(); };
   const editingBox = textBoxes.find((t) => t.id === editing);
   return (
     <View style={[StyleSheet.absoluteFill, { width, height }]} pointerEvents={enabled ? 'auto' : 'none'}>
       <GestureDetector gesture={composed}>
         <View style={{ width, height }} collapsable={false}>
+          {/* photos sit under the ink so pen notes drawn on a photo stay visible */}
+          {images.map((im) => <ImageBoxView key={im.id} im={xfBox(im, selImg.includes(im.id))} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'text')} onEditStart={pushHistory} onChange={(patch) => onImages?.(imagesRef.current.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => commitAll({ images: imagesRef.current.filter((x) => x.id !== im.id) })} />)}
           <Svg width={width} height={height} pointerEvents="none">
             <G>
               {textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
@@ -223,8 +236,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
           </Svg>
         </View>
       </GestureDetector>
-      {images.map((im) => <ImageBoxView key={im.id} im={xfBox(im, selImg.includes(im.id))} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'text')} onChange={(patch) => onImages?.(images.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => onImages?.(images.filter((x) => x.id !== im.id))} />)}
-      {textBoxes.map((tb) => { const sel = selText.includes(tb.id); const t2 = xfBox(tb, sel); return <TextBoxView key={tb.id} tb={dragScale && sel ? { ...t2, size: tb.size * dragScale.f } : t2} s={s} editing={editing === tb.id} onEdit={() => setEditing(tb.id)} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); if (!textRef.current.find((t) => t.id === tb.id)?.text.trim()) onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); else pushHistory(); }} onDelete={() => commitText(textRef.current.filter((t) => t.id !== tb.id))} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'select', 'lasso'].includes(cfg.tool)} />; })}
+      {textBoxes.map((tb) => { const sel = selText.includes(tb.id); const t2 = xfBox(tb, sel); return <TextBoxView key={tb.id} tb={dragScale && sel ? { ...t2, size: tb.size * dragScale.f } : t2} s={s} editing={editing === tb.id} onEdit={() => { if (editing !== tb.id) editBase.current = textRef.current; setEditing(tb.id); }} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); const base = editBase.current; editBase.current = null; const cur = textRef.current.find((t) => t.id === tb.id); const before = base?.find((t) => t.id === tb.id); if (!cur?.text.trim()) { onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); if (before) pushTextBase(base!); return; } if (!before || before.text !== cur.text || before.size !== cur.size || before.font !== cur.font || before.color !== cur.color || before.rect.w !== cur.rect.w) pushTextBase(base ?? textRef.current); }} onDelete={() => { const base = editBase.current; editBase.current = null; setEditing(null); const existed = !base || base.some((t) => t.id === tb.id); if (existed) pushTextBase(base ?? textRef.current); onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); }} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'select', 'lasso'].includes(cfg.tool)} />; })}
       {selBounds && (selection.length > 0 || selText.length > 0 || selImg.length > 0) && !dragOff && !dragScale && (
         <View style={{ position: 'absolute', left: Math.max(0, Math.min(width - 330, selBounds.x * s - 6)), top: selBounds.y * s - 52 > 0 ? selBounds.y * s - 52 : Math.min(height - 44, (selBounds.y + selBounds.h) * s + 22), flexDirection: 'row', backgroundColor: 'rgba(23,32,51,0.94)', borderRadius: 12, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } }}>
           {([['잘라내기', () => { copySel(); deleteAll(); }], ['복사', () => { copySel(); }], ...(CLIP ? [['붙여넣기', () => pasteClip()]] : []), ['삭제', deleteAll], ...(selection.length || selText.length ? [['색 변경', recolorSel]] : []), ['앞으로', () => reorderSel(true)], ['뒤로', () => reorderSel(false)], ['해제', clearSel]] as [string, () => void][]).map(([l, f], i) => <Pressable key={l} onPress={f} style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 9, backgroundColor: pressed ? 'rgba(255,255,255,0.15)' : 'transparent', borderLeftWidth: i ? StyleSheet.hairlineWidth : 0, borderLeftColor: 'rgba(255,255,255,0.2)' })}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>{l}</Text></Pressable>)}
@@ -263,10 +275,10 @@ function TextBoxView({ tb, s, editing, onEdit, onChange, onCommit, onDelete, ena
   );
 }
 
-function ImageBoxView({ im, s, enabled, onChange, onDelete }: { im: ImageBox; s: number; enabled: boolean; onChange: (p: Partial<ImageBox>) => void; onDelete: () => void }) {
+function ImageBoxView({ im, s, enabled, onChange, onDelete, onEditStart }: { im: ImageBox; s: number; enabled: boolean; onChange: (p: Partial<ImageBox>) => void; onDelete: () => void; /** called once when a drag/resize actually starts (records one undo step) */ onEditStart?: () => void }) {
   const { colors } = useTheme(); const start = useRef({ x: 0, y: 0, w: 0, h: 0 }); const [sel, setSel] = useState(false);
-  const drag = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(2).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onUpdate((e) => onChange({ rect: { ...im.rect, x: start.current.x + e.translationX / s, y: start.current.y + e.translationY / s } })), [enabled, im.rect, s]);
-  const resize = useMemo(() => Gesture.Pan().enabled(enabled).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onUpdate((e) => { const ratio = start.current.h / start.current.w; const w = Math.max(30, start.current.w + e.translationX / s); onChange({ rect: { ...im.rect, w, h: w * ratio } }); }), [enabled, im.rect, s]);
+  const drag = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(2).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onStart(() => onEditStart?.()).onUpdate((e) => onChange({ rect: { ...im.rect, x: start.current.x + e.translationX / s, y: start.current.y + e.translationY / s } })), [enabled, im.rect, s]);
+  const resize = useMemo(() => Gesture.Pan().enabled(enabled).runOnJS(true).onBegin(() => { start.current = { x: im.rect.x, y: im.rect.y, w: im.rect.w, h: im.rect.h }; }).onStart(() => onEditStart?.()).onUpdate((e) => { const ratio = start.current.h / start.current.w; const w = Math.max(30, start.current.w + e.translationX / s); onChange({ rect: { ...im.rect, w, h: w * ratio } }); }), [enabled, im.rect, s]);
   const tap = useMemo(() => Gesture.Tap().enabled(enabled).runOnJS(true).onStart(() => setSel((v) => !v)), [enabled]);
   return (
     <View style={{ position: 'absolute', left: im.rect.x * s, top: im.rect.y * s, width: im.rect.w * s, height: im.rect.h * s }} pointerEvents={enabled ? 'auto' : 'none'}>
