@@ -16,14 +16,14 @@ jobs:
       - run: npx tsc --noEmit
       - name: Export web app
         run: npx expo export --platform web --output-dir desktop/app
-      - name: Package app (universal: Apple Silicon + Intel)
+      - name: 'Package app (universal = Apple Silicon + Intel)'
         working-directory: desktop
         env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }
         run: |
           npm install --no-audit --no-fund
           npx electron-builder --mac dir --universal --publish never
           APP=$(ls -d release/mac-universal/*.app | head -1); echo "APP=$APP" >> $GITHUB_ENV
-      - name: Ad-hoc sign (required for Apple Silicon) and verify
+      - name: 'Ad-hoc sign (required for Apple Silicon) and verify'
         working-directory: desktop
         run: |
           codesign --force --deep --sign - "$APP"
