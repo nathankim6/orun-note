@@ -8,20 +8,27 @@ import { DOCS_FN, SUPABASE_ANON_KEY } from '@/lib/config';
 
 type Dict = { q: string; headword: string; isWord: boolean; phonetic: { text: string; us: string; uk: string; audioUs: string; audioUk: string }; korean: { main: string; byPos: { pos: string; terms: string[] }[] }; meanings: { pos: string; posKo: string; defs: { def: string; ex?: string }[]; synonyms: string[] }[] };
 const memo = new Map<string, Dict>();
-async function fetchDict(q: string): Promise<Dict> {
-  const k = q.toLowerCase(); if (memo.has(k)) return memo.get(k)!;
+async function fetchDict(q0: string): Promise<Dict> {
+  const q = q0.normalize('NFKC').replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, ''); const k = q.toLowerCase(); if (memo.has(k)) return memo.get(k)!;
   const r = await fetch(DOCS_FN, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }, body: JSON.stringify({ action: 'dict', q }) });
   const j = await r.json(); if (!j.ok) throw new Error(j.error ?? '찾을 수 없어요'); memo.set(k, j); return j;
 }
 let player: any = null;
+/** Recording of exactly this word through the server relay (fresh Naver link, dictionaryapi.dev as backup). */
+const audioUrl = (word: string, accent: 'us' | 'uk') => `${DOCS_FN}?audio=1&accent=${accent}&q=${encodeURIComponent(word.normalize('NFKC'))}`;
+/** Plays the recording; if it can't start within ~1.6 s (no recording, network, expired link) the device voice reads the word. */
 async function play(url: string, fallbackText: string, accent: 'us' | 'uk') {
+  const tts = () => { try { Speech.stop(); Speech.speak(fallbackText, { language: accent === 'uk' ? 'en-GB' : 'en-US', rate: 0.9 }); } catch {} };
+  if (!url) return tts();
+  if (Platform.OS === 'web') {
+    try { const a = new (window as any).Audio(url); let started = false; a.onplaying = () => { started = true; }; a.onerror = () => { if (!started) tts(); }; await a.play(); } catch { tts(); }
+    return;
+  }
+  try { player?.remove?.(); } catch {}
   try {
-    if (url) {
-      if (Platform.OS === 'web') { const a = new (window as any).Audio(url); await a.play(); return; }
-      try { player?.remove?.(); } catch {} player = createAudioPlayer({ uri: url }); player.play(); return;
-    }
-  } catch {}
-  Speech.stop(); Speech.speak(fallbackText, { language: accent === 'uk' ? 'en-GB' : 'en-US', rate: 0.9 });
+    const p = createAudioPlayer({ uri: url }); player = p; p.play();
+    setTimeout(() => { try { const st: any = (p as any).currentStatus ?? {}; const started = p.playing || (p.currentTime ?? 0) > 0 || st.didJustFinish || (st.currentTime ?? 0) > 0; if (!started) { try { p.pause(); } catch {} tts(); } } catch { tts(); } }, 1600);
+  } catch { tts(); }
 }
 
 /** Context-menu style dictionary card shown next to a tapped/selected English word or phrase. */
@@ -43,7 +50,7 @@ export function WordLookup({ text, anchor, onClose, onHighlight, onLookup }: { t
           </View>
           {isWord && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
             {(['us', 'uk'] as const).map((acc) => { const ipa = acc === 'us' ? (d?.phonetic.us || d?.phonetic.text) : d?.phonetic.uk; const url = acc === 'us' ? d?.phonetic.audioUs : d?.phonetic.audioUk; return (
-              <Pressable key={acc} onPress={() => play(url ?? '', d?.headword ?? text, acc)} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: pressed ? colors.primary : '#fff', borderWidth: 1, borderColor: 'rgba(47,111,237,0.3)' })}>
+              <Pressable key={acc} onPress={() => play(audioUrl(isWord ? text.trim() : (d?.headword ?? text), acc), d?.headword ?? text, acc)} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: pressed ? colors.primary : '#fff', borderWidth: 1, borderColor: 'rgba(47,111,237,0.3)' })}>
                 <Ionicons name="volume-high" size={14} color={colors.primary} /><Text style={{ fontSize: 11, fontWeight: '800', color: colors.primary }}>{acc === 'us' ? '미국' : '영국'}</Text>{!!ipa && <Text style={{ fontSize: 13, color: colors.text }}>{ipa}</Text>}
               </Pressable>); })}
           </View>}

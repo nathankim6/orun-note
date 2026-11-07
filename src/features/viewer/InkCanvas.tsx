@@ -84,7 +84,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     if (isDrawingTool) {
       let points = pts; let poly = false;
       if (tool === 'highlighter' && opts.straightHighlighter && pts.length >= 2) { const a = pts[0], b0 = pts[pts.length - 1]; const b = Math.abs(b0.y - a.y) < Math.abs(b0.x - a.x) * 0.09 ? { x: b0.x, y: a.y } : b0; points = [a, b]; poly = true; }
-      else if (lineSnap && tool !== 'highlighter' && !snappedLine.current) { const sn = snapLine(pts); if (sn) points = sn; }
+      else if (lineSnap && !snappedLine.current) { const sn = snapLine(pts); if (sn) points = sn; }
       if (points.length === 0) return;
       if (opts.neatShape && tool !== 'highlighter' && !snappedLine.current && points.length > 8) {
         const sh = recognizeShape(points, 30);
@@ -129,7 +129,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       if (cfg.tool === 'laser') { setLaser((l) => [...l.slice(-25), p]); return; }
       if (cfg.tool === 'shape') { setLive([liveRef.current[0], p]); return; }
       if (cfg.tool === 'highlighter' && opts.straightHighlighter) { const a0 = liveRef.current[0]; liveRef.current = [a0, p]; setLive([a0, Math.abs(p.y - a0.y) < Math.abs(p.x - a0.x) * 0.09 ? { x: p.x, y: a0.y } : p]); return; }
-      if (isDrawingTool && cfg.tool !== 'highlighter') {
+      if (isDrawingTool) { // pen AND highlighter: hold still at the end for 0.5 s → straight line
         if (snappedLine.current) { liveRef.current = [liveRef.current[0], p]; setLive([liveRef.current[0], p]); return; }
         if (!lastMovePt.current || dist(lastMovePt.current, p) > 3 / s) { lastMovePt.current = p; armDwell(p); }
       }

@@ -173,74 +173,77 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   };
   const thumbActive = useSharedValue(0); const thumbGesture = useRef<any>(null);
   const doubleTapJS = useCallback((x: number, y: number) => { setTimeout(() => { if (Date.now() - lastLookupAt < 600) return; zoomJS(z.value < 1.6 ? 2.5 : 1, x, y); }, 70); }, [zoomJS]);
+  // ---------- page turns by flick (one finger never drags the paper, so a resting palm / hand edge can't move it) ----------
+  const slideCfg = { duration: 190, easing: Easing.in(Easing.quad) }; const inCfg = { duration: 230, easing: Easing.out(Easing.cubic) };
+  const turnJS = useCallback((dir: number, vertical: boolean) => {
+    const n = L.boxes.length; if (!n) return; const zz = z.value; const x0 = tx.value, y0 = ty.value; const b = bounds(zz);
+    if (mode === 'vertical') {
+      if (vertical) {
+        // like Page Down / Page Up: move about one screen, but always stop at the start of the next/previous page
+        const tops = L.boxes.map((bx) => y0 + bx.y * zz); let ny: number;
+        if (dir > 0) { const below = tops.filter((t) => t > M + 10); const nextTop = below.length ? Math.min(...below) : Infinity; ny = y0 - Math.min(0.85 * H, nextTop - M); if (!isFinite(nextTop) && y0 <= b.minY + 1 && onPullAddPage) { onPullAddPage(); return; } }
+        else { const above = tops.filter((t) => t < M - 4); const prevTop = above.length ? Math.max(...above) : -Infinity; ny = y0 + Math.min(0.85 * H, isFinite(prevTop) ? M - prevTop : 0.85 * H); }
+        ty.value = withTiming(clamp(ny, b.minY, b.maxY), inCfg); return;
+      }
+      // left / right flick: previous / next page with a sideways slide (zoom and horizontal position are kept)
+      const cur0 = curRef.current; const target = Math.max(0, Math.min(n - 1, cur0 + dir));
+      if (target === cur0) { if (dir > 0 && onPullAddPage) onPullAddPage(); return; }
+      const ny = clamp(M - L.boxes[target].y * zz, b.minY, b.maxY); const out = dir > 0 ? -W : W;
+      tx.value = withTiming(x0 + out, slideCfg, (fin) => { 'worklet'; if (!fin) return; ty.value = ny; tx.value = x0 - out; tx.value = withTiming(x0, inCfg); });
+      return;
+    }
+    // paged (좌우 / 2페이지씩): every flick goes to the neighbouring spread; up/down slide vertically, left/right horizontally
+    const cell0 = Math.max(0, Math.min(L.cells - 1, Math.round(-x0 / (W * zz)))); const cell = Math.max(0, Math.min(L.cells - 1, cell0 + dir));
+    if (cell === cell0) return;
+    const b1 = bounds(1); const cx = -cell * W, cy = (b1.minY + b1.maxY) / 2;
+    if (zz !== 1) { z.value = withTiming(1, inCfg); settledJS(1); }
+    if (vertical) { const out = dir > 0 ? -H : H; ty.value = withTiming(y0 + out, slideCfg, (fin) => { 'worklet'; if (!fin) return; tx.value = cx; ty.value = cy - out; ty.value = withTiming(cy, inCfg); }); }
+    else { tx.value = withTiming(cx, { duration: 260, easing: Easing.out(Easing.cubic) }); ty.value = withTiming(cy, inCfg); }
+  }, [L, bounds, mode, W, H, onPullAddPage, settledJS]);
+
+  const flickT0 = useSharedValue(0);
   const gesture = useMemo(() => {
-    const pan = Gesture.Pan().manualActivation(true).maxPointers(1)
+    // one finger (not the hand tool): a quick flick turns the page in the flick's direction; slow contact never moves anything
+    const flick = Gesture.Pan().manualActivation(true).maxPointers(1).enabled(!mousePans)
       .onTouchesDown((e, st) => {
         const pt = e.pointerType;
-        if (pt === PointerType.STYLUS || (pt === PointerType.MOUSE && !mousePans) || pinching.value || inkOwns() || (pt === PointerType.TOUCH && palmBusy())) { st.fail(); return; }
-        const t0 = e.allTouches[0]; panStartX.value = t0 ? t0.absoluteX : 0; panStartY.value = t0 ? t0.absoluteY : 0;
-        panThresh.value = pt === PointerType.MOUSE ? 2 : hoverRecent() ? 26 : 8; // a resting palm while the pen hovers barely moves; a real swipe does
+        if (pt === PointerType.STYLUS || pt === PointerType.MOUSE || pinching.value || inkOwns() || palmBusy()) { st.fail(); return; }
+        const t0 = e.allTouches[0]; panStartX.value = t0 ? t0.absoluteX : 0; panStartY.value = t0 ? t0.absoluteY : 0; flickT0.value = Date.now();
       })
       .onTouchesMove((e, st) => {
         if (inkOwns() || pinching.value) { st.fail(); return; }
         const t0 = e.allTouches[0]; if (!t0) return; const dx = t0.absoluteX - panStartX.value, dy = t0.absoluteY - panStartY.value;
-        if (dx * dx + dy * dy > panThresh.value * panThresh.value) st.activate();
-      })
-      .onStart((e) => {
-        cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value;
-        const b = bounds(z.value);
-        panAxis.value = mode === 'vertical' && b.maxX - b.minX < 2 ? 2 : -1;                     // page fits the width: never wobble sideways; otherwise decide on the first movement
-      })
-      .onUpdate((e) => {
-        if (pinching.value || inkOwns()) return; const b = bounds(z.value);
-        if (panAxis.value === -1) {
-          const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY); if (ax + ay < 6) return;
-          if (mode !== 'vertical' && z.value <= 1.01) panAxis.value = ay > ax ? 2 : 1;            // paged: a swipe is either a left/right or an up/down page turn
-          else panAxis.value = ay > ax * 1.25 ? 2 : ax > ay * 1.25 ? 1 : 0;                       // zoomed in: lock to the dominant direction
-        }
-        if (mode !== 'vertical' && z.value <= 1.01 && panAxis.value === 2) { ty.value = sTy.value + e.translationY * 0.3; return; } // light feedback; the page turns on release
-        if (panAxis.value !== 2) tx.value = rubber(sTx.value + e.translationX, b.minX, b.maxX);
-        if (panAxis.value !== 1) {
-          const rawY = sTy.value + e.translationY; ty.value = rubber(rawY, b.minY, b.maxY);
-          if (canPull) { const over = b.minY - rawY; const st = over > 150 ? 2 : over > 40 ? 1 : 0; if (st !== pullStage.value) { pullStage.value = st; runOnJS(pullJS)(st); } }
-        }
+        if (dx * dx + dy * dy > 144) st.activate();
       })
       .onEnd((e) => {
-        if (pinching.value) return; const b = bounds(z.value);
-        if (canPull && pullStage.value === 2) { pullStage.value = 0; runOnJS(pullJS)(0); runOnJS(addPageJS)(); ty.value = withTiming(b.minY, { duration: 220 }); return; }
-        if (pullStage.value) { pullStage.value = 0; runOnJS(pullJS)(0); }
-        if (panAxis.value === -1) panAxis.value = 0;
-        if (mode !== 'vertical' && z.value <= 1.01) {
-          if (panAxis.value === 2) { // up = next page, down = previous page
-            const cell0 = clamp(Math.round(-sTx.value / W), 0, Math.max(0, L.cells - 1));
-            const go = Math.abs(e.translationY) > 48 || Math.abs(e.velocityY) > 500 ? (e.translationY < 0 ? 1 : -1) : 0;
-            const cell = clamp(cell0 + go, 0, Math.max(0, L.cells - 1)); const b1 = bounds(1);
-            tx.value = withTiming(-cell * W, { duration: 260, easing: Easing.out(Easing.cubic) }); ty.value = withTiming((b1.minY + b1.maxY) / 2, { duration: 220 });
-            return;
-          }
-          snapPaged(e.velocityX); return;
-        }
-        if (panAxis.value !== 2) tx.value = withDecay({ velocity: e.velocityX, deceleration: 0.997, clamp: [b.minX, b.maxX], rubberBandEffect: true, rubberBandFactor: 0.7 });
-        else if (tx.value < b.minX || tx.value > b.maxX) tx.value = withTiming(clamp(tx.value, b.minX, b.maxX), { duration: 160 });
-        if (panAxis.value !== 1) ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.997, clamp: [b.minY, b.maxY], rubberBandEffect: true, rubberBandFactor: 0.7 });
-        else if (ty.value < b.minY || ty.value > b.maxY) ty.value = withTiming(clamp(ty.value, b.minY, b.maxY), { duration: 160 });
+        if (pinching.value || inkOwns()) return;
+        const dt = Date.now() - flickT0.value; const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY);
+        const strict = hoverRecent(); const minD = strict ? 120 : 56, minV = strict ? 1400 : 550;
+        const vertical = ay > ax * 1.25, horizontal = ax > ay * 1.25;
+        if (dt > 600 || !(vertical || horizontal)) return;
+        if (vertical && ay >= minD && Math.abs(e.velocityY) >= minV) runOnJS(turnJS)(e.translationY < 0 ? 1 : -1, true);
+        else if (horizontal && ax >= minD && Math.abs(e.velocityX) >= minV) runOnJS(turnJS)(e.translationX < 0 ? 1 : -1, false);
       });
+    // hand tool (finger) and mouse drag: the paper follows 1:1 and stays exactly where it is released (no momentum, no snap-back)
+    const drag = Gesture.Pan().maxPointers(1).minDistance(2).enabled(!!mousePans)
+      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || pinching.value) st.fail(); })
+      .onStart(() => { cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value; })
+      .onUpdate((e) => { if (pinching.value) return; const b = bounds(z.value); tx.value = clamp(sTx.value + e.translationX, b.minX, b.maxX); ty.value = clamp(sTy.value + e.translationY, b.minY, b.maxY); })
+      .onEnd(() => { if (mode !== 'vertical' && z.value <= 1.01) snapPaged(0); });
+    // two fingers: zoom around the fingers and move with them; hard limits while moving, so nothing re-adjusts after release
     const pinch = Gesture.Pinch()
       .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penWriting()) st.fail(); })
       .onStart((e) => { pinching.value = true; cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(z); sZ.value = z.value; sTx.value = tx.value; sTy.value = ty.value; sFx.value = e.focalX; sFy.value = e.focalY; })
       .onUpdate((e) => {
         if (penWriting()) return;
-        let nz = sZ.value * e.scale;
-        if (nz > MAX_Z) nz = MAX_Z + (nz - MAX_Z) * 0.25; if (nz < minZ) nz = minZ - (minZ - nz) * 0.25;
-        // the content point that was under the fingers stays under the fingers (and follows them when they move)
-        tx.value = e.focalX - (sFx.value - sTx.value) * (nz / sZ.value);
-        ty.value = e.focalY - (sFy.value - sTy.value) * (nz / sZ.value);
+        const nz = clamp(sZ.value * e.scale, minZ, MAX_Z); const b = bounds(nz);
+        tx.value = clamp(e.focalX - (sFx.value - sTx.value) * (nz / sZ.value), b.minX, b.maxX);
+        ty.value = clamp(e.focalY - (sFy.value - sTy.value) * (nz / sZ.value), b.minY, b.maxY);
         z.value = nz; runOnJS(badgeJS)(nz);
       })
-      .onEnd((e) => {
-        const target = clamp(z.value, minZ, MAX_Z);
-        if (mode !== 'vertical' && target <= 1.01) { z.value = withTiming(1, { duration: 200 }); snapPaged(0); runOnJS(settledJS)(1); }
-        else { const z1 = zoomAround(target, e.focalX, e.focalY, true); runOnJS(settledJS)(z1); }
+      .onEnd(() => {
+        if (mode !== 'vertical' && z.value <= 1.02) { z.value = withTiming(1, { duration: 160 }); snapPaged(0); runOnJS(settledJS)(1); return; } // un-zoomed page view: realign to the page
+        runOnJS(settledJS)(z.value); // stays exactly as left — ready to write
       })
       .onFinalize(() => { pinching.value = false; });
     const dbl = Gesture.Tap().numberOfTaps(2).maxDelay(300).maxDistance(30).enabled(doubleTapZoom)
@@ -249,15 +252,15 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     // pen hovering above the screen (S Pen / Apple Pencil hover) arms palm rejection before the tip touches down
     const hover = Gesture.Hover().onBegin((e) => { if (e.pointerType === PointerType.STYLUS) penSession.value = { ...penSession.value, hoverAt: Date.now() }; }).onUpdate((e) => { if (e.pointerType === PointerType.STYLUS) penSession.value = { ...penSession.value, hoverAt: Date.now() }; });
     // draggable scrollbar thumb (vertical mode) — fast scroll through long PDFs
-    const thumb = Gesture.Pan().minDistance(0).enabled(mode === 'vertical' && !locked)
+    const thumb = Gesture.Pan().minDistance(0).enabled(mode === 'vertical')
       .onStart(() => { cancelAnimation(ty); sTy.value = ty.value; thumbActive.value = 1; })
       .onUpdate((e) => { const ch = L.ch * z.value; if (ch <= H) return; const th = Math.max(40, (H * H) / ch); const track = H - th; const b = bounds(z.value); const frac0 = -sTy.value / (ch - H); const frac = Math.min(1, Math.max(0, frac0 + e.translationY / track)); ty.value = Math.min(b.maxY, Math.max(b.minY, -frac * (ch - H))); })
       .onFinalize(() => { thumbActive.value = 0; });
     thumbGesture.current = thumb;
-    pan.requireExternalGestureToFail(thumb);
-    if (locked) return Gesture.Simultaneous(Gesture.Tap().enabled(false));
-    return Gesture.Simultaneous(pinch, pan, dbl, hover);
-  }, [bounds, mousePans, mode, minZ, L, W, doubleTapZoom, zoomAround, settledJS, badgeJS, doubleTapJS, locked, canPull, pullJS, addPageJS]);
+    flick.requireExternalGestureToFail(thumb); drag.requireExternalGestureToFail(thumb);
+    return Gesture.Simultaneous(pinch, flick, drag, dbl, hover);
+  }, [bounds, mousePans, mode, minZ, L, W, H, doubleTapZoom, settledJS, badgeJS, doubleTapJS, turnJS]);
+
 
   // ---------- web: wheel / trackpad pinch / keyboard ----------
   const hostRef = useRef<any>(null);
@@ -265,7 +268,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     if (Platform.OS !== 'web') return; const node: HTMLElement | null = hostRef.current; if (!node) return;
     let settleT: any = null;
     const onWheel = (ev: WheelEvent) => {
-      ev.preventDefault(); if (locked) return; const r = node.getBoundingClientRect(); const fx = ev.clientX - r.left, fy = ev.clientY - r.top; const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? H : 1;
+      ev.preventDefault(); const r = node.getBoundingClientRect(); const fx = ev.clientX - r.left, fy = ev.clientY - r.top; const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? H : 1;
       cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(z);
       if (ev.ctrlKey || ev.metaKey) { const z0 = z.value; const z1 = Math.min(MAX_Z, Math.max(minZ, z0 * Math.exp(-ev.deltaY * unit * 0.0022))); const b = bounds(z1); tx.value = clamp(fx - (fx - tx.value) * (z1 / z0), b.minX, b.maxX); ty.value = clamp(fy - (fy - ty.value) * (z1 / z0), b.minY, b.maxY); z.value = z1; badgeJS(z1); clearTimeout(settleT); settleT = setTimeout(() => settledJS(z.value), 220); return; }
       let dx = ev.deltaX * unit, dy = ev.deltaY * unit; if (ev.shiftKey && !dx) { dx = dy; dy = 0; }

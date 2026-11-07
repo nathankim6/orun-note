@@ -41,8 +41,10 @@ async function hwRoster() {
 // ---- dictionary (English → IPA, pronunciation audio, English definitions, Korean meanings) ----
 // Sources follow the approach used by open-source lookup popups (Relper, Lexigo, Quick-Dictionary): the Free Dictionary
 // API (dictionaryapi.dev) for English definitions, the Naver En-Ko dictionary for Korean meanings/IPA/recordings, MyMemory for phrases.
+/** ﬁ→fi, ﬂ→fl, full-width letters → ASCII, drop soft hyphens / zero-width joiners (common in PDF text layers). */
+const foldText = (raw: string) => String(raw ?? "").normalize("NFKC").replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, "");
 async function lookup(raw: string) {
-  const q = raw.replace(/[\u2018\u2019]/g, "'").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
+  const q = foldText(raw).replace(/[\u2018\u2019]/g, "'").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
   if (!q) return null;
   const { data: hit } = await supa.from("dict_cache").select("data,created_at").eq("q", q).maybeSingle(); const fresh = hit && Date.now() - new Date(hit.created_at).getTime() < 12 * 3600e3; // Naver audio links are signed and expire
   if (hit && fresh && (hit.data?.korean?.main || !hit.data?.isWord)) return hit.data;
@@ -59,7 +61,8 @@ async function lookup(raw: string) {
   const phon = { text: "", us: "", uk: "", audioUs: "", audioUk: "" }; const nvAudio = { us: "", uk: "" };
   // Korean meanings + IPA + US/UK recordings from the Naver English-Korean dictionary (public JSON used by its web UI).
   const naver = async (w: string) => { const r = await fetch(`https://en.dict.naver.com/api3/enko/search?query=${encodeURIComponent(w)}&m=pc&range=word&page=1&lang=ko&shouldSearchOpen=false`, { headers: { Referer: "https://en.dict.naver.com/", "User-Agent": "Mozilla/5.0" } }).catch(() => null); if (!r || !r.ok) return null; const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? []; return items.find((x: any) => strip(x.expEntry).toLowerCase() === w) ?? items.find((x: any) => strip(x.expEntry).toLowerCase() === headword) ?? items[0] ?? null; };
-  const nv = isWord ? ((await naverFirst) ?? (headword !== q ? await naver(headword) : null)) : null;
+  const nvPhrase = async () => { const it = await naver(q); return it && strip(it.expEntry).toLowerCase() === q ? it : null; };
+  const nv = isWord ? ((await naverFirst) ?? (headword !== q ? await naver(headword) : null)) : await nvPhrase();
   const byPos: { pos: string; terms: string[] }[] = [];
   for (const mc of nv?.meansCollector ?? []) { const terms = (mc.means ?? []).map((m: any) => strip(m.value)).filter(Boolean).slice(0, 4); if (terms.length) byPos.push({ pos: strip(mc.partOfSpeech) || "", terms }); }
   for (const sym of nv?.searchPhoneticSymbolList ?? []) { const code = String(sym.symbolTypeCode ?? ""); const iv = String(sym.symbolValue ?? "").replace(/<sup>\s*[|│｜]\s*<\/sup>/g, "ˈ").replace(/<sub>\s*[|│｜]\s*<\/sub>/g, "ˌ").replace(/<[^>]+>/g, "").trim(); const v = iv ? `/${iv}/` : ""; if (code.includes("US")) { phon.us ||= v; nvAudio.us ||= sym.symbolFile ?? ""; } if (code.includes("GB")) { phon.uk ||= v; nvAudio.uk ||= sym.symbolFile ?? ""; } if (!phon.text && v) phon.text = v; }
@@ -103,8 +106,33 @@ async function materialsFor(st: HwStudent) {
   const seen = new Set<string>(); return (data ?? []).map((r: any) => r.material).filter((m: any) => m && m.ready && !seen.has(m.id) && seen.add(m.id));
 }
 
+
+async function audioFor(raw: string, accent: string): Promise<Response> {
+  const q = foldText(raw).replace(/[\u2018\u2019]/g, "'").replace(/[^A-Za-z' -]/g, " ").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
+  if (!q) return new Response("bad request", { status: 400, headers: cors });
+  const grab = async (u: string, ref?: string) => { const a = await fetch(u, { headers: { "User-Agent": "Mozilla/5.0", ...(ref ? { Referer: ref } : {}) } }).catch(() => null); return a && a.ok && /audio|mpeg|octet/.test(a.headers.get("content-type") ?? "") ? a : null; };
+  let res: Response | null = null;
+  const r = await fetch(`https://en.dict.naver.com/api3/enko/search?query=${encodeURIComponent(q)}&m=pc&range=word&page=1&lang=ko&shouldSearchOpen=false`, { headers: { Referer: "https://en.dict.naver.com/", "User-Agent": "Mozilla/5.0" } }).catch(() => null);
+  if (r && r.ok) {
+    const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? [];
+    const it = items.find((x: any) => String(x.expEntry ?? "").replace(/<[^>]+>/g, "").trim().toLowerCase() === q);
+    const syms = (it?.searchPhoneticSymbolList ?? []).filter((x: any) => x.symbolFile);
+    const pick = syms.find((x: any) => String(x.symbolTypeCode ?? "").includes(accent === "uk" ? "GB" : "US")) ?? syms[0];
+    if (pick) res = await grab(pick.symbolFile, "https://en.dict.naver.com/");
+  }
+  if (!res) {
+    const d = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(q)}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    const list: string[] = (Array.isArray(d) ? d : []).flatMap((e: any) => e.phonetics ?? []).map((p: any) => String(p.audio ?? "")).filter(Boolean);
+    const pick = list.find((u) => u.endsWith(accent === "uk" ? "-uk.mp3" : "-us.mp3")) ?? list[0];
+    if (pick) res = await grab(pick);
+  }
+  if (!res) return new Response("no recording", { status: 404, headers: cors });
+  return new Response(await res.arrayBuffer(), { status: 200, headers: { ...cors, "Content-Type": "audio/mpeg", "Cache-Control": "public, max-age=86400" } });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  if (req.method === "GET") { const u = new URL(req.url); if (u.searchParams.get("audio")) return audioFor(u.searchParams.get("q") ?? "", u.searchParams.get("accent") ?? "us"); }
   if (req.method !== "POST") return fail("POST only", 405);
   let body: any; try { body = await req.json(); } catch { return fail("invalid json"); }
   const action = String(body.action ?? "");

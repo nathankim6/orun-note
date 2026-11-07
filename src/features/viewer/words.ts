@@ -21,4 +21,6 @@ export function wordsBetween(words: PdfWord[] | null, a: { x: number; y: number 
   let i = words.indexOf(wa), j = words.indexOf(wb); if (i > j) [i, j] = [j, i]; return words.slice(i, j + 1);
 }
 function nearest(words: PdfWord[], p: { x: number; y: number }) { let best: PdfWord | null = null, bd = Infinity; for (const w of words) { const dx = Math.max(w.x - p.x, 0, p.x - (w.x + w.w)), dy = Math.max(w.y - p.y, 0, p.y - (w.y + w.h)); const d = Math.hypot(dx, dy); if (d < bd) { bd = d; best = w; } } return bd < 0.03 ? best : null; }
-export const cleanWord = (t: string) => t.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, '');
+/** PDF text layers often use ligatures (ﬁ ﬂ ﬀ) and soft hyphens: fold them so "signiﬁcant" looks up "significant". */
+export const foldText = (t: string) => String(t ?? '').normalize('NFKC').replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, '');
+export const cleanWord = (t: string) => foldText(t).replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, '');
