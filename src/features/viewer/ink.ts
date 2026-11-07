@@ -66,7 +66,7 @@ export function penOutline(points: Point[], width: number, live = false, fixed =
   if (!live) { const hit = outlineCache.get(points); if (hit) return hit; }
   const hasPressure = !fixed && points.some((q) => typeof q.p === 'number' && q.p > 0);
   const input = points.map((q) => [q.x, q.y, hasPressure ? Math.max(0.05, q.p ?? 0.5) : 0.5]);
-  const out = getStroke(input, { size: width * (fixed ? 1.05 : 1.35), thinning: fixed ? 0 : hasPressure ? 0.62 : 0.38, smoothing: 0.62, streamline: live ? 0.32 : 0.42, simulatePressure: !hasPressure && !fixed, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+  const out = getStroke(input, { size: width * (fixed ? 1.05 : 1.35), thinning: fixed ? 0 : hasPressure ? 0.62 : 0.38, smoothing: 0.62, streamline: 0.4, simulatePressure: !hasPressure && !fixed, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
   let d = '';
   if (out.length > 2) {
     d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;

@@ -103,6 +103,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // (they no longer cancel the stroke or drag the line toward the palm). Finger contacts never draw; they wait, so the
   // document can scroll/zoom with them — or a pen that lands while the palm rests still starts a stroke.
   const activeId = useRef<number | null>(null); const activeType = useRef<any>(null); const pressureRef = useRef<number | undefined>(undefined);
+  const rafRef = useRef<any>(null); const scheduleLive = () => { if (rafRef.current == null) rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setLive([...liveRef.current]); }); }; const cancelLive = () => { if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
   type PseudoEvt = { x: number; y: number; absoluteX: number; absoluteY: number; pointerType: any; stylusData?: { pressure: number } };
   const pseudo = (t: { x: number; y: number; absoluteX: number; absoluteY: number }): PseudoEvt => ({ x: t.x, y: t.y, absoluteX: t.absoluteX, absoluteY: t.absoluteY, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current } : undefined });
   const beginAt = (e: PseudoEvt) => { startT.current = Date.now(); snappedLine.current = false; clearDwell(); const p = toPageP(e); liveRef.current = [p]; lastMovePt.current = p;
@@ -132,9 +133,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
         if (snappedLine.current) { liveRef.current = [liveRef.current[0], p]; setLive([liveRef.current[0], p]); return; }
         if (!lastMovePt.current || dist(lastMovePt.current, p) > 3 / s) { lastMovePt.current = p; armDwell(p); }
       }
-      setLive([...liveRef.current]); 
+      scheduleLive(); 
   };
-  const endAt = (e: PseudoEvt) => { clearDwell(); if (rejected.current) { liveRef.current = []; setLive([]); return; } const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType);
+  const endAt = (e: PseudoEvt) => { clearDwell(); cancelLive(); if (rejected.current) { liveRef.current = []; setLive([]); return; } const pts = liveRef.current; const pointerOk = allowPointer(e.pointerType);
       if (cfg.tool === 'select' || cfg.tool === 'lasso') { const end = toPage(e.x, e.y); const a = selStart.current; const moved = dist(a, end) > 4 / s; const abs = { x: (e as any).absoluteX ?? e.x, y: (e as any).absoluteY ?? e.y };
         if (selMode.current === 'move') { if (moved) applyMove(end.x - a.x, end.y - a.y); setDragOff(null); }
         else if (selMode.current === 'resize') { const ds = dragScaleRef.current; if (ds) applyScale(ds.f, ds.ox, ds.oy); setDragScale(null); }
@@ -145,27 +146,41 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       else finish(pts, pointerOk);
       setLive([]); liveRef.current = []; if (cfg.tool === 'laser') setTimeout(() => setLaser([]), 600); 
   };
-  const abortStroke = () => { clearDwell(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; };
-  const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(10).averageTouches(false).runOnJS(true).manualActivation(true)
-    .onTouchesDown((e, sm) => {
+  const abortStroke = () => { clearDwell(); cancelLive(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; };
+  // Pen input pipeline (Samsung Notes / GoodNotes model): one stable native gesture per page (never rebuilt while the
+  // screen updates, so a stroke can't be dropped mid-way), every touch judged by ITS OWN type (pen/mouse draws, finger
+  // and palm never do), pressure read from the pen even while a palm rests, then curved + smoothed into the nib width.
+  const H = useRef<any>({});
+  H.current = {
+    down: (e: any, sm: any) => {
       if (cfg.tool === 'hand') { rejected.current = true; sm.fail(); return; }
       if (activeId.current != null) return; // palm / extra finger while writing → ignored
       const t = e.changedTouches[e.changedTouches.length - 1]; if (!t) return;
-      if (!allowPointer(e.pointerType)) { rejected.current = true; return; } // finger: never draws; let the document scroll/zoom (that cancels us)
+      if (!allowPointer(e.pointerType)) { rejected.current = true; return; } // finger/palm: never draws; the document may scroll/zoom
       rejected.current = false; activeId.current = t.id; activeType.current = e.pointerType; pressureRef.current = undefined;
       penSession.value = { ...penSession.value, writing: true, byPen: e.pointerType === PointerType.STYLUS, at: Date.now(), since: Date.now() };
       sm.activate(); { const pe = pseudo(t); lastPe.current = pe; beginAt(pe); }
-    })
-    .onTouchesMove((e) => { if (activeId.current == null) return; const t = e.allTouches.find((x) => x.id === activeId.current) ?? (e.allTouches.length === 1 ? e.allTouches[0] : undefined); if (t) { const pe = pseudo(t); lastPe.current = pe; moveTo(pe); } })
-    .onTouchesUp((e, sm) => {
-      if (activeId.current == null) return; const t = e.changedTouches.find((x) => x.id === activeId.current) ?? (e.allTouches.length <= 1 ? e.changedTouches[0] : undefined); if (!t) return;
+    },
+    move: (e: any) => { if (activeId.current == null) return; const t = e.allTouches.find((x: any) => x.id === activeId.current) ?? (e.allTouches.length === 1 ? e.allTouches[0] : undefined); if (t) { const pe = pseudo(t); lastPe.current = pe; moveTo(pe); } },
+    up: (e: any, sm: any) => {
+      if (activeId.current == null) return; const t = e.changedTouches.find((x: any) => x.id === activeId.current) ?? (e.allTouches.length <= 1 ? e.changedTouches[0] : undefined); if (!t) return;
       activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at };
       endAt(pseudo(t)); lastPe.current = null;
-      const remaining = e.allTouches.filter((a) => !e.changedTouches.some((c) => c.id === a.id)); if (!remaining.length) sm.end();
-    })
-    .onTouchesCancelled(() => { if (activeId.current != null) abortStroke(); })
-    .onUpdate((e) => { const pr = (e as any).stylusData?.pressure; if (typeof pr === 'number' && pr > 0 && (((e as any).numberOfPointers ?? 1) === 1)) pressureRef.current = pr; })
-    .onFinalize((_e, success) => { clearDwell(); if (activeId.current != null) { const pe = lastPe.current; if (success && pe) { activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; endAt(pe); } else abortStroke(); } lastPe.current = null; }),  [enabled, cfg, s, finish, eraserR, onStrokes, commit, lasso, onTap, fingerDraw, lineSnap, selection, selText, selImg, words, onLookup, marquee, width, height, opts, dragScale]);
+      const remaining = e.allTouches.filter((a: any) => !e.changedTouches.some((c: any) => c.id === a.id)); if (!remaining.length) sm.end();
+    },
+    cancel: () => { if (activeId.current != null) abortStroke(); },
+    // Apple Pencil force/maxForce and S Pen getPressure() both arrive as 0..1; normal handwriting sits around 0.15-0.5,
+    // so a gamma curve lifts light writing to a full line and an EMA removes sensor jitter (no wobbly widths).
+    update: (e: any) => { const pr = e?.stylusData?.pressure; if (typeof pr !== 'number' || !(pr > 0)) return; const c = Math.min(1, Math.max(0.06, Math.pow(pr, 0.65))); const prev = pressureRef.current; pressureRef.current = prev == null ? c : prev + (c - prev) * 0.35; },
+    fin: (_e: any, success: boolean) => { clearDwell(); if (activeId.current != null) { const pe = lastPe.current; if (success && pe) { activeId.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; endAt(pe); } else abortStroke(); } lastPe.current = null; },
+  };
+  const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(10).averageTouches(false).runOnJS(true).manualActivation(true)
+    .onTouchesDown((e, sm) => H.current.down(e, sm))
+    .onTouchesMove((e) => H.current.move(e))
+    .onTouchesUp((e, sm) => H.current.up(e, sm))
+    .onTouchesCancelled(() => H.current.cancel())
+    .onUpdate((e) => H.current.update(e))
+    .onFinalize((e, ok) => H.current.fin(e, ok)), [enabled]);
   const longPress = useMemo(() => Gesture.LongPress().enabled(enabled && !!onLongPress).minDuration(450).runOnJS(true).onStart((e) => onLongPress?.(toPage(e.x, e.y))), [enabled, onLongPress, s]);
   const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && cfg.tool === 'select' && (!!onDoubleTap || !!words?.length)).numberOfTaps(2).maxDelay(280).runOnJS(true).onStart((e) => { const p = toPage(e.x, e.y); if (lookupAt(p, { x: e.absoluteX, y: e.absoluteY })) { lastLookupAt = Date.now(); return; } onDoubleTap?.(p); }), [enabled, onDoubleTap, s, words, onLookup, width, height, cfg.tool]);
   const composed = useMemo(() => Gesture.Simultaneous(pan, longPress, doubleTap), [pan, longPress, doubleTap]);
