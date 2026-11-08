@@ -1,0 +1,61 @@
+name: Play bundle (AAB)
+# Builds the Google Play upload bundle on demand. Signed with the same release key as the
+# sideload APK (upload key), so Play can keep the existing app signing key.
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  aab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Accept Android SDK licenses (preinstalled SDK)
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Prebuild native Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Release keystore (upload key)
+        run: |
+          test -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" || { echo "ANDROID_KEYSTORE_BASE64 is missing"; exit 1; }
+          mkdir -p ~/.keys
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > ~/.keys/paperly.jks
+      - name: Build signed release bundle
+        working-directory: android
+        env:
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew :app:bundleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a \
+            -Pandroid.injected.signing.store.file=$HOME/.keys/paperly.jks \
+            -Pandroid.injected.signing.store.password=$STORE_PASS \
+            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$KEY_PASS
+      - name: "Check bundle: signer, version, SDK levels, permissions, 16 KB pages"
+        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        run: |
+          AAB=$(ls android/app/build/outputs/bundle/release/*.aab)
+          ls -la "$AAB"
+          keytool -printcert -jarfile "$AAB" | grep -E "Owner|SHA256:" || true
+          gh release download --repo google/bundletool --pattern 'bundletool-all-*.jar' --output bundletool.jar
+          java -jar bundletool.jar dump manifest --bundle "$AAB" > bundle-manifest.xml
+          grep -oE 'android:(versionCode|versionName|minSdkVersion|targetSdkVersion)="[^"]*"' bundle-manifest.xml
+          echo "-- permissions:"; grep -oE '<uses-permission[^>]*' bundle-manifest.xml | grep -oE 'android:name="[^"]*"'
+          echo "-- services:"; grep -oE '<service[^>]*android:name="[^"]*"' bundle-manifest.xml | grep -oE 'android:name="[^"]*"' || true
+          mkdir -p libs && unzip -q -o "$AAB" 'base/lib/*' -d libs
+          for abi in arm64-v8a; do for so in libs/base/lib/$abi/*.so; do
+            readelf -lW "$so" | awk -v f="$(basename $so)" '$1=="LOAD"{ if (strtonum($NF) < 16384) print "NOT 16KB-aligned:", f, $NF }'
+          done; done
+          echo "16 KB check done ($(ls libs/base/lib/arm64-v8a | wc -l) arm64 libs)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orun-note-play-aab
+          path: android/app/build/outputs/bundle/release/*.aab
+          retention-days: 30

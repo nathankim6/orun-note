@@ -40,6 +40,13 @@
         "CAMERA",
         "MODIFY_AUDIO_SETTINGS"
       ],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
       "allowBackup": false
     },
     "web": {
@@ -73,7 +80,13 @@
         }
       ],
       "expo-web-browser",
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "홈워크(숙제)의 녹음 과제를 제출할 때 마이크를 사용합니다.",
+          "enableBackgroundPlayback": false
+        }
+      ],
       [
         "expo-image-picker",
         {
