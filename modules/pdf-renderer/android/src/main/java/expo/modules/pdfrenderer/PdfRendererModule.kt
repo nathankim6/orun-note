@@ -1,6 +1,11 @@
 package expo.modules.pdfrenderer
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
+import android.content.Context
 import android.graphics.Bitmap
+import android.os.Build
+import android.util.Log
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
@@ -241,6 +246,7 @@ class PdfRendererModule : Module() {
     Name("PdfRenderer")
 
     OnCreate {
+      try { val cur = Thread.getDefaultUncaughtExceptionHandler(); if (cur !is CrashSaver) Thread.setDefaultUncaughtExceptionHandler(CrashSaver(File(ctx.filesDir, "crash"), cur)) } catch (e: Throwable) {}
       // Page images / decrypted copies written by older builds used a different key scheme and are never reused.
       Thread {
         try {
@@ -400,6 +406,52 @@ class PdfRendererModule : Module() {
         } catch (e: Throwable) { emptyList<Map<String, Any>>() }
       }
     }
+    /** Crash diagnostics gathered since the last call: saved stack traces + Android's own exit records (API 30+:
+     *  crashes, native crashes, ANRs, low-memory kills) newer than the last report. Each is returned once. */
+    AsyncFunction("takeCrashReports") Coroutine { ->
+      withContext(Dispatchers.IO) {
+        val out = ArrayList<Map<String, Any>>()
+        try {
+          File(ctx.filesDir, "crash").listFiles()?.sortedBy { it.name }?.forEach { f ->
+            out.add(mapOf("kind" to "java", "at" to (f.name.removePrefix("crash-").removeSuffix(".txt").toLongOrNull() ?: f.lastModified()).toDouble(), "detail" to f.readText().take(24000)))
+            f.delete()
+          }
+        } catch (e: Throwable) {}
+        try {
+          if (Build.VERSION.SDK_INT >= 30) {
+            val prefs = ctx.getSharedPreferences("orun_diag", Context.MODE_PRIVATE); val last = prefs.getLong("exitTs", 0L); var newest = last
+            val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            for (x in am.getHistoricalProcessExitReasons(ctx.packageName, 0, 12)) {
+              if (x.timestamp <= last) continue; if (x.timestamp > newest) newest = x.timestamp
+              val r = x.reason
+              val bad = r == ApplicationExitInfo.REASON_CRASH || r == ApplicationExitInfo.REASON_CRASH_NATIVE || r == ApplicationExitInfo.REASON_ANR ||
+                r == ApplicationExitInfo.REASON_LOW_MEMORY || r == ApplicationExitInfo.REASON_INITIALIZATION_FAILURE || r == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE || r == ApplicationExitInfo.REASON_SIGNALED
+              if (!bad) continue
+              var trace = ""
+              if (r == ApplicationExitInfo.REASON_ANR) try { x.traceInputStream?.use { trace = String(it.readBytes().take(16000).toByteArray()) } } catch (e: Throwable) {}
+              out.add(mapOf("kind" to "exit", "at" to x.timestamp.toDouble(),
+                "detail" to "reason=$r status=${x.status} importance=${x.importance} pss=${x.pss / 1024}MB rss=${x.rss / 1024}MB desc=${x.description ?: ""}" + (if (trace.isNotEmpty()) "\n$trace" else "")))
+            }
+            if (newest > last) prefs.edit().putLong("exitTs", newest).apply()
+          }
+        } catch (e: Throwable) {}
+        out
+      }
+    }
     AsyncFunction("getOutline") { _: String -> emptyList<Map<String, Any>>() }
+  }
+}
+
+/** Writes the stack trace of an uncaught exception (Java crash, or a fatal JS error re-thrown natively) to the app's
+ *  private crash folder, then hands it to the previous handler (the normal crash). Read back on the next launch. */
+private class CrashSaver(private val dir: File, private val prev: Thread.UncaughtExceptionHandler?) : Thread.UncaughtExceptionHandler {
+  override fun uncaughtException(t: Thread, e: Throwable) {
+    try {
+      dir.mkdirs()
+      val rt = Runtime.getRuntime()
+      val mem = "heap ${(rt.totalMemory() - rt.freeMemory()) / 1048576}/${rt.maxMemory() / 1048576} MB"
+      File(dir, "crash-${System.currentTimeMillis()}.txt").writeText("thread=${t.name} $mem\n" + Log.getStackTraceString(e).take(24000))
+    } catch (x: Throwable) {}
+    prev?.uncaughtException(t, e)
   }
 }

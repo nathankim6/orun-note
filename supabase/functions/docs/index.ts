@@ -136,6 +136,14 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return fail("POST only", 405);
   let body: any; try { body = await req.json(); } catch { return fail("invalid json"); }
   const action = String(body.action ?? "");
+  // crash / error diagnostics from the apps (no sign-in needed: a crash can happen before it). Size-capped.
+  if (action === "crash.report") {
+    const items = (Array.isArray(body.items) ? body.items : []).slice(0, 12);
+    const meta = { app_version: String(body.app ?? "").slice(0, 20), platform: String(body.platform ?? "").slice(0, 20), device: String(body.device ?? "").slice(0, 80), who: String(body.who ?? "").slice(0, 80) };
+    const rows = items.map((it: any) => ({ ...meta, kind: String(it?.kind ?? "js").slice(0, 12), happened_at: Number.isFinite(Number(it?.at)) && Number(it.at) > 0 ? new Date(Number(it.at)).toISOString() : null, detail: String(it?.detail ?? "").slice(0, 24000) })).filter((r: any) => r.detail);
+    if (rows.length) { const { error } = await supa.from("crash_reports").insert(rows); if (error) return fail(error.message, 500); }
+    return json({ ok: true, saved: rows.length });
+  }
   if (action === "dict") { try { const d = await lookup(String(body.q ?? "")); return d ? json({ ok: true, ...d }) : fail("단어를 찾을 수 없어요", 404); } catch (e) { return fail((e as Error).message, 500); } }
   try {
     const r = await resolve(body); const who = r.who;

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Paperly",
     "slug": "orun-note",
-    "version": "1.6.3",
+    "version": "1.6.4",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "orunnote",
@@ -80,7 +80,8 @@
           "cameraPermission": "홈워크에서 숙제 사진을 찍어 제출할 때 카메라를 사용합니다.",
           "microphonePermission": "홈워크(숙제)의 녹음 과제를 제출할 때 마이크를 사용합니다."
         }
-      ]
+      ],
+      "./plugins/withLargeHeap.js"
     ],
     "experiments": {
       "typedRoutes": false

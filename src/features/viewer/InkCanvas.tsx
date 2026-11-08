@@ -1,6 +1,6 @@
 import { useSharedValue, runOnJS } from 'react-native-reanimated';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, TextInput, Pressable, Text, Platform } from 'react-native';
+import { View, StyleSheet, TextInput, Pressable, Text, Platform, PixelRatio } from 'react-native';
 import Svg, { Path, Rect as SvgRect, G, Circle } from 'react-native-svg';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import { ImageBox, Point, Stroke, TextBox } from '@/data/types';
@@ -15,6 +15,7 @@ import { useTheme } from '@/theme';
 
 export type InkHandle = { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean; /** add/replace page images as one undoable step */ commitImages?: (next: ImageBox[]) => void };
 type Props = {
+  /** visible window of this page (0..1) when zoomed; with `dense` (page drawn >1x) only that window is rasterised */ region?: { nx: number; ny: number; nw: number; nh: number } | null; dense?: boolean; /** page drawn at this multiple of its 1x size */ density?: number;
   width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[]; onImages?: (next: ImageBox[]) => void; textFont?: string;
   /** Samsung-Notes handwriting options */ opts?: InkOpts;
   /** Text layer for tap-to-define; rects normalized to the page. */ words?: PdfWord[] | null; onLookup?: (text: string, abs: { x: number; y: number }, rects: { x: number; y: number; w: number; h: number }[]) => void; cfg: ToolConfig; enabled: boolean; fingerDraw: boolean; lineSnap?: boolean;
@@ -28,7 +29,7 @@ const DEFAULT_OPTS: InkOpts = { fixedWidth: false, straightHighlighter: false, e
 let CLIP: { strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; b: { x: number; y: number; w: number; h: number } } | null = null;
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
 export let lastLookupAt = 0;
-export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange }: Props) {
+export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1}: Props) {
   const { colors } = useTheme();
   const [live, setLive] = useState<Point[]>([]); const [laser, setLaser] = useState<Point[]>([]); const [lasso, setLasso] = useState<Point[]>([]); const [selection, setSelection] = useState<string[]>([]); const [editing, setEditing] = useState<string | null>(null);
   // Cursor (select) tool state: selected text boxes/images, live drag offset, text-block and marquee selections.
@@ -254,28 +255,109 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const xfBox = <T extends { rect: { x: number; y: number; w: number; h: number } }>(o: T, sel: boolean): T => (!sel ? o : dragOff ? { ...o, rect: { ...o.rect, x: o.rect.x + dragOff.x, y: o.rect.y + dragOff.y } } : dragScale ? { ...o, rect: { x: dragScale.ox + (o.rect.x - dragScale.ox) * dragScale.f, y: dragScale.oy + (o.rect.y - dragScale.oy) * dragScale.f, w: o.rect.w * dragScale.f, h: o.rect.h * dragScale.f } } : o);
   const deleteAll = () => { commitAll({ strokes: selection.length ? strokesRef.current.filter((st) => !selection.includes(st.id)) : undefined, texts: selText.length ? textRef.current.filter((t) => !selText.includes(t.id)) : undefined, images: selImg.length ? imagesRef.current.filter((im) => !selImg.includes(im.id)) : undefined }); clearSel(); };
   const editingBox = textBoxes.find((t) => t.id === editing);
+  // ---- finished ink elements (shared by the base and sharp layers); stroke geometry is cached per stroke object ----
+  const geoCache = useRef(new WeakMap<Stroke, { s: number; d: string }>()).current;
+  const dFor = (st: Stroke, kind: 'pen' | 'poly' | 'line'): string => {
+    const sk = kind === 'pen' ? 1 : s; const c = geoCache.get(st); if (c && c.s === sk) return c.d;
+    const d = kind === 'pen' ? penOutline(st.points, st.width, false, st.fixed) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.points, s, st.tool !== 'highlighter');
+    geoCache.set(st, { s: sk, d }); return d;
+  };
+  const { inkBounds, boxOf } = useMemo(() => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; const boxOf = new Map<Stroke, { x0: number; y0: number; x1: number; y1: number }>();
+    for (const st of strokes) { const m = (st.width || 2) * 1.25 + 3; const pts = st.points; let a0 = Infinity, b0 = Infinity, a1 = -Infinity, b1 = -Infinity;
+      for (let i = 0; i < pts.length; i++) { const q = pts[i]; if (q.x < a0) a0 = q.x; if (q.y < b0) b0 = q.y; if (q.x > a1) a1 = q.x; if (q.y > b1) b1 = q.y; }
+      if (!isFinite(a0)) continue; const bx = { x0: a0 - m, y0: b0 - m, x1: a1 + m, y1: b1 + m }; boxOf.set(st, bx);
+      if (bx.x0 < x0) x0 = bx.x0; if (bx.y0 < y0) y0 = bx.y0; if (bx.x1 > x1) x1 = bx.x1; if (bx.y1 > y1) y1 = bx.y1; }
+    return { inkBounds: isFinite(x0) ? { x0, y0, x1, y1 } : null, boxOf };
+  }, [strokes]);
+  /** opaqueOnly: the sharp layer re-draws only opaque ink (translucent highlighter drawn twice would darken); withUi: selection chrome */
+  /** base: everything, except opaque strokes lying wholly inside the sharp window (re-drawn crisp there; drawing them
+   *  in both would leave a soft upscaled edge around the crisp one). sharp: opaque strokes only (translucent highlighter
+   *  drawn twice would darken). Selection chrome goes on the sharp layer when there is one. */
+  const inkEls = (layer: 'base' | 'sharp') => { const withUi = layer === 'sharp' || !sharpBox;
+    const sb = layer === 'base' && sharpBox && !interactive ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
+    const skip = (st: Stroke) => { if (layer === 'sharp') return st.opacity < 0.99; if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
+    return (<>
+    {withUi && textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
+    {strokes.map((st) => { if (skip(st)) return null; const sel = selection.includes(st.id); const tr = sel ? selTransform : undefined;
+      if (st.poly) return <Path key={st.id} transform={tr} d={dFor(st, 'poly')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />;
+      if (!st.shape && isInkPen(st.tool) && st.points.length > 0) return <G key={st.id} transform={tr}><Path d={dFor(st, 'pen')} scale={s} fill={st.color} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>;
+      return <Path key={st.id} transform={tr} d={dFor(st, 'line')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={sel ? Math.min(1, st.opacity + 0.3) : st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />; })}
+    {withUi && selBounds && <SvgRect x={selBounds.x * s - 6} y={selBounds.y * s - 6} width={selBounds.w * s + 12} height={selBounds.h * s + 12} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="6 4" fill="rgba(47,111,237,0.04)" />}
+    {withUi && selBounds && !dragOff && <Circle cx={(selBounds.x + selBounds.w) * s + 6} cy={(selBounds.y + selBounds.h) * s + 6} r={8} fill={colors.primary} stroke="#fff" strokeWidth={2.5} />}
+  </>); };
+  // ---- raster windows for the finished-ink SVG layers ----
+  // Android's SVG view rasterises its whole frame into ONE bitmap (iOS: one backing store). A full page drawn at 2-4x
+  // is 140 MB+, over Android's 100 MB draw limit -> "Canvas: trying to draw too large bitmap" crash; and every page
+  // allocating a page-sized bitmap (even with no ink) made scrolling hitch. So:
+  //  * pages without ink rasterise nothing;
+  //  * the base layer covers only the inked area, at the page's 1x resolution (scaled up while zoomed);
+  //  * while zoomed (dense), a sharp layer re-draws the visible window (+20 %) at full resolution once the view settles.
+  const dpr = PixelRatio.get();
+  const interactive = selection.length > 0 || textSel.length > 0 || selText.length > 0 || selImg.length > 0 || !!dragOff || !!dragScale;
+  const inkArea = (() => {
+    if (interactive) return { x: 0, y: 0, w: width, h: height };
+    if (!inkBounds) return null;
+    const x0 = Math.max(0, Math.floor(inkBounds.x0 * s)), y0 = Math.max(0, Math.floor(inkBounds.y0 * s)), x1 = Math.min(width, Math.ceil(inkBounds.x1 * s)), y1 = Math.min(height, Math.ceil(inkBounds.y1 * s));
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  })();
+  const baseK = (() => { // raster scale of the base layer (1 = native)
+    if (!inkArea) return 1; let k = 1 / Math.max(1, density);
+    const px = inkArea.w * k * dpr * inkArea.h * k * dpr; const CAP = 16e6; // ≤ 64 MB
+    if (px > CAP) k *= Math.sqrt(CAP / px);
+    return k;
+  })();
+  const sharpBox = (() => {
+    if (!dense || !region || !inkArea) return null;
+    const MAX_PX = 12e6; // ≤ ~48 MB
+    for (const pad of [0.2, 0.08, 0]) {
+      const px = region.nw * pad, py = region.nh * pad;
+      const x0 = Math.max(inkArea.x, (region.nx - px) * width), y0 = Math.max(inkArea.y, (region.ny - py) * height);
+      const x1 = Math.min(inkArea.x + inkArea.w, (region.nx + region.nw + px) * width), y1 = Math.min(inkArea.y + inkArea.h, (region.ny + region.nh + py) * height);
+      if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+      const b = { x: Math.floor(x0), y: Math.floor(y0), w: Math.ceil(x1 - x0), h: Math.ceil(y1 - y0) };
+      if (b.w * b.h * dpr * dpr <= MAX_PX || pad === 0) return b;
+    }
+    return null;
+  })();
+  const liveBox = (() => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (x: number, y: number, m: number) => { if (x - m < x0) x0 = x - m; if (y - m < y0) y0 = y - m; if (x + m > x1) x1 = x + m; if (y + m > y1) y1 = y + m; };
+    if (live.length) { const m = Math.max(cfg.width * s * 1.6, (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') ? eraserR * s + 4 : 0) + 6; for (const q of live) add(q.x * s, q.y * s, m); }
+    for (const q of laser) add(q.x * s, q.y * s, 8);
+    for (const q of lasso) add(q.x * s, q.y * s, 6);
+    if (marquee) { add(marquee.a.x * s, marquee.a.y * s, 4); add(marquee.b.x * s, marquee.b.y * s, 4); }
+    if (!isFinite(x0)) return null;
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(width, Math.ceil(x1)); y1 = Math.min(height, Math.ceil(y1));
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  })();
   return (
     <View style={[StyleSheet.absoluteFill, { width, height }]} pointerEvents={enabled ? 'auto' : 'none'}>
       <GestureDetector gesture={composed}>
         <View style={{ width, height }} collapsable={false}>
           {/* photos sit under the ink so pen notes drawn on a photo stay visible */}
           {images.map((im) => <ImageBoxView key={im.id} im={xfBox(im, selImg.includes(im.id))} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'text')} onEditStart={pushHistory} onChange={(patch) => onImages?.(imagesRef.current.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => commitAll({ images: imagesRef.current.filter((x) => x.id !== im.id) })} />)}
-          <Svg width={width} height={height} pointerEvents="none">
+          {inkArea && (baseK >= 0.999
+            ? <Svg pointerEvents="none" style={{ position: 'absolute', left: inkArea.x, top: inkArea.y }} width={inkArea.w} height={inkArea.h} viewBox={`${inkArea.x} ${inkArea.y} ${inkArea.w} ${inkArea.h}`}>
+                <G>{inkEls('base')}</G>
+              </Svg>
+            : <Svg pointerEvents="none" style={{ position: 'absolute', left: inkArea.x + (inkArea.w - inkArea.w * baseK) / 2, top: inkArea.y + (inkArea.h - inkArea.h * baseK) / 2, transform: [{ scale: 1 / baseK }] }} width={inkArea.w * baseK} height={inkArea.h * baseK} viewBox={`${inkArea.x} ${inkArea.y} ${inkArea.w} ${inkArea.h}`}>
+                <G>{inkEls('base')}</G>
+              </Svg>)}
+          {sharpBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: sharpBox.x, top: sharpBox.y }} width={sharpBox.w} height={sharpBox.h} viewBox={`${sharpBox.x} ${sharpBox.y} ${sharpBox.w} ${sharpBox.h}`}>
+            <G>{inkEls('sharp')}</G>
+          </Svg>}
+          {/* The stroke being written (and lasso / marquee / eraser cursor) lives in its own small SVG sized to what it draws,
+              so writing never re-rasterises the whole page 60x per second. */}
+          {liveBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: liveBox.x, top: liveBox.y }} width={liveBox.w} height={liveBox.h} viewBox={`${liveBox.x} ${liveBox.y} ${liveBox.w} ${liveBox.h}`}>
             <G>
-              {textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
               {marquee && <SvgRect x={Math.min(marquee.a.x, marquee.b.x) * s} y={Math.min(marquee.a.y, marquee.b.y) * s} width={Math.abs(marquee.b.x - marquee.a.x) * s} height={Math.abs(marquee.b.y - marquee.a.y) * s} fill="rgba(47,111,237,0.08)" stroke={colors.primary} strokeWidth={1} strokeDasharray="4 3" />}
-              {strokes.map((st) => { const sel = selection.includes(st.id); const tr = sel ? selTransform : undefined;
-                if (st.poly) return <Path key={st.id} transform={tr} d={polyPath(st.points, s, st.closed)} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />;
-                if (!st.shape && isInkPen(st.tool) && st.points.length > 0) return <G key={st.id} transform={tr}><Path d={penOutline(st.points, st.width, false, st.fixed)} scale={s} fill={st.color} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>;
-                return <Path key={st.id} transform={tr} d={st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.points, s, st.tool !== 'highlighter')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={sel ? Math.min(1, st.opacity + 0.3) : st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />; })}
               {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true, opts.fixedWidth)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
               {laser.length > 0 && <Path d={pathFromPoints(laser, s)} stroke="#FF3B30" strokeWidth={4} strokeOpacity={0.9} fill="none" strokeLinecap="round" />}
               {lasso.length > 1 && <Path d={pathFromPoints(lasso, s, false)} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="5 4" fill="rgba(14,124,123,0.08)" />}
               {(cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') && live.length > 0 && <Circle cx={live[live.length - 1].x * s} cy={live[live.length - 1].y * s} r={eraserR * s} stroke="#888" strokeWidth={1} fill="rgba(0,0,0,0.05)" />}
-              {selBounds && <SvgRect x={selBounds.x * s - 6} y={selBounds.y * s - 6} width={selBounds.w * s + 12} height={selBounds.h * s + 12} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="6 4" fill="rgba(47,111,237,0.04)" />}
-              {selBounds && !dragOff && <Circle cx={(selBounds.x + selBounds.w) * s + 6} cy={(selBounds.y + selBounds.h) * s + 6} r={8} fill={colors.primary} stroke="#fff" strokeWidth={2.5} />}
             </G>
-          </Svg>
+          </Svg>}
         </View>
       </GestureDetector>
       {textBoxes.map((tb) => { const sel = selText.includes(tb.id); const t2 = xfBox(tb, sel); return <TextBoxView key={tb.id} tb={dragScale && sel ? { ...t2, size: tb.size * dragScale.f } : t2} s={s} editing={editing === tb.id} onEdit={() => { if (editing !== tb.id) editBase.current = textRef.current; setEditing(tb.id); }} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); const base = editBase.current; editBase.current = null; const cur = textRef.current.find((t) => t.id === tb.id); const before = base?.find((t) => t.id === tb.id); if (!cur?.text.trim()) { onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); if (before) pushTextBase(base!); return; } if (!before || before.text !== cur.text || before.size !== cur.size || before.font !== cur.font || before.color !== cur.color || before.rect.w !== cur.rect.w) pushTextBase(base ?? textRef.current); }} onDelete={() => { const base = editBase.current; editBase.current = null; setEditing(null); const existed = !base || base.some((t) => t.id === tb.id); if (existed) pushTextBase(base ?? textRef.current); onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); }} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'select', 'lasso'].includes(cfg.tool)} />; })}

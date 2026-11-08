@@ -63,6 +63,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const pinching = useSharedValue(false); const lastKey = useSharedValue('');
   const [range, setRange] = useState<[number, number]>([0, 0]); const [rs, setRs] = useState(1); const [cur, setCur] = useState(initialPage);
   const curRef = useRef(initialPage); const badge = useRef<{ show: (t: string | null) => void } | null>(null);
+  const lastMv = useSharedValue(0); const lastTr = useSharedValue(0);
   const pullStage = useSharedValue(0); const [pullHint, setPullHint] = useState(0); const canPull = !!onPullAddPage && mode === 'vertical';
   const pullJS = useCallback((st: number) => setPullHint(st), []); const addPageJS = useCallback(() => onPullAddPage?.(), [onPullAddPage]);
 
@@ -78,14 +79,15 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const rubber = (v: number, a: number, b: number) => { 'worklet'; return v < a ? a - (a - v) * 0.35 : v > b ? b + (v - b) * 0.35 : v; };
 
   // ---------- JS-side callbacks ----------
-  const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
+  const computeTilesRef = useRef<() => void>(() => {});
+  const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); computeTilesRef.current(); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
   const badgeJS = useCallback((zz: number) => badge.current?.show(`${Math.round(zz * 100)}%`), []);
   const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; if (onPrefetch) for (let i = Math.max(0, a - 2); i <= Math.min(L.boxes.length - 1, b + 3); i++) if (i < a || i > b) onPrefetch(i, L.boxes[i]); return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange, onPrefetch, L]);
 
   const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const tileTimer = useRef<any>(null); const rangeRef = useRef(range); rangeRef.current = range;
   const computeTiles = useCallback(() => {
     const zz = z.value, x0 = tx.value, y0 = ty.value; const dpr = Math.min(3, PixelRatio.get());
-    if (zz < 1.25) { setTiles((t) => (Object.keys(t).length ? {} : t)); return; }
+    if (zz <= 1.2) { setTiles((t) => (Object.keys(t).length ? {} : t)); return; } // same threshold as the 2x page density
     const out: Record<number, PageTile> = {}; const [ra, rb] = rangeRef.current;
     for (let i = Math.max(0, ra); i <= rb && i < L.boxes.length; i++) {
       const bx = L.boxes[i]; const sx = x0 + bx.x * zz, sy = y0 + bx.y * zz, sw = bx.w * zz, sh = bx.h * zz;
@@ -97,8 +99,9 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     }
     setTiles(out);
   }, [L, W, H]);
+  computeTilesRef.current = computeTiles;
   const kickTiles = useCallback(() => { clearTimeout(tileTimer.current); tileTimer.current = setTimeout(computeTiles, 260); }, [computeTiles]);
-  useAnimatedReaction(() => (z.value < 1.25 ? -1 : Math.round(tx.value / 48) * 7919 + Math.round(ty.value / 48) * 31 + Math.round(z.value * 50)), (k, prev) => { if (k !== prev) runOnJS(kickTiles)(); }, [kickTiles]);
+  useAnimatedReaction(() => (z.value <= 1.2 ? -1 : Math.round(tx.value / 48) * 7919 + Math.round(ty.value / 48) * 31 + Math.round(z.value * 50)), (k, prev) => { if (k !== prev) runOnJS(kickTiles)(); }, [kickTiles]);
   useEffect(() => () => clearTimeout(tileTimer.current), []);
 
   // visible pages + current page, recomputed on the UI thread whenever the transform moves
@@ -203,26 +206,56 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
   const flickT0 = useSharedValue(0); const pinchEndAt = useSharedValue(0);
   const gesture = useMemo(() => {
-    // one finger (not the hand tool): a quick flick turns the page in the flick's direction; slow contact never moves anything
+    // one finger (not the hand tool):
+    //  - 상하 mode / zoomed page: the paper follows the finger 1:1 and glides on (momentum), locked to the drag direction
+    //    (never wobbles sideways when the page fits the width) — smooth like any scroll view;
+    //  - left/right flick in 상하 mode, or any flick on an un-zoomed 좌우/2페이지 page: turns the page.
+    //  Palm safety: never while the pen writes or was lifted < 0.45 s ago; while the pen hovers a much longer drag is needed.
     const flick = Gesture.Pan().manualActivation(true).maxPointers(1).enabled(!mousePans)
       .onTouchesDown((e, st) => {
         const pt = e.pointerType;
         if (pt === PointerType.STYLUS || pt === PointerType.MOUSE || pinching.value || inkOwns() || palmBusy() || e.numberOfTouches > 1) { st.fail(); return; }
         const t0 = e.allTouches[0]; panStartX.value = t0 ? t0.absoluteX : 0; panStartY.value = t0 ? t0.absoluteY : 0; flickT0.value = Date.now();
+        panThresh.value = hoverRecent() ? 28 : 10;
       })
       .onTouchesMove((e, st) => {
         if (inkOwns() || pinching.value) { st.fail(); return; }
         const t0 = e.allTouches[0]; if (!t0) return; const dx = t0.absoluteX - panStartX.value, dy = t0.absoluteY - panStartY.value;
-        if (dx * dx + dy * dy > 144) st.activate();
+        if (dx * dx + dy * dy > panThresh.value * panThresh.value) st.activate();
+      })
+      .onStart(() => { cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value; panAxis.value = -1; lastMv.value = Date.now(); lastTr.value = 0; })
+      .onUpdate((e) => {
+        if (pinching.value || inkOwns()) return;
+        const trSum = e.translationX + e.translationY * 1.0001; if (Math.abs(trSum - lastTr.value) > 0.5) { lastTr.value = trSum; lastMv.value = Date.now(); }
+        const b = bounds(z.value);
+        if (panAxis.value === -1) {
+          const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY); if (ax + ay < 6) return;
+          const wide = b.maxX - b.minX > 2; // page wider than the screen (zoomed in)
+          if (mode === 'vertical') panAxis.value = wide ? (ay > ax * 1.25 ? 2 : ax > ay * 1.25 ? 1 : 0) : (ay >= ax ? 2 : 3); // zoomed: lock only a clearly straight drag
+          else panAxis.value = z.value > 1.01 ? (ay > ax * 1.25 ? 2 : ax > ay * 1.25 ? 1 : 0) : 3;
+        }
+        if (panAxis.value === 3) return; // page-turn flick: decided on release
+        if (panAxis.value !== 2) tx.value = clamp(sTx.value + e.translationX, b.minX, b.maxX);
+        if (panAxis.value !== 1) {
+          const rawY = sTy.value + e.translationY; ty.value = clamp(rawY, b.minY, b.maxY);
+          if (canPull) { const over = b.minY - rawY; const stg = over > 150 ? 2 : over > 40 ? 1 : 0; if (stg !== pullStage.value) { pullStage.value = stg; runOnJS(pullJS)(stg); } }
+        }
       })
       .onEnd((e, success) => {
+        if (pullStage.value) { const add = pullStage.value === 2; pullStage.value = 0; runOnJS(pullJS)(0); if (add && success) { runOnJS(addPageJS)(); return; } }
         if (!success || pinching.value || inkOwns() || Date.now() - pinchEndAt.value < 450 || e.numberOfPointers > 1) return;
-        const dt = Date.now() - flickT0.value; const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY);
-        const strict = hoverRecent(); const minD = strict ? 120 : 56, minV = strict ? 1400 : 550;
-        const vertical = ay > ax * 1.25, horizontal = ax > ay * 1.25;
-        if (dt > 600 || !(vertical || horizontal)) return;
-        if (vertical && ay >= minD && Math.abs(e.velocityY) >= minV) runOnJS(turnJS)(e.translationY < 0 ? 1 : -1, true);
-        else if (horizontal && ax >= minD && Math.abs(e.velocityX) >= minV) runOnJS(turnJS)(e.translationX < 0 ? 1 : -1, false);
+        if (panAxis.value === 3) {
+          const dt = Date.now() - flickT0.value; const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY);
+          const strict = hoverRecent(); const minD = strict ? 120 : 56, minV = strict ? 1400 : 550;
+          if (dt > 650) return;
+          if (ax > ay * 1.25 && ax >= minD && Math.abs(e.velocityX) >= minV) runOnJS(turnJS)(e.translationX < 0 ? 1 : -1, false);
+          else if (mode !== 'vertical' && ay > ax * 1.25 && ay >= minD && Math.abs(e.velocityY) >= minV) runOnJS(turnJS)(e.translationY < 0 ? 1 : -1, true);
+          return;
+        }
+        const b = bounds(z.value); const still = Date.now() - lastMv.value > 90; // finger held still before lifting: stop where it is
+        if (still) return;
+        if (panAxis.value !== 2) tx.value = withDecay({ velocity: e.velocityX, deceleration: 0.998, clamp: [b.minX, b.maxX] });
+        if (panAxis.value !== 1) ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.998, clamp: [b.minY, b.maxY] });
       });
     // hand tool (finger) and mouse drag: the paper follows 1:1 and stays exactly where it is released (no momentum, no snap-back)
     const drag = Gesture.Pan().maxPointers(1).minDistance(2).enabled(!!mousePans)
@@ -259,7 +292,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     thumbGesture.current = thumb;
     flick.requireExternalGestureToFail(thumb); drag.requireExternalGestureToFail(thumb);
     return Gesture.Simultaneous(pinch, flick, drag, dbl, hover);
-  }, [bounds, mousePans, mode, minZ, L, W, H, doubleTapZoom, settledJS, badgeJS, doubleTapJS, turnJS]);
+  }, [bounds, mousePans, mode, minZ, L, W, H, doubleTapZoom, settledJS, badgeJS, doubleTapJS, turnJS, canPull, pullJS, addPageJS]);
 
 
   // ---------- web: wheel / trackpad pinch / keyboard ----------

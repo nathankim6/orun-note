@@ -11,6 +11,8 @@ type Native = {
   getWords(uri: string, index: number): Promise<PdfWord[]>;
   /** Missing on app binaries built before it existed (JS updated over the air). */
   renderRegion?(uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string>;
+  /** Android: saved crash stack traces + system exit records since the last call (missing on iOS / older builds). */
+  takeCrashReports?(): Promise<{ kind: string; at: number; detail: string }[]>;
 };
 let impl: Native;
 if (Platform.OS === 'web') { impl = require('./src/web').default as Native; }
@@ -43,5 +45,6 @@ export const PdfRenderer = {
   getPageText: (uri: string, index: number) => impl.getPageText(uri, index).catch(() => ''),
   getOutline: (uri: string) => impl.getOutline(uri).catch(() => [] as PdfOutlineItem[]),
   /** Words on a page with rectangles normalized to the page (0..1, top-left). Empty when the PDF has no text layer (scans). */
+  takeCrashReports: (): Promise<{ kind: string; at: number; detail: string }[]> => (typeof impl.takeCrashReports === 'function' ? impl.takeCrashReports().catch(() => []) : Promise.resolve([])),
   getWords: (uri: string, index: number) => (impl.getWords ? impl.getWords(uri, index) : Promise.resolve([])).catch(() => [] as PdfWord[]),
 };

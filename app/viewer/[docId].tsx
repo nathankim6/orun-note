@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, router as rootRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -20,6 +20,7 @@ import { ImageBox } from '@/data/types';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
 import { WordLookup } from '@/features/viewer/WordLookup';
 import { cachedWords, loadWords } from '@/features/viewer/words';
+import { reportError } from '@/lib/diag';
 import { Toolbar } from '@/features/viewer/Toolbar';
 import { ToolConfig, toolDefaults } from '@/features/viewer/ink';
 import { LeftPanel, LeftTab } from '@/features/viewer/Panels';
@@ -46,8 +47,8 @@ export default function Viewer() {
   const inkOpts = useMemo<InkOpts>(() => ({ fixedWidth: !!prefs.fixedWidth, straightHighlighter: !!prefs.straightHighlighter, eraseHighlighterOnly: !!prefs.eraseHighlighterOnly, lassoMode: prefs.lassoMode ?? 'free', lassoPartial: prefs.lassoPartial ?? true, neatShape: !!prefs.shapeSnap }), [prefs.fixedWidth, prefs.straightHighlighter, prefs.eraseHighlighterOnly, prefs.lassoMode, prefs.lassoPartial, prefs.shapeSnap]);
   const pageSizes = useMemo(() => (doc?.pages ?? []).map((p) => ({ width: p.width, height: p.height })), [doc?.pages]);
   // Text layer for tap-to-define: load current and neighbouring pages in the background.
-  useEffect(() => { if (!uri || !doc || doc.kind === 'blank') return; let alive = true; [pageIndex, pageIndex + 1, pageIndex - 1].filter((i) => i >= 0 && i < doc.pageCount).forEach((i) => loadWords(uri, doc.pages[i].index).then(() => alive && setWordsVer((v) => v + 1))); return () => { alive = false; }; }, [uri, pageIndex, doc?.id]);
   const [cfg, setCfg] = useState<ToolConfig>(() => { const v = useSettingsStore.getState().viewer; const t = (v.lastTool as Tool) || 'pen'; const pr = v.toolPresets?.[t] ?? v.toolPresets?.pen ?? { color: '#172033', width: 2, opacity: 1 }; return { tool: ['pen', 'highlighter'].includes(t) ? t : 'pen', color: pr.color, width: pr.width, shape: 'rectangle', opacity: pr.opacity }; }); const [textFont, setTextFont] = useState<string>('system'); const [lookup, setLookup] = useState<{ text: string; abs: { x: number; y: number }; rects: { x: number; y: number; w: number; h: number }[]; k: string } | null>(null); const [wordsVer, setWordsVer] = useState(0); const [subDoc, setSubDoc] = useState<string | null | 'pick'>(null); const prevPen = useRef<ToolConfig>(cfg); const [recentColors, setRecentColors] = useState<string[]>([]);
+  useEffect(() => { if (!uri || !doc || doc.kind === 'blank' || cfg.tool !== 'select') return; let alive = true; [pageIndex, pageIndex + 1, pageIndex - 1].filter((i) => i >= 0 && i < doc.pageCount).forEach((i) => loadWords(uri, doc.pages[i].index).then(() => alive && setWordsVer((v) => v + 1))); return () => { alive = false; }; }, [uri, pageIndex, doc?.id, cfg.tool === 'select']); // word boxes feed only the select tool (dictionary / text selection): no PdfBox work while reading or writing
   const [leftTab, setLeftTab] = useState<LeftTab | null>(null); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
   const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => {
@@ -95,7 +96,7 @@ export default function Viewer() {
     <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}>
       <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} template={doc.template} renderScale={1 / rs} tile={tile} />
       {/* frame for 간편 입력창 is rendered after the ink layer (below) */}
-      <InkCanvas width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} opts={inkOpts} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
+      <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={rs > 1} density={rs} width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} opts={inkOpts} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && prefs.penAutoReturn && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
         historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
@@ -183,6 +184,21 @@ export default function Viewer() {
         <Row style={{ flexWrap: 'wrap', marginTop: 10 }} gap={6}>{pages.map((i) => <Pressable key={i} onPress={() => { goto(i); setSheet(null); }} style={{ width: 40, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: i === pageIndex ? colors.primary : doc.bookmarks.includes(i) ? colors.primarySoft : colors.surfaceAlt }}><Text style={{ fontWeight: '700', fontSize: 12, color: i === pageIndex ? '#fff' : colors.text }}>{i + 1}</Text></Pressable>)}</Row>
       </Sheet>
       <GuideOverlay visible={!settings.viewerGuideDone && !!uri} onDone={() => settings.setViewerGuideDone(true)} />
+    </View>
+  );
+}
+
+/** A rendering error inside the viewer must never close the app: show a way back instead (expo-router route boundary). */
+export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Promise<void> }) {
+  useEffect(() => { reportError('render', error, 'viewer'); }, [error]);
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28, backgroundColor: '#F2F2F7' }}>
+      <Text style={{ fontSize: 18, fontWeight: '700', color: '#1C1C1E' }}>교재를 여는 중 문제가 생겼어요</Text>
+      <Text style={{ fontSize: 13, color: '#8E8E93', marginTop: 8, textAlign: 'center', maxWidth: 420 }}>{String(error?.message ?? '알 수 없는 오류')}</Text>
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+        <Pressable onPress={() => { retry(); }} style={{ paddingHorizontal: 18, height: 40, borderRadius: 10, backgroundColor: '#007AFF', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 15 }}>다시 열기</Text></Pressable>
+        <Pressable onPress={() => { rootRouter.canGoBack() ? rootRouter.back() : rootRouter.replace('/(tabs)'); }} style={{ paddingHorizontal: 18, height: 40, borderRadius: 10, backgroundColor: '#E5E5EA', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: '#1C1C1E', fontWeight: '600', fontSize: 15 }}>내 교재로</Text></Pressable>
+      </View>
     </View>
   );
 }
