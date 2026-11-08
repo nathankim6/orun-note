@@ -201,13 +201,13 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     else { tx.value = withTiming(cx, { duration: 260, easing: Easing.out(Easing.cubic) }); ty.value = withTiming(cy, inCfg); }
   }, [L, bounds, mode, W, H, onPullAddPage, settledJS]);
 
-  const flickT0 = useSharedValue(0);
+  const flickT0 = useSharedValue(0); const pinchEndAt = useSharedValue(0);
   const gesture = useMemo(() => {
     // one finger (not the hand tool): a quick flick turns the page in the flick's direction; slow contact never moves anything
     const flick = Gesture.Pan().manualActivation(true).maxPointers(1).enabled(!mousePans)
       .onTouchesDown((e, st) => {
         const pt = e.pointerType;
-        if (pt === PointerType.STYLUS || pt === PointerType.MOUSE || pinching.value || inkOwns() || palmBusy()) { st.fail(); return; }
+        if (pt === PointerType.STYLUS || pt === PointerType.MOUSE || pinching.value || inkOwns() || palmBusy() || e.numberOfTouches > 1) { st.fail(); return; }
         const t0 = e.allTouches[0]; panStartX.value = t0 ? t0.absoluteX : 0; panStartY.value = t0 ? t0.absoluteY : 0; flickT0.value = Date.now();
       })
       .onTouchesMove((e, st) => {
@@ -215,8 +215,8 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         const t0 = e.allTouches[0]; if (!t0) return; const dx = t0.absoluteX - panStartX.value, dy = t0.absoluteY - panStartY.value;
         if (dx * dx + dy * dy > 144) st.activate();
       })
-      .onEnd((e) => {
-        if (pinching.value || inkOwns()) return;
+      .onEnd((e, success) => {
+        if (!success || pinching.value || inkOwns() || Date.now() - pinchEndAt.value < 450 || e.numberOfPointers > 1) return;
         const dt = Date.now() - flickT0.value; const ax = Math.abs(e.translationX), ay = Math.abs(e.translationY);
         const strict = hoverRecent(); const minD = strict ? 120 : 56, minV = strict ? 1400 : 550;
         const vertical = ay > ax * 1.25, horizontal = ax > ay * 1.25;
@@ -235,7 +235,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
       .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || penWriting()) st.fail(); })
       .onStart((e) => { pinching.value = true; cancelAnimation(tx); cancelAnimation(ty); cancelAnimation(z); sZ.value = z.value; sTx.value = tx.value; sTy.value = ty.value; sFx.value = e.focalX; sFy.value = e.focalY; })
       .onUpdate((e) => {
-        if (penWriting()) return;
+        if (penWriting() || e.numberOfPointers < 2) return; // a lifting finger moves the focal point to the other finger: ignore it
         const nz = clamp(sZ.value * e.scale, minZ, MAX_Z); const b = bounds(nz);
         tx.value = clamp(e.focalX - (sFx.value - sTx.value) * (nz / sZ.value), b.minX, b.maxX);
         ty.value = clamp(e.focalY - (sFy.value - sTy.value) * (nz / sZ.value), b.minY, b.maxY);
@@ -245,7 +245,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         if (mode !== 'vertical' && z.value <= 1.02) { z.value = withTiming(1, { duration: 160 }); snapPaged(0); runOnJS(settledJS)(1); return; } // un-zoomed page view: realign to the page
         runOnJS(settledJS)(z.value); // stays exactly as left — ready to write
       })
-      .onFinalize(() => { pinching.value = false; });
+      .onFinalize(() => { pinching.value = false; pinchEndAt.value = Date.now(); });
     const dbl = Gesture.Tap().numberOfTaps(2).maxDelay(300).maxDistance(30).enabled(doubleTapZoom)
       .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || e.numberOfTouches > 1 || penBusy() || inkOwns()) st.fail(); })
       .onEnd((e) => { runOnJS(doubleTapJS)(e.x, e.y); });
