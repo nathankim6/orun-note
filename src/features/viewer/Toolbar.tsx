@@ -9,6 +9,8 @@ import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
 import { hsvToHex, hexToHsv } from '@/components/ColorPicker';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
+import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
+const TITLE_H = 34;
 import { ToolArt, ToolArtKind, ColorWheel } from './ToolArt';
 
 export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
@@ -60,6 +62,7 @@ type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgRe
  * active tool again toggles its option row. Option rows preview live; 취소 restores the pre-open state, 적용 keeps it.
  */
 export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
+  const [titleSpace, setTitleSpace] = useState(0);
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
   useEffect(() => { if (dismissKey) setPanel(null); }, [dismissKey]);
@@ -135,7 +138,10 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           </>}
           {iconBtn('손/이동', 'hand-left-outline', 'ion', cfg.tool === 'hand', () => pick('hand'))}
           {onSubDoc && iconBtn('서브교재', 'book-open-page-variant-outline', 'mci', false, onSubDoc)}
-          <View style={{ flex: 1, minWidth: 8 }} />
+          {/* the empty space on the right carries the calligraphy title (only when it fits) */}
+          <View style={{ flex: 1, minWidth: 8, alignSelf: 'stretch', alignItems: 'flex-end', justifyContent: 'center', paddingRight: 14 }} onLayout={(e) => setTitleSpace(e.nativeEvent.layout.width)} pointerEvents="none">
+            {titleSpace >= TITLE_H * ORUN_TITLE_RATIO + 30 && <OrunTitle height={TITLE_H} />}
+          </View>
           {onLock && chip('캔버스 고정', '캔버스 고정', locked ? 'lock' : 'lock-open-variant-outline', !!locked, onLock)}
           {onMore && roundBtn('더보기', 'ellipsis-horizontal', onMore)}
         </ScrollView>
