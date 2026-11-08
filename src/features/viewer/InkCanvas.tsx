@@ -9,7 +9,7 @@ import { TEXT_FONTS } from './Toolbar';
 import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
-import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist } from './ink';
+import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
 
@@ -87,6 +87,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       let points = pts; let poly = false;
       if (tool === 'highlighter' && opts.straightHighlighter && pts.length >= 2) { const a = pts[0], b0 = pts[pts.length - 1]; const b = Math.abs(b0.y - a.y) < Math.abs(b0.x - a.x) * 0.09 ? { x: b0.x, y: a.y } : b0; points = [a, b]; poly = true; }
       else if (lineSnap && !snappedLine.current) { const sn = snapLine(pts); if (sn) points = sn; }
+      if (tool === 'highlighter' && !poly) points = cleanHighlight(points, cfg.width);
       if (points.length === 0) return;
       if (opts.neatShape && tool !== 'highlighter' && !snappedLine.current && points.length > 8) {
         const sh = recognizeShape(points, 30);
@@ -212,7 +213,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && cfg.tool === 'select' && (!!onDoubleTap || !!words?.length)).numberOfTaps(2).maxDelay(280).runOnJS(true).onStart((e) => { const p = toPage(e.x, e.y); if (lookupAt(p, { x: e.absoluteX, y: e.absoluteY })) { lastLookupAt = Date.now(); return; } onDoubleTap?.(p); }), [enabled, onDoubleTap, s, words, onLookup, width, height, cfg.tool]);
   const composed = useMemo(() => Gesture.Simultaneous(pan, longPress, doubleTap), [pan, longPress, doubleTap]);
 
-  const livePath = useMemo(() => { if (live.length === 0) return null; if (cfg.tool === 'shape' && live.length >= 2) return shapePath(cfg.shape, live[0], live[1], s); if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') return null; return pathFromPoints(live, s); }, [live, cfg, s]);
+  const livePath = useMemo(() => { if (live.length === 0) return null; if (cfg.tool === 'shape' && live.length >= 2) return shapePath(cfg.shape, live[0], live[1], s); if (cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') return null; if (cfg.tool === 'highlighter') return pathFromPoints(cleanHighlight(live, cfg.width), s, false); return pathFromPoints(live, s); }, [live, cfg, s]);
   const deleteSelection = () => { commit(strokesRef.current.filter((st) => !selection.includes(st.id))); setSelection([]); onSelectionChange?.([]); };
   const duplicateSelection = () => { const dup = strokesRef.current.filter((st) => selection.includes(st.id)).map((st) => ({ ...st, id: uid(), points: st.points.map((p) => ({ ...p, x: p.x + 20, y: p.y + 20 })), createdAt: Date.now() })); commit([...strokesRef.current, ...dup]); setSelection(dup.map((d) => d.id)); };
   function combinedBounds() { const rs: { x: number; y: number; w: number; h: number }[] = []; const sp = strokesRef.current.filter((st) => selection.includes(st.id)).flatMap((st) => st.points); if (sp.length) rs.push(boundsOf(sp)); for (const t of textRef.current) if (selText.includes(t.id)) rs.push(tbRect(t)); for (const im of imagesRef.current) if (selImg.includes(im.id)) rs.push(im.rect); if (!rs.length) return null; const x = Math.min(...rs.map((r) => r.x)), y = Math.min(...rs.map((r) => r.y)); return { x, y, w: Math.max(...rs.map((r) => r.x + r.w)) - x, h: Math.max(...rs.map((r) => r.y + r.h)) - y }; }
@@ -259,7 +260,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const geoCache = useRef(new WeakMap<Stroke, { s: number; d: string }>()).current;
   const dFor = (st: Stroke, kind: 'pen' | 'poly' | 'line'): string => {
     const sk = kind === 'pen' ? 1 : s; const c = geoCache.get(st); if (c && c.s === sk) return c.d;
-    const d = kind === 'pen' ? penOutline(st.points, st.width, false, st.fixed) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.points, s, st.tool !== 'highlighter');
+    const d = kind === 'pen' ? penOutline(st.points, st.width, false, st.fixed) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.tool === 'highlighter' ? cleanHighlight(st.points, st.width) : st.points, s, st.tool !== 'highlighter');
     geoCache.set(st, { s: sk, d }); return d;
   };
   const { inkBounds, boxOf } = useMemo(() => {

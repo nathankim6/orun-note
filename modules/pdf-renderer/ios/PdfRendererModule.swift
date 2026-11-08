@@ -333,11 +333,17 @@ public class PdfRendererModule: Module {
       }
     }.runOnQueue(self.ioQueue)
 
+    /// An already-rendered page (no rendering, no queue): the viewer shows it at once instead of waiting for other work.
+    AsyncFunction("cachedPage") { (uri: String, index: Int, width: Int) -> String? in
+      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(width).jpg")
+      return FileManager.default.fileExists(atPath: out.path) ? out.absoluteString : nil
+    }
+
     /// Whole page at `width` px. Cached on disk under a stable key: a cached page returns without opening the document.
-    /// PNG up to 1600 px wide, JPEG (q 0.92) above that (several times faster to encode and decode).
+    /// Always JPEG (q 0.92): several times faster to encode and decode than PNG.
     AsyncFunction("renderPage") { (uri: String, index: Int, width: Int) throws -> String in
-      let jpeg = width > 1600
-      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(width).\(jpeg ? "jpg" : "png")")
+      let jpeg = true
+      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(width).jpg")
       if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }

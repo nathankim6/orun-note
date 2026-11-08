@@ -13,6 +13,8 @@ type Native = {
   renderRegion?(uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string>;
   /** Android: saved crash stack traces + system exit records since the last call (missing on iOS / older builds). */
   takeCrashReports?(): Promise<{ kind: string; at: number; detail: string }[]>;
+  /** file URI of an already-rendered page (no rendering, no lock), or null. Missing on older builds. */
+  cachedPage?(uri: string, index: number, width: number): Promise<string | null>;
 };
 let impl: Native;
 if (Platform.OS === 'web') { impl = require('./src/web').default as Native; }
@@ -45,6 +47,7 @@ export const PdfRenderer = {
   getPageText: (uri: string, index: number) => impl.getPageText(uri, index).catch(() => ''),
   getOutline: (uri: string) => impl.getOutline(uri).catch(() => [] as PdfOutlineItem[]),
   /** Words on a page with rectangles normalized to the page (0..1, top-left). Empty when the PDF has no text layer (scans). */
+  cachedPage: (uri: string, index: number, width: number): Promise<string | null> => (typeof impl.cachedPage === 'function' ? impl.cachedPage(uri, index, Math.round(width)).catch(() => null) : Promise.resolve(null)),
   takeCrashReports: (): Promise<{ kind: string; at: number; detail: string }[]> => (typeof impl.takeCrashReports === 'function' ? impl.takeCrashReports().catch(() => []) : Promise.resolve([])),
   getWords: (uri: string, index: number) => (impl.getWords ? impl.getWords(uri, index) : Promise.resolve([])).catch(() => [] as PdfWord[]),
 };

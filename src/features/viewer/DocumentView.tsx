@@ -23,7 +23,7 @@ export type DocHandle = { goto: (i: number, animated?: boolean) => void; zoomTo:
 type Props = {
   width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number;
   renderPage: (i: number, box: PageBox, rs: number, tile?: PageTile) => React.ReactNode;
-  /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox) => void;
+  /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox, rank?: number) => void;
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
   /** 캔버스 고정: no zoom / pan while locked */ locked?: boolean;
   /** notebooks: keep pulling past the last page to add one (Samsung Notes) */ onPullAddPage?: () => void;
@@ -82,7 +82,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const computeTilesRef = useRef<() => void>(() => {});
   const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); computeTilesRef.current(); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
   const badgeJS = useCallback((zz: number) => badge.current?.show(`${Math.round(zz * 100)}%`), []);
-  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; if (onPrefetch) for (let i = Math.max(0, a - 2); i <= Math.min(L.boxes.length - 1, b + 3); i++) if (i < a || i > b) onPrefetch(i, L.boxes[i]); return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange, onPrefetch, L]);
+  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; if (onPrefetch) [b + 1, a - 1, b + 2, b + 3, a - 2].forEach((i, k) => { if (i >= 0 && i < L.boxes.length && (i < a || i > b)) onPrefetch(i, L.boxes[i], k + 1); }); return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange, onPrefetch, L]);
 
   const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const tileTimer = useRef<any>(null); const rangeRef = useRef(range); rangeRef.current = range;
   const computeTiles = useCallback(() => {

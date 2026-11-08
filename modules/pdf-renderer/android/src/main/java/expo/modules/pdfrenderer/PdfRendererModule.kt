@@ -251,7 +251,7 @@ class PdfRendererModule : Module() {
       Thread {
         try {
           synchronized(LOCK) {
-            pagesDir().listFiles()?.forEach { f -> val dash = f.name.indexOf('-'); if (dash >= 0 && dash != 24) f.delete() }
+            pagesDir().listFiles()?.forEach { f -> val dash = f.name.indexOf('-'); if ((dash >= 0 && dash != 24) || f.name.endsWith(".png")) f.delete() }
             decDir().listFiles()?.forEach { f -> val dot = f.name.indexOf('.'); if (dot >= 0 && dot != 24) f.delete() }
           }
         } catch (e: Throwable) {}
@@ -316,11 +316,18 @@ class PdfRendererModule : Module() {
       }
     }
 
-    /** Whole page at [width] px, cached on disk (a cached page returns without touching the PDF). PNG ≤ 1600 px, JPEG 92 above. */
+    /** An already-rendered page (no rendering, no lock): lets the viewer show it at once instead of queueing. */
+    AsyncFunction("cachedPage") { uri: String, index: Int, width: Int ->
+      val out = File(pagesDir(), "${keyOf(uri)}-$index-$width.jpg")
+      if (out.exists() && out.length() > 0L) "file://${out.absolutePath}" else null
+    }
+
+    /** Whole page at [width] px, cached on disk (a cached page returns without touching the PDF). Always JPEG 92:
+     *  several times faster to encode and decode than PNG, and text stays crisp at this quality. */
     AsyncFunction("renderPage") Coroutine { uri: String, index: Int, width: Int ->
       withContext(Dispatchers.IO) {
-        val jpeg = width > 1600
-        val out = File(pagesDir(), "${keyOf(uri)}-$index-$width.${if (jpeg) "jpg" else "png"}")
+        val jpeg = true
+        val out = File(pagesDir(), "${keyOf(uri)}-$index-$width.jpg")
         if (!out.exists()) {
           withRenderer(uri) { r ->
             if (!out.exists()) {

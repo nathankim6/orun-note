@@ -25,15 +25,29 @@ const request = (key: string, pri: number, fn: () => Promise<string>) => {
 const bucket = (w: number) => Math.min(2400, Math.max(300, Math.ceil(w / 300) * 300));
 const pxFor = (displayWidth: number) => bucket(displayWidth * Math.min(2.5, PixelRatio.get()));
 export function usePageImage(uri: string | null, index: number, displayWidth: number) {
-  const [src, setSrc] = useState<string | null>(null); const [err, setErr] = useState(false);
+  const [src, setSrc] = useState<string | null>(null); const [preview, setPreview] = useState<string | null>(null); const [err, setErr] = useState(false);
   const px = pxFor(displayWidth);
-  useEffect(() => { if (!uri || uri === 'blank:') return; let alive = true; request(`${uri}|${index}|${px}`, 1, () => PdfRenderer.renderPage(uri, index, px)).then((u) => alive && setSrc(u)).catch(() => alive && setErr(true)); return () => { alive = false; }; }, [uri, index, px]);
-  return { src, err };
+  useEffect(() => {
+    if (!uri || uri === 'blank:') return; let alive = true; const key = `${uri}|${index}|${px}`;
+    const full = () => request(key, 1, () => PdfRenderer.renderPage(uri, index, px)).then((u) => { if (alive) setSrc(u); }).catch(() => { if (alive) setErr(true); });
+    if (cache.has(key)) { full(); return () => { alive = false; }; }
+    // Already rendered in an earlier session? Show it at once instead of waiting behind the render queue.
+    PdfRenderer.cachedPage(uri, index, px).then((hit) => {
+      if (!alive) return;
+      if (hit) { cache.set(key, { p: Promise.resolve(hit), job: { pri: -1, seq: 0, run: () => {} } }); setSrc(hit); return; }
+      // Not rendered yet: a quick low-resolution pass first (ahead of full renders), then the sharp page replaces it.
+      const pv = Math.max(300, Math.min(900, Math.round(px / 3 / 150) * 150));
+      if (pv < px) request(`${uri}|${index}|${pv}`, 0.5, () => PdfRenderer.renderPage(uri, index, pv)).then((u) => { if (alive) setPreview(u); }).catch(() => {});
+      full();
+    });
+    return () => { alive = false; };
+  }, [uri, index, px]);
+  return { src: src ?? preview, err: err && !preview };
 }
-/** Warm the cache for pages the reader is about to see (next/previous). */
-export function prefetchPage(uri: string | null, index: number, displayWidth: number) {
+/** Warm the cache for pages the reader is about to see. `rank` 1 = the page most likely next (rendered first). */
+export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
   if (!uri || uri === 'blank:' || index < 0) return; const px = pxFor(displayWidth);
-  request(`${uri}|${index}|${px}`, 2, () => PdfRenderer.renderPage(uri, index, px)).catch(() => {});
+  request(`${uri}|${index}|${px}`, 2 + rank / 100, () => PdfRenderer.renderPage(uri, index, px)).catch(() => {});
 }
 export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
 const tileCache = new Map<string, Promise<string>>();

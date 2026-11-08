@@ -7,7 +7,7 @@ export const WIDTHS = [1, 2, 4, 8, 12];
 export type ToolConfig = { tool: Tool; color: string; width: number; shape: ShapeKind; opacity: number };
 export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> => {
   switch (tool) {
-    case 'highlighter': return { width: Math.max(base.width, 8) * 1.6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
+    case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
     case 'pencil': return { opacity: 0.75 };
     case 'brush': return { opacity: 0.9 };
     case 'fountain': return { opacity: 1 };
@@ -75,6 +75,20 @@ export function penOutline(points: Point[], width: number, live = false, fixed =
   } else if (points.length) { const q = points[0]; const r = width * 0.6; d = `M ${q.x - r} ${q.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`; }
   if (!live) outlineCache.set(points, d);
   return d;
+}
+/**
+ * Highlighter input clean-up. Where the pen lands (and lifts) it jitters for a moment; with a wide translucent stroke
+ * those tiny back-and-forth steps turn into a half-filled bulge at the start. Keep the landing point, skip points until
+ * the pen has really left the landing spot, drop steps shorter than a fraction of the width, and drop a short
+ * reversing last step (lift jitter). The start/end then stay clean flat ends, fully coloured.
+ */
+export function cleanHighlight(points: Point[], width: number): Point[] {
+  if (points.length < 3) return points;
+  const r0 = Math.max(3.5, width * 0.6), step = Math.max(0.8, width * 0.12); const a = points[0]; const out: Point[] = [a];
+  let i = 1; while (i < points.length - 1 && dist(points[i], a) < r0) i++;
+  for (; i < points.length; i++) { const q = points[i]; if (i === points.length - 1 || dist(q, out[out.length - 1]) >= step) out.push(q); }
+  if (out.length >= 3) { const n = out.length, w0 = out[n - 3], u = out[n - 2], v = out[n - 1]; if ((v.x - u.x) * (u.x - w0.x) + (v.y - u.y) * (u.y - w0.y) < 0 && dist(u, v) < r0) out.pop(); }
+  return out;
 }
 export const isInkPen = (tool: string) => tool === 'pen' || tool === 'pencil' || tool === 'fountain' || tool === 'brush';
 
