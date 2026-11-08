@@ -172,13 +172,15 @@ Deno.serve(async (req) => {
       return json({ ok: true, role: "student", email: who.email, label: who.label, student: who.student, materials: await materialsFor(who.student) });
     }
     if (action === "auth.link") {
-      if (!r.authed) return fail("Google 로그인이 필요합니다", 401);
+      if (!r.authed) return fail("로그인이 필요합니다", 401);
       if (who && who.role === "student") return json({ ok: true, role: "student", student: who.student, label: who.label, materials: await materialsFor(who.student) });
       const code = normStudentCode(body.studentCode); if (code.length < 3) return fail("학생 코드를 입력하세요");
       const st = await hwStudentByCode(code); if (!st) return fail("학생 코드를 찾을 수 없습니다. 옳은영어 숙제 시스템의 학생 코드를 확인하세요", 404);
       if (!st.code_active) return fail("비활성화된 학생 코드입니다", 403);
       const { data: existing } = await supa.from("student_links").select("*").eq("student_id", st.id).maybeSingle();
-      if (existing && existing.email !== r.authed.email) {
+      // App Review / demo code: whoever signs in takes it over directly (no approval), so reviewers never get stuck.
+      const DEMO = st.code === "E4E6R";
+      if (existing && existing.email !== r.authed.email && !DEMO) {
         // Already bound to a different Google account: needs admin approval.
         const { data: dup } = await supa.from("email_change_requests").select("id").eq("student_id", st.id).eq("new_email", r.authed.email).eq("status", "pending").maybeSingle();
         if (!dup) await supa.from("email_change_requests").insert({ student_id: st.id, student_code: st.code, student_name: st.name, old_email: existing.email, new_email: r.authed.email });
