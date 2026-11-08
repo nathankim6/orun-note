@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { persistOpts, nowIso } from './persist';
 import { api, ApiError, Material, HwStudent } from '@/lib/api';
 import { signInWithGoogle, signOutGoogle } from '@/lib/googleAuth';
+import { signInWithApple } from '@/lib/appleAuth';
 import { supabase } from '@/lib/supabase';
 
 type Role = 'admin' | 'student' | null;
@@ -15,6 +16,7 @@ type SessionState = {
   /** credential passed to the API: admin code or null (Google token is read from the Supabase session) */
   cred: () => string | null;
   signInGoogle: () => Promise<{ ok: boolean; message?: string }>;
+  signInApple: () => Promise<{ ok: boolean; message?: string }>;
   signInAdminCode: (code: string) => Promise<{ ok: boolean; message?: string }>;
   linkStudent: (studentCode: string) => Promise<{ ok: boolean; message?: string; pending?: boolean }>;
   refreshMe: () => Promise<void>;
@@ -25,6 +27,7 @@ export const useSession = create<SessionState>()(persist((set, get) => ({
   adminCode: null, role: null, label: '', email: null, student: null, needsLink: false, pendingMessage: null, verifiedAt: null, hydrated: false, materials: [], materialsAt: null, lastError: null, busy: false,
   cred: () => get().adminCode,
   signInGoogle: async () => { set({ busy: true, lastError: null }); const r = await signInWithGoogle(); if (!r.ok) { set({ busy: false, lastError: r.message ?? null }); return r; } await get().refreshMe(); set({ busy: false }); return { ok: true }; },
+  signInApple: async () => { set({ busy: true, lastError: null }); const r = await signInWithApple(); if (!r.ok) { set({ busy: false, lastError: r.message ?? null }); return r; } await get().refreshMe(); set({ busy: false }); return { ok: true }; },
   signInAdminCode: async (raw) => { const code = raw.replace(/\D/g, ''); if (code.length < 4) return { ok: false, message: '관리자 코드를 입력해 주세요' }; try { const r = await api.me(code); if (r.role !== 'admin') return { ok: false, message: '관리자 코드가 아닙니다' }; set({ adminCode: code, role: 'admin', label: r.label, email: null, student: null, needsLink: false, verifiedAt: nowIso(), lastError: null }); return { ok: true }; } catch (e: any) { return { ok: false, message: e?.message ?? '확인 실패' }; } },
   linkStudent: async (studentCode) => { try { const r = await api.link(studentCode); if (r.role === 'pending') { set({ needsLink: true, pendingMessage: r.message ?? '관리자 승인 대기 중' }); return { ok: true, pending: true, message: r.message }; } set({ role: 'student', label: r.label ?? r.student?.name ?? '', student: r.student ?? null, materials: r.materials ?? [], materialsAt: nowIso(), needsLink: false, pendingMessage: null, verifiedAt: nowIso(), lastError: null }); return { ok: true }; } catch (e: any) { return { ok: false, message: e?.message ?? '연결 실패' }; } },
   // Re-read identity from the server. Admin code sessions and Google sessions are handled the same way.

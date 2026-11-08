@@ -23,6 +23,8 @@ export async function callDocs<T = any>(action: string, adminCode: string | null
 }
 export const api = {
   me: (adminCode: string | null) => callDocs<Me & { ok: true }>('auth.me', adminCode),
+  /** removes the signed-in Google / Apple account and its student-code link on the server */
+  deleteAccount: () => callDocs<{ ok: true }>('auth.delete', null),
   link: (studentCode: string) => callDocs<{ role: 'student' | 'pending'; student?: HwStudent; label?: string; materials?: Material[]; message?: string }>('auth.link', null, { studentCode }),
   list: (c: string | null) => callDocs<{ materials: Material[]; student?: HwStudent }>('list', c),
   download: (c: string | null, materialId: string) => callDocs<{ url: string; title: string; fileName: string }>('download', c, { materialId }),

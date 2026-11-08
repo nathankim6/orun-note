@@ -1,3 +1,5 @@
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { appleSignInAvailable } from '@/lib/appleAuth';
 import React, { useEffect, useState } from 'react';
 import { View, TextInput, Text, KeyboardAvoidingView, Platform, Pressable, ActivityIndicator, Image, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,6 +20,8 @@ export default function Gate() {
   const [studentCode, setStudentCode] = useState(''); const [adminCode, setAdminCode] = useState(''); const [adminMode, setAdminMode] = useState(false); const [busy, setBusy] = useState(false); const [err, setErr] = useState<string | null>(null); const [info, setInfo] = useState<string | null>(null);
   useEffect(() => { setErr(s.lastError); }, [s.lastError]);
   const google = async () => { setBusy(true); setErr(null); const r = await s.signInGoogle(); setBusy(false); if (!r.ok && r.message) setErr(r.message); };
+  const apple = async () => { setBusy(true); setErr(null); const r = await s.signInApple(); setBusy(false); if (!r.ok && r.message) setErr(r.message); };
+  const [appleOk, setAppleOk] = useState(false); useEffect(() => { appleSignInAvailable().then(setAppleOk); }, []);
   const link = async () => { if (busy) return; setBusy(true); setErr(null); const r = await s.linkStudent(studentCode); setBusy(false); if (!r.ok) setErr(r.message ?? '연결 실패'); else if (r.pending) setInfo(r.message ?? '관리자 승인 대기 중'); };
   const admin = async () => { setBusy(true); setErr(null); const r = await s.signInAdminCode(adminCode); setBusy(false); if (!r.ok) setErr(r.message ?? '확인 실패'); };
   const signedIn = !!s.email; const pending = s.pendingMessage ?? info;
@@ -33,14 +37,15 @@ export default function Gate() {
                 <Text style={[type.subhead, { color: colors.textMuted, marginTop: 4 }]}>ORUN ACADEMY · 옳은영어</Text>
               </View>
               {!signedIn && !adminMode && <>
-                <Text style={[type.subhead, { color: colors.textMuted, textAlign: 'center', paddingHorizontal: 8 }]}>옳은영어 숙제 시스템 학생 코드와 Google 계정으로 입장해요. 교재는 이 기기 안에 암호화되어 보관됩니다.</Text>
+                <Text style={[type.subhead, { color: colors.textMuted, textAlign: 'center', paddingHorizontal: 8 }]}>옳은영어 숙제 시스템 학생 코드와 Google{appleOk ? ' 또는 Apple' : ''} 계정으로 입장해요. 교재는 이 기기 안에 암호화되어 보관됩니다.</Text>
                 <Pressable accessibilityRole="button" onPress={google} disabled={busy} style={({ pressed }) => [styles.google, { opacity: pressed || busy ? 0.6 : 1 }]}>
                   {busy ? <ActivityIndicator color={colors.primary} /> : <Image source={{ uri: 'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg' }} style={{ width: 20, height: 20 }} />}
                   <Text style={[type.bodyBold, { fontSize: 17, color: colors.text }]}>Google로 계속하기</Text>
                 </Pressable>
+                {appleOk && <AppleAuthentication.AppleAuthenticationButton buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE} buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK} cornerRadius={12} style={{ height: 52, width: '100%', marginTop: 12 }} onPress={apple} />}
               </>}
               {signedIn && (s.needsLink || !s.role) && <>
-                <View style={styles.accountRow}><Ionicons name="logo-google" size={18} color={ios.blue} /><Text style={[type.body, { color: colors.text, flex: 1 }]} numberOfLines={1}>{s.email}</Text><TextButton title="다른 계정" size={15} onPress={() => s.signOut()} /></View>
+                <View style={styles.accountRow}><Ionicons name={s.email && /privaterelay\.appleid\.com$|icloud\.com$/.test(s.email) ? 'logo-apple' : 'logo-google'} size={18} color={ios.blue} /><Text style={[type.body, { color: colors.text, flex: 1 }]} numberOfLines={1}>{s.email}</Text><TextButton title="다른 계정" size={15} onPress={() => s.signOut()} /></View>
                 {pending ? (
                   <View style={[styles.card, { alignItems: 'center' }]}><Ionicons name="hourglass-outline" size={34} color={ios.orange} /><Text style={[type.h3, { color: colors.text, marginTop: 8 }]}>관리자 승인 대기 중</Text><Text style={[type.subhead, { color: colors.textMuted, textAlign: 'center', marginTop: 6 }]}>{pending}</Text><Button title="다시 확인" variant="secondary" style={{ marginTop: 16, alignSelf: 'stretch' }} onPress={() => s.refreshMe()} /></View>
                 ) : (<View style={styles.card}>

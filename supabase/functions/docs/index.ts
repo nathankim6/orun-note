@@ -149,6 +149,18 @@ Deno.serve(async (req) => {
     const r = await resolve(body); const who = r.who;
     supa.from("access_log").insert({ code: (who?.role === "student" ? who.student.code : who?.role === "admin" ? "admin" : (r.authed?.email ?? "-")).slice(0, 40), action, ok: !!who }).then(() => {});
 
+    // ---- 계정 삭제 (App Store 5.1.1(v)): the signed-in Google / Apple user removes their own account ----
+    if (action === "auth.delete") {
+      if (!r.authed) return fail("로그인이 필요합니다", 401);
+      const em = r.authed.email;
+      await supa.from("student_links").delete().eq("email", em);
+      await supa.from("email_change_requests").delete().eq("old_email", em);
+      await supa.from("email_change_requests").delete().eq("new_email", em);
+      const { error } = await supa.auth.admin.deleteUser(r.authed.uid);
+      if (error) return fail("계정을 삭제하지 못했어요: " + error.message, 500);
+      return json({ ok: true });
+    }
+
     // ---- actions available to a signed-in Google user that is not linked yet ----
     if (action === "auth.me") {
       if (!r.authed && !who) return fail(r.reason ?? "로그인이 필요합니다", 401);
