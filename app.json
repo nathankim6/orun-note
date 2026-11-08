@@ -2,7 +2,7 @@
   "expo": {
     "name": "Paperly",
     "slug": "orun-note",
-    "version": "1.6.6",
+    "version": "1.6.7",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "orunnote",

@@ -27,6 +27,8 @@ type Props = {
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
   /** 캔버스 고정: no zoom / pan while locked */ locked?: boolean;
   /** notebooks: keep pulling past the last page to add one (Samsung Notes) */ onPullAddPage?: () => void;
+  /** a second document on screen (서브교재): leave the keyboard to the main document */ noKeys?: boolean;
+  /** mouse drags pan the page 1:1 while fingers keep scrolling / flicking pages (read-only panes) */ mouseDrag?: boolean;
 };
 
 const M = 14, GAP = 16, MAX_Z = 5;
@@ -55,7 +57,7 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch }, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
@@ -258,8 +260,8 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         if (panAxis.value !== 1) ty.value = withDecay({ velocity: e.velocityY, deceleration: 0.998, clamp: [b.minY, b.maxY] });
       });
     // hand tool (finger) and mouse drag: the paper follows 1:1 and stays exactly where it is released (no momentum, no snap-back)
-    const drag = Gesture.Pan().maxPointers(1).minDistance(2).enabled(!!mousePans)
-      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || pinching.value) st.fail(); })
+    const drag = Gesture.Pan().maxPointers(1).minDistance(2).enabled(!!mousePans || !!mouseDrag)
+      .onTouchesDown((e, st) => { if (e.pointerType === PointerType.STYLUS || pinching.value || (!mousePans && e.pointerType !== PointerType.MOUSE)) st.fail(); })
       .onStart(() => { cancelAnimation(tx); cancelAnimation(ty); sTx.value = tx.value; sTy.value = ty.value; })
       .onUpdate((e) => { if (pinching.value) return; const b = bounds(z.value); tx.value = clamp(sTx.value + e.translationX, b.minX, b.maxX); ty.value = clamp(sTy.value + e.translationY, b.minY, b.maxY); })
       .onEnd(() => { if (mode !== 'vertical' && z.value <= 1.01) snapPaged(0); });
@@ -292,7 +294,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     thumbGesture.current = thumb;
     flick.requireExternalGestureToFail(thumb); drag.requireExternalGestureToFail(thumb);
     return Gesture.Simultaneous(pinch, flick, drag, dbl, hover);
-  }, [bounds, mousePans, mode, minZ, L, W, H, doubleTapZoom, settledJS, badgeJS, doubleTapJS, turnJS, canPull, pullJS, addPageJS]);
+  }, [bounds, mousePans, mouseDrag, mode, minZ, L, W, H, doubleTapZoom, settledJS, badgeJS, doubleTapJS, turnJS, canPull, pullJS, addPageJS]);
 
 
   // ---------- web: wheel / trackpad pinch / keyboard ----------
@@ -317,7 +319,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
       else if ((ev.ctrlKey || ev.metaKey) && ev.key === '-') { ev.preventDefault(); zoomJS(z.value / 1.25, W / 2, H / 2); }
       else if ((ev.ctrlKey || ev.metaKey) && ev.key === '0') { ev.preventDefault(); zoomJS(1, W / 2, H / 2); }
     };
-    node.addEventListener('wheel', onWheel, { passive: false }); window.addEventListener('keydown', onKey);
+    node.addEventListener('wheel', onWheel, { passive: false }); if (!noKeys) window.addEventListener('keydown', onKey);
     return () => { node.removeEventListener('wheel', onWheel); window.removeEventListener('keydown', onKey); clearTimeout(settleT); };
   }, [bounds, mode, minZ, L, W, H, place, zoomJS, settledJS, badgeJS, locked]);
 

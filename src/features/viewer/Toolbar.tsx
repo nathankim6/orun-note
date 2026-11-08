@@ -136,9 +136,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           {iconBtn('손/이동', 'hand-left-outline', 'ion', cfg.tool === 'hand', () => pick('hand'))}
           {onSubDoc && iconBtn('서브교재', 'book-open-page-variant-outline', 'mci', false, onSubDoc)}
           <View style={{ flex: 1, minWidth: 8 }} />
-          {onZoomPad && chip('간편 입력창', '간편 입력창', 'magnify-plus-outline', !!zoomPad, onZoomPad)}
           {onLock && chip('캔버스 고정', '캔버스 고정', locked ? 'lock' : 'lock-open-variant-outline', !!locked, onLock)}
-          {chip('펜 자동 복귀', '펜 복귀', 'undo-variant', !!viewer.penAutoReturn, () => settings.setViewer({ penAutoReturn: !viewer.penAutoReturn }))}
           {onMore && roundBtn('더보기', 'ellipsis-horizontal', onMore)}
         </ScrollView>
       </View>

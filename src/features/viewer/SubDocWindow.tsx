@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, Pressable, ScrollView, useWindowDimensions, Platform } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, Pressable, ScrollView, FlatList, useWindowDimensions, Platform } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,13 +7,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/theme';
 import { useDocsStore } from '@/store/docs';
 import { resolveUri } from '@/lib/files';
-import { PdfPage, usePageImage } from './PdfPage';
-import { ZoomView } from './ZoomView';
+import { PdfPage, prefetchPage } from './PdfPage';
+import { DocumentView, DocHandle, PageBox, PageTile } from './DocumentView';
 import { IconButton, Muted, T } from '@/components/ui';
 import { Doc } from '@/data/types';
 import Svg, { Rect, Path } from 'react-native-svg';
 
-const MIN_W = 260, MIN_H = 220, HEADER_H = 44, EDGE = 14, CORNER = 30;
+const MIN_W = 280, MIN_H = 260, HEADER_H = 44, BAR_H = 40, EDGE = 14, CORNER = 30;
 type Frame = { x: number; y: number; w: number; h: number };
 /** Where the user last left the window (kept for the app session, so closing/reopening 서브교재 restores it). */
 let lastFrame: Frame | null = null;
@@ -22,13 +22,12 @@ const lastSubPage: Record<string, number> = {};
 const clamp = (v: number, lo: number, hi: number) => { 'worklet'; return Math.max(lo, Math.min(hi, v)); };
 const webCursor = (c: string) => (Platform.OS === 'web' ? ({ cursor: c } as any) : null);
 
-/** Warms the shared page-image cache for a neighbouring page so turning pages in the sub window is instant. */
-function Prefetch({ uri, index, width }: { uri: string; index: number; width: number }) { usePageImage(uri, index, width); return null; }
 
 /**
  * 서브교재: a floating, always-on-top reference window (another document or the same one) that stays put while the
  * main page scrolls. Drag the title bar to move it; drag the right edge, bottom edge or bottom-right corner to resize.
- * Turn pages with the arrows; pinch / double-tap (and Ctrl+wheel on desktop) to zoom inside.
+ * The page area is the same document engine as the main view: scroll / flick to turn pages, pinch or double-tap to zoom
+ * (Ctrl+wheel on desktop); the bottom bar has the page grid (모든 페이지 한눈에), previous / next and zoom out / in.
  */
 export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, split = false, onToggleSplit }: { mode: 'pick' | 'show'; docId: string | null; excludeId: string; onPick: (id: string) => void; onClose: () => void;
   /** 화면 2분할: render as a fixed pane of this size (no move / resize handles) */ docked?: { w: number; h: number } | null; split?: boolean; onToggleSplit?: () => void }) {
@@ -44,7 +43,8 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
   const sx = useSharedValue(0), sy = useSharedValue(0), sw = useSharedValue(0), sh = useSharedValue(0), ew = useSharedValue(0), eh = useSharedValue(0);
   /** size = live layout size (updated while dragging); renderSize = size the page bitmap is rendered for (updated when the drag ends). */
   const [size, setSize] = useState({ w: f0.w, h: f0.h }); const [renderSize, setRenderSize] = useState({ w: f0.w, h: f0.h });
-  const [page, setPage] = useState(0); const [uri, setUri] = useState<string | null>(null); const [zoomQ, setZoomQ] = useState(1); const [prefetchOn, setPrefetchOn] = useState(false);
+  const [page, setPage] = useState(0); const [uri, setUri] = useState<string | null>(null); const [zoomPct, setZoomPct] = useState(100); const [grid, setGrid] = useState(false);
+  const docRef = useRef<DocHandle>(null);
 
   useEffect(() => { if (!doc) return; let alive = true; setUri(null); setPage(Math.max(0, Math.min(doc.pageCount - 1, lastSubPage[doc.id] ?? doc.lastPage ?? 0))); resolveUri(doc).then((u) => alive && setUri(u)); return () => { alive = false; }; }, [doc?.id]);
   useEffect(() => { if (doc) lastSubPage[doc.id] = page; }, [doc?.id, page]);
@@ -73,16 +73,15 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
   const resizeRB = useMemo(() => makeResize(true, true), [maxW, maxH, live, commit, save]);
   const style = useAnimatedStyle(() => ({ left: x.value, top: y.value, width: w.value, height: h.value }));
 
-  // page fitted inside the content box (window minus title bar and 1px border)
-  const fitScale = (p: { width: number; height: number } | undefined, box: { w: number; h: number }) => (p ? Math.min((box.w - 2) / p.width, (box.h - HEADER_H - 2) / p.height) : 1);
-  const box = docked ? { w: docked.w, h: docked.h } : size; const rbox = docked ? box : renderSize;
-  const pg = doc?.pages[page]; const contentW = box.w - 2; const contentH = box.h - HEADER_H - 2;
-  const scale = fitScale(pg, box); const same = box.w === rbox.w && box.h === rbox.h;
-  // While resizing, keep asking for the bitmap width of the last committed size (no intermediate renders; the image stretches).
-  const renderScale = same ? zoomQ : zoomQ * (fitScale(pg, rbox) / scale);
-  const onZoomSettled = useCallback((s: number) => setZoomQ(s <= 1.05 ? 1 : Math.min(3, Math.ceil(s * 2) / 2)), []);
-  useEffect(() => { setPrefetchOn(false); if (!uri) return; const t = setTimeout(() => setPrefetchOn(true), 350); return () => clearTimeout(t); }, [uri, page, rbox.w, rbox.h, zoomQ]);
-  const neighbours = doc && uri && prefetchOn ? [page + 1, page - 1].filter((i) => i >= 0 && i < doc.pageCount) : [];
+  // page area = window minus title bar, bottom bar and the 1px border (docked panes have no border)
+  const box = docked ? { w: docked.w, h: docked.h } : size; const bw = docked ? 0 : 2;
+  const viewW = Math.max(80, box.w - bw), viewH = Math.max(80, box.h - HEADER_H - BAR_H - bw);
+  const pageSizes = useMemo(() => (doc ? doc.pages.map((p) => ({ width: p.width, height: p.height })) : []), [doc?.id, doc?.pageCount]);
+  const renderSub = useCallback((pi: number, b: PageBox, rs: number, tile?: PageTile) => {
+    const pg = doc?.pages[pi]; if (!doc || !pg) return null; const w = b.w * rs, h = b.h * rs;
+    return <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}><PdfPage uri={uri} index={pg.index} width={w} height={h} renderScale={1 / rs} tile={tile} template={doc.template} /></View>;
+  }, [doc, uri]);
+  const goto = (i: number) => { if (!doc) return; const t = Math.max(0, Math.min(doc.pageCount - 1, i)); docRef.current?.goto(t); setPage(t); };
   const showList = !doc || mode === 'pick' || docId === '';
 
   const header = (
@@ -91,9 +90,6 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
           <Text numberOfLines={1} style={{ flex: 1, fontWeight: '700', fontSize: 13, color: colors.text }}>{doc && !showList ? doc.title : '서브교재 선택'}</Text>
           {doc && !showList && <>
             <IconButton icon="swap-horizontal-outline" size={16} onPress={() => onPick('pick')} label="다른 교재" />
-            <IconButton icon="chevron-back" size={16} onPress={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} label="이전 페이지" />
-            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted }}>{page + 1}/{doc.pageCount}</Text>
-            <IconButton icon="chevron-forward" size={16} onPress={() => setPage((p) => Math.min(doc.pageCount - 1, p + 1))} disabled={page >= doc.pageCount - 1} label="다음 페이지" />
           </>}
           {onToggleSplit && <Pressable onPress={onToggleSplit} accessibilityRole="button" accessibilityLabel={split ? '떠 있는 창으로 보기' : '화면 2분할로 보기'} hitSlop={6} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 4, height: 28, paddingHorizontal: 7, borderRadius: 8, backgroundColor: pressed ? 'rgba(0,122,255,0.18)' : 'rgba(0,122,255,0.10)' })}><PaneIcon kind={split ? 'float' : 'split'} color={colors.primary} /><Text style={{ fontSize: 11.5, fontWeight: '700', color: colors.primary }}>{split ? '창' : '2분할'}</Text></Pressable>}
           <IconButton icon="close" size={16} onPress={onClose} label="서브교재 닫기" />
@@ -110,8 +106,23 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
         </ScrollView>
       ) : (
         <View style={{ flex: 1, backgroundColor: '#E6EDF7' }}>
-          {pg && <ZoomView standalone width={contentW} height={contentH} contentWidth={pg.width * scale} contentHeight={pg.height * scale} maxScale={4} onScaleSettled={onZoomSettled}><View style={{ backgroundColor: '#fff' }}><PdfPage uri={uri} index={pg.index} width={pg.width * scale} height={pg.height * scale} renderScale={renderScale} template={doc.template} /></View></ZoomView>}
-          {uri && neighbours.map((i) => { const pn = doc.pages[i]; return pn ? <Prefetch key={i} uri={uri} index={pn.index} width={pn.width * fitScale(pn, rbox) * zoomQ} /> : null; })}
+          {uri ? <DocumentView ref={docRef} key={doc.id} width={viewW} height={viewH} pages={pageSizes} mode="vertical" initialPage={page} renderPage={renderSub} mouseDrag doubleTapZoom noKeys
+            onPageChange={setPage} onZoomSettled={(z) => setZoomPct(Math.round(z * 100))} onPrefetch={(i, b, rank) => { const pg = doc.pages[i]; if (pg && uri) prefetchPage(uri, pg.index, b.w, rank); }} />
+            : <View style={{ width: viewW, height: viewH }} />}
+          {grid && <SubPageGrid doc={doc} uri={uri} page={page} width={viewW} height={viewH} onPick={(i) => { setGrid(false); goto(i); }} />}
+          {/* bottom bar: page grid · previous / page / next · zoom out / % (tap = fit) / zoom in */}
+          <View style={{ height: BAR_H, flexDirection: 'row', alignItems: 'center', gap: 2, paddingLeft: 6, paddingRight: docked ? 6 : CORNER, backgroundColor: '#F7F9FD', borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.06)' }}>
+            <Pressable onPress={() => setGrid((g) => !g)} accessibilityRole="button" accessibilityLabel="페이지 한눈에 보기" hitSlop={4} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 4, height: 28, paddingHorizontal: 8, borderRadius: 8, backgroundColor: grid ? colors.primary : pressed ? 'rgba(0,122,255,0.16)' : 'rgba(0,122,255,0.08)' })}>
+              <Ionicons name="grid-outline" size={14} color={grid ? '#fff' : colors.primary} /><Text style={{ fontSize: 11.5, fontWeight: '700', color: grid ? '#fff' : colors.primary }}>페이지</Text>
+            </Pressable>
+            <IconButton icon="chevron-back" size={16} onPress={() => goto(page - 1)} disabled={page === 0} label="이전 페이지" />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted, minWidth: 44, textAlign: 'center' }}>{page + 1}/{doc.pageCount}</Text>
+            <IconButton icon="chevron-forward" size={16} onPress={() => goto(page + 1)} disabled={page >= doc.pageCount - 1} label="다음 페이지" />
+            <View style={{ flex: 1 }} />
+            <IconButton icon="remove-circle-outline" size={18} onPress={() => docRef.current?.zoomBy(1 / 1.25)} label="축소" />
+            <Pressable onPress={() => docRef.current?.fit()} accessibilityRole="button" accessibilityLabel="화면에 맞춤" hitSlop={4}><Text style={{ fontSize: 11.5, fontWeight: '700', color: colors.textMuted, minWidth: 38, textAlign: 'center' }}>{zoomPct}%</Text></Pressable>
+            <IconButton icon="add-circle-outline" size={18} onPress={() => docRef.current?.zoomBy(1.25)} label="확대" />
+          </View>
         </View>
       )}
   </>);
@@ -144,5 +155,32 @@ function PaneIcon({ kind, color }: { kind: 'split' | 'float'; color: string }) {
         ? <><Rect x={8.6} y={3.6} width={4.8} height={8.8} rx={1.2} fill={color} opacity={0.9} /><Path d="M7.6 2.9v10.2" stroke={color} strokeWidth={1.3} /></>
         : <Rect x={6.4} y={5.4} width={6.6} height={5.4} rx={1.3} fill={color} opacity={0.9} />}
     </Svg>
+  );
+}
+
+/** 페이지 한눈에 보기 for the 서브교재: all pages as thumbnails (only the visible rows render); tap one to jump there. */
+function SubPageGrid({ doc, uri, page, width, height, onPick }: { doc: Doc; uri: string | null; page: number; width: number; height: number; onPick: (i: number) => void }) {
+  const { colors } = useTheme();
+  const cols = Math.max(2, Math.min(6, Math.floor((width - 12) / 132))); const gap = 8; const tw = (width - 16 - gap * (cols - 1)) / cols;
+  const aspect = Math.max(...doc.pages.map((p) => p.height / p.width), 1); const th = tw * aspect; const rowH = th + 26;
+  const rows = useMemo(() => { const out: number[][] = []; for (let i = 0; i < doc.pageCount; i += cols) out.push(Array.from({ length: Math.min(cols, doc.pageCount - i) }, (_, k) => i + k)); return out; }, [doc.pageCount, cols]);
+  return (
+    <View style={{ position: 'absolute', left: 0, top: 0, width, height, backgroundColor: 'rgba(242,242,247,0.98)' }}>
+      <FlatList data={rows} key={cols} keyExtractor={(r) => String(r[0])} initialScrollIndex={Math.max(0, Math.floor(page / cols) - 1)} getItemLayout={(_, i) => ({ length: rowH, offset: 8 + rowH * i, index: i })}
+        contentContainerStyle={{ padding: 8 }} initialNumToRender={6} windowSize={5}
+        renderItem={({ item }) => (
+          <View style={{ flexDirection: 'row', gap, height: rowH }}>
+            {item.map((i) => { const pg = doc.pages[i]; const h = (pg.height / pg.width) * tw; const cur = i === page; return (
+              <Pressable key={i} onPress={() => onPick(i)} style={{ width: tw }}>
+                <View style={{ height: th, justifyContent: 'flex-start' }}>
+                  <View style={{ width: tw, height: h, borderRadius: 6, overflow: 'hidden', borderWidth: cur ? 2 : 1, borderColor: cur ? colors.primary : 'rgba(0,0,0,0.12)', backgroundColor: '#fff' }}>
+                    <PdfPage uri={uri} index={pg.index} width={tw - (cur ? 4 : 2)} height={h - (cur ? 4 : 2)} template={doc.template} />
+                  </View>
+                </View>
+                <Text style={{ textAlign: 'center', fontSize: 11, marginTop: 4, color: cur ? colors.primary : colors.textMuted, fontWeight: cur ? '800' : '500' }}>{i + 1}</Text>
+              </Pressable>); })}
+          </View>
+        )} />
+    </View>
   );
 }
