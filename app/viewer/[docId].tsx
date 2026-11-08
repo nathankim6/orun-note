@@ -15,6 +15,7 @@ import { DocumentView, DocHandle, PageBox } from '@/features/viewer/DocumentView
 import { ZoomPad, PadFrame, PadRegion } from '@/features/viewer/ZoomPad';
 import type { InkOpts } from '@/features/viewer/InkCanvas';
 import { SubDocWindow } from '@/features/viewer/SubDocWindow';
+import { SplitDivider } from '@/features/viewer/SplitDivider';
 import { pickImageForPage, addBlankPages } from '@/lib/files';
 import { ImageBox } from '@/data/types';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
@@ -71,6 +72,13 @@ export default function Viewer() {
   const toolbarH = fullscreen ? 0 : 64; const headerH = fullscreen ? 0 : 44; const tabsH = store.openTabs.length > 1 && !fullscreen ? 34 : 0; const bottomH = 40;
   const availW = winW - (leftTab && isTablet ? leftW : 0); const padH = zoomPad ? Math.round(Math.min(250, Math.max(170, winH * 0.27))) : 0;
   const availH = winH - insets.top - insets.bottom - toolbarH - headerH - tabsH - bottomH - padH;
+  // 서브교재 화면 2분할: the main document and the sub document side by side (landscape) or stacked (portrait)
+  const splitPref = !!prefs.subDocSplit; const [splitRatio, setSplitRatio] = useState<number>(() => Math.max(0.25, Math.min(0.75, prefs.subDocSplitRatio ?? 0.45)));
+  const splitOn = !!subDoc && splitPref; const splitHoriz = availW >= availH * 0.9; const DIV = 14;
+  const mainW = splitOn && splitHoriz ? Math.round((availW - DIV) * (1 - splitRatio)) : availW; const mainH = splitOn && !splitHoriz ? Math.round((availH - DIV) * (1 - splitRatio)) : availH;
+  const subW = splitOn ? (splitHoriz ? availW - DIV - mainW : availW) : 0; const subH = splitOn ? (splitHoriz ? availH : availH - DIV - mainH) : 0;
+  const toggleSplit = () => useSettingsStore.getState().setViewer({ subDocSplit: !splitPref });
+  const setRatio = (r: number) => { const v = Math.max(0.25, Math.min(0.75, r)); setSplitRatio(v); useSettingsStore.getState().setViewer({ subDocSplitRatio: v }); };
   const docMode = layout === 'twoPage' && availW > 700 ? 'twoPage' : layout === 'horizontal' ? 'horizontal' : 'vertical';
   const pageAt = (i: number) => doc.pages[i] ?? doc.pages[0];
   const padRegion = (i: number): PadRegion => padRegions[i] ?? { x: pageAt(i).width * 0.05, y: pageAt(i).height * 0.12, w: pageAt(i).width * 0.45 };
@@ -131,12 +139,16 @@ export default function Viewer() {
         {leftTab && isTablet && <LeftPanel tab={leftTab} setTab={setLeftTab} width={leftW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={goto} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} />}
         {/* Narrow screens (phones / split view): the same panel as a modal sheet so the ≡ button always shows the page grid */}
         {leftTab && !isTablet && <Modal visible transparent animationType="slide" onRequestClose={() => setLeftTab(null)}><Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }} onPress={() => setLeftTab(null)} /><View style={{ height: '70%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Modal>}
-        <View style={{ flex: 1 }} collapsable={false}>
+        <View style={{ flex: 1, flexDirection: splitOn && splitHoriz ? 'row' : 'column' }} collapsable={false}>
+          <View style={{ width: mainW, height: mainH }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
-            : <DocumentView ref={docRef} key={doc.id} width={availW} height={availH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} renderPage={renderPage} dark={dark}
+            : <DocumentView ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} renderPage={renderPage} dark={dark}
                 mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled} onPrefetch={(i, box, rank) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w, rank); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct}
                 onPullAddPage={doc.kind === 'blank' ? () => { addBlankPages(doc, 1); toast('새 페이지를 추가했어요'); } : undefined} />}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
+          </View>
+          {splitOn && <SplitDivider horiz={splitHoriz} total={splitHoriz ? availW - DIV : availH - DIV} ratio={splitRatio} thickness={DIV} onRatio={setRatio} />}
+          {splitOn && <SubDocWindow docked={{ w: subW, h: subH }} split onToggleSplit={toggleSplit} mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
         </View>
       </View>
       {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
@@ -146,7 +158,7 @@ export default function Viewer() {
           region={padRegion(pageIndex)} setRegion={(r) => setPadRegions((m) => ({ ...m, [pageIndex]: r }))} strokes={pg?.strokes ?? []} textBoxes={pg?.textBoxes ?? []} images={pg?.images ?? []}
           onStrokes={(next) => ink.setStrokes(k, next)} onTextBoxes={(next) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))} onImages={(next) => ink.setImages(k, next)}
           cfg={cfg} opts={inkOpts} textFont={textFont} onClose={() => setZoomPad(false)} historyRef={padInk} onHistory={setPadHist} />); })()}
-      {subDoc && <SubDocWindow mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
+      {subDoc && !splitOn && <SubDocWindow split={false} onToggleSplit={toggleSplit} mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
       <View style={{ height: bottomH + insets.bottom, paddingBottom: insets.bottom, backgroundColor: 'rgba(255,255,255,0.72)', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.8)', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 }}>
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />
         <Pressable onPress={() => setSheet('goto')} style={{ paddingHorizontal: 8 }}><Text style={{ fontWeight: '700', color: colors.text, fontSize: 13 }}>{pageIndex + 1} <Text style={{ color: colors.textMuted, fontWeight: '500' }}>/ {doc.pageCount}</Text></Text></Pressable>

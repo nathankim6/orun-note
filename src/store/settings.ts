@@ -15,6 +15,8 @@ export type ViewerPrefs = {
   eraseHighlighterOnly: boolean;  // 형광펜만 지우기
   lassoMode: 'free' | 'rect';     // 선택 모양: 자유형 / 사각형
   lassoPartial: boolean;          // 부분 선택된 개체 포함
+  subDocSplit?: boolean;          // 서브교재를 화면 2분할로 보기
+  subDocSplitRatio?: number;      // 2분할에서 서브교재가 차지하는 비율 (0.25–0.75)
 };
 export const defaultViewerPrefs: ViewerPrefs = { defaultLayoutMode: 'vertical', doubleTapZoomEnabled: true, keepAnswersOnReset: true, preserveInkOnRegionTap: true, showChoiceRegions: true, showCorrectAnswer: false, showIncorrectMark: true, showQuizRegions: true, showSolutionBlur: true, twoPageStartOdd: true, fingerDraw: false, eraserReturnToPen: false, penAutoReturn: false, strokeSmoothing: true, lineSnap: true, shapeSnap: false, paletteDock: 'top', favoriteColors: ['#172033', '#DC2626', '#2F6FED', '#22C55E', '#F59E0B'], favoritePens: [{ tool: 'pen', color: '#172033', width: 2, opacity: 1 }, { tool: 'pen', color: '#DC2626', width: 2, opacity: 1 }, { tool: 'pen', color: '#2F6FED', width: 3, opacity: 1 }, { tool: 'highlighter', color: '#FDE68A', width: 14, opacity: 0.35 }], fixedWidth: false, straightHighlighter: true, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, toolPresets: { pen: { color: '#172033', width: 0.5, opacity: 1 }, highlighter: { color: '#FDE68A', width: 6, opacity: 0.35 }, eraser: { color: '#000000', width: 14, opacity: 1 }, vectorEraser: { color: '#000000', width: 10, opacity: 1 }, shape: { color: '#172033', width: 2, opacity: 1 }, text: { color: '#172033', width: 16, opacity: 1 } }, lastTool: 'pen' };
 
