@@ -33,6 +33,22 @@ async function hwStudentByCode(code: string): Promise<HwStudent | null> {
 async function hwStudentById(id: string): Promise<HwStudent | null> {
   const rows = await hw(`students?select=${encodeURIComponent(STUDENT_SELECT)}&id=eq.${id}&limit=1`); return rows.length ? shapeStudent(rows[0]) : null;
 }
+// 보강영상: same rules as orunhomework.com's collectReviewVideos. One video per review_video_group_id, newest first.
+// Only the YouTube video id is kept (never a URL); the app plays it inside its own locked player.
+const YT_ID = /^[A-Za-z0-9_-]{11}$/;
+type ReviewVideo = { id: string; title: string; videoId: string; assignedAt: string; passages: { id: string; title: string }[] };
+function reviewVideos(rows: any[]): ReviewVideo[] {
+  const groups = new Map<string, ReviewVideo>();
+  for (const r of rows) {
+    const p = r?.homework?.passages; const at = String(r?.homework?.created_at ?? "");
+    if (!p?.review_video_group_id || !String(p.review_video_title ?? "").trim() || !YT_ID.test(String(p.review_video_youtube_id ?? ""))) continue;
+    const g = groups.get(p.review_video_group_id) ?? { id: p.review_video_group_id, title: String(p.review_video_title).trim(), videoId: p.review_video_youtube_id, assignedAt: at, passages: [] };
+    if (at > g.assignedAt) g.assignedAt = at;
+    if (!g.passages.some((x) => x.id === p.id)) g.passages.push({ id: p.id, title: String(p.title ?? "") });
+    groups.set(g.id, g);
+  }
+  return [...groups.values()].sort((a, b) => b.assignedAt.localeCompare(a.assignedAt) || a.id.localeCompare(b.id));
+}
 async function hwRoster() {
   const [schools, grades, students] = await Promise.all([hw("schools?select=id,name&order=name.asc"), hw("grades?select=id,name,school_id&order=name.asc"), hw(`students?select=${encodeURIComponent(STUDENT_SELECT)}&order=name.asc`)]);
   return { schools, grades, students: students.map(shapeStudent) };
@@ -200,6 +216,18 @@ Deno.serve(async (req) => {
         const ac = codes[0]; if (!ac || !ac.is_active) return fail("숙제 시스템 학생 코드가 비활성화되었습니다", 403);
         const st = (await hw(`students?select=${encodeURIComponent("id,grade:grade_id(name,school:school_id(name))")}&access_code_id=eq.${ac.id}&limit=1`))[0];
         return json({ ok: true, session: { code: ac.code, name: ac.name, isAdmin: !!ac.is_admin, role: ac.role, accessCodeId: ac.id, studentId: st?.id, schoolName: st?.grade?.school?.name, gradeName: st?.grade?.name } });
+      }
+      // 보강영상 list: videos linked to the passages of the student's homework (admins see every video group)
+      case "videos.list": {
+        let rows: any[];
+        if (who.role === "student") {
+          const sel = encodeURIComponent("homework:homework_id!inner(created_at,passages:passage_id!inner(id,title,review_video_group_id,review_video_title,review_video_youtube_id))");
+          rows = await hw(`homework_submissions?select=${sel}&student_id=eq.${encodeURIComponent(who.student.id)}&homework.passages.review_video_youtube_id=not.is.null&order=created_at.desc&limit=3000`);
+        } else {
+          const ps = await hw(`passages?select=${encodeURIComponent("id,title,created_at,review_video_group_id,review_video_title,review_video_youtube_id")}&review_video_youtube_id=not.is.null&order=created_at.desc&limit=3000`);
+          rows = ps.map((p: any) => ({ homework: { created_at: p.created_at, passages: p } }));
+        }
+        return json({ ok: true, videos: reviewVideos(rows) });
       }
       case "list": {
         if (who.role === "admin") { const { data } = await supa.from("materials").select("*").order("created_at", { ascending: false }); return json({ ok: true, materials: await withCovers(data ?? []) }); }

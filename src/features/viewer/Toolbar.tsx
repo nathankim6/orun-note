@@ -58,13 +58,13 @@ const SHAPES: { k: ShapeKind; icon: any; label: string }[] = [{ k: 'line', icon:
 const RANGE: Record<string, { min: number; max: number }> = { pen: { min: 0.5, max: 12 }, highlighter: { min: 6, max: 40 }, eraser: { min: 2, max: 40 }, vectorEraser: { min: 2, max: 40 }, shape: { min: 0.5, max: 12 }, text: { min: 8, max: 48 } };
 
 type Panel = null | 'pen' | 'highlighter' | 'color' | 'shape' | 'eraser' | 'text' | 'snap' | 'lasso';
-type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
+type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; onVideos?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
 
 /**
  * Main toolbar + a single compact option row right under it. Pen and highlighter are both top-level; tapping the
  * active tool again toggles its option row. Option rows preview live; 취소 restores the pre-open state, 적용 keeps it.
  */
-export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
+export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, onVideos, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
   const [titleSpace, setTitleSpace] = useState(0);
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
@@ -159,6 +159,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           </>}
           {iconBtn('손/이동', 'hand-left-outline', 'ion', cfg.tool === 'hand', () => pick('hand'))}
           {onSubDoc && iconBtn('서브교재', 'book-open-page-variant-outline', 'mci', false, onSubDoc)}
+          {onVideos && iconBtn('보강영상', 'play-box-multiple-outline', 'mci', false, onVideos)}
           {/* the empty space on the right carries the calligraphy title (only when it fits) */}
           <View style={{ flex: 1, minWidth: 8, alignSelf: 'stretch', alignItems: 'flex-end', justifyContent: 'center', paddingRight: 14 }} onLayout={(e) => setTitleSpace(e.nativeEvent.layout.width)} pointerEvents="none">
             {titleSpace >= MARK_H * ORUN_MARK_RATIO + MARK_GAP + TITLE_H * ORUN_TITLE_RATIO + 30
