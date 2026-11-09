@@ -18,6 +18,8 @@ export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
 ];
 // Curated, hue-ordered palette: neutrals then each hue from deep to light, so picking a color is one tap.
 const PALETTE = ['#172033', '#475569', '#94A3B8', '#FFFFFF', '#B91C1C', '#EF4444', '#FCA5A5', '#C2410C', '#F97316', '#FDBA74', '#CA8A04', '#FACC15', '#FDE68A', '#15803D', '#22C55E', '#86EFAC', '#0E7490', '#06B6D4', '#1D4ED8', '#3B82F6', '#93C5FD', '#6D28D9', '#8B5CF6', '#C4B5FD', '#BE185D', '#EC4899', '#F9A8D4', '#78350F'];
+// Highlighter inks: bright, see-through-friendly hues (the pen card shows the full palette instead).
+const HL_PALETTE = ['#FACC15', '#FDE047', '#FB923C', '#F87171', '#F472B6', '#C084FC', '#818CF8', '#60A5FA', '#22D3EE', '#4ADE80', '#A3E635', '#94A3B8'];
 
 /**
  * Drag-or-tap slider (replaces the native slider): works with a finger, Apple Pencil, S Pen and mouse, inside the
@@ -65,6 +67,9 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const [titleSpace, setTitleSpace] = useState(0);
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
+  // pen / highlighter card: favorites edit mode (tap a pen to delete it) and the fine color tuner
+  const [favEdit, setFavEdit] = useState(false); const [fineColor, setFineColor] = useState(false);
+  useEffect(() => { if (!panel) { setFavEdit(false); setFineColor(false); } }, [panel]);
   useEffect(() => { if (dismissKey) setPanel(null); }, [dismissKey]);
   useEffect(() => { onPanelChange?.(!!panel); }, [panel]);
   const snap = React.useRef<{ cfg: ToolConfig; viewer: typeof viewer } | null>(null);
@@ -102,12 +107,27 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const roundBtn = (label: string, icon: any, onPress?: () => void, disabled?: boolean) => <Pressable accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.roundBtn, pressed && { opacity: 0.55 }]}><Ionicons name={icon} size={18} color={disabled ? '#C7C7CC' : '#1C1C1E'} /></Pressable>;
   const iconBtn = (label: string, name: any, lib: 'ion' | 'mci', active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.iconBtn, active && styles.iconBtnActive, pressed && { opacity: 0.55 }]}>{lib === 'mci' ? <MaterialCommunityIcons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} /> : <Ionicons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} />}</Pressable>;
   const chip = (label: string, text: string, icon: any, active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && { opacity: 0.6 }]}><MaterialCommunityIcons name={icon} size={15} color={active ? '#007AFF' : '#3A3A3C'} />{winW >= 1100 ? <Text style={[styles.chipText, active && { color: '#007AFF' }]}>{text}</Text> : null}</Pressable>;
+  const favs = viewer.favoritePens ?? [];
+  const removeFav = (i: number) => { const next = favs.filter((_, j) => j !== i); settings.setViewer({ favoritePens: next }); if (!next.length) setFavEdit(false); };
   const favRow = (
     <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Text style={styles.rowLbl}>즐겨찾기</Text>
-      {(viewer.favoritePens ?? []).map((f, i) => <Pressable key={i} accessibilityLabel={`즐겨찾는 펜 ${i + 1}`} onPress={() => { onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); if (f.tool === 'pen') settings.setViewer({ fixedWidth: !!f.fixed }); setPanel(f.tool as Panel); }} onLongPress={() => settings.setViewer({ favoritePens: (viewer.favoritePens ?? []).filter((_, j) => j !== i) })} style={[styles.fav, cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} /></Pressable>)}
-      {(viewer.favoritePens ?? []).length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...(viewer.favoritePens ?? []), { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? viewer.fixedWidth : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color="#8E8E93" /></Pressable>}
+      {favs.map((f, i) => <Pressable key={i} accessibilityLabel={favEdit ? `즐겨찾는 펜 ${i + 1} 삭제` : `즐겨찾는 펜 ${i + 1}`} onPress={() => { if (favEdit) { removeFav(i); return; } onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); if (f.tool === 'pen') settings.setViewer({ fixedWidth: !!f.fixed }); setPanel(f.tool as Panel); }} onLongPress={() => setFavEdit(true)} style={({ pressed }) => [styles.fav, !favEdit && cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }, favEdit && { borderColor: 'rgba(255,59,48,0.45)' }, pressed && { transform: [{ scale: 0.92 }] }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} />{favEdit && <View pointerEvents="none" style={styles.favDel}><Ionicons name="close" size={10} color="#fff" /></View>}</Pressable>)}
+      {!favEdit && favs.length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...favs, { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? viewer.fixedWidth : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color="#8E8E93" /></Pressable>}
+      {favs.length > 0 && <Pressable accessibilityLabel={favEdit ? '즐겨찾기 편집 완료' : '즐겨찾기 편집'} onPress={() => setFavEdit((v) => !v)} style={({ pressed }) => [styles.favEditBtn, favEdit && { backgroundColor: '#007AFF' }, pressed && { opacity: 0.6 }]}><Text style={{ fontSize: 12, fontWeight: '700', color: favEdit ? '#fff' : '#007AFF' }}>{favEdit ? '완료' : '편집'}</Text></Pressable>}
+      {favEdit && <Text style={{ fontSize: 11, color: '#8E8E93' }}>지울 펜을 누르세요</Text>}
     </View>
   );
+  // color choice inside the pen / highlighter card (same live preview as the toolbar palette; 취소 restores it)
+  const colorRow = (list: string[]) => (
+    <View style={[styles.cardRow, { alignItems: 'flex-start' }]}>
+      <Text style={[styles.rowLbl, { lineHeight: 26 }]}>색상</Text>
+      <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
+        {list.map((c) => { const sel = c.toUpperCase() === cfg.color.toUpperCase(); return <Pressable key={c} accessibilityLabel={`색상 ${c}`} accessibilityState={{ selected: sel }} hitSlop={2} onPress={() => onCfg({ color: c })} style={({ pressed }) => [styles.cSw, { backgroundColor: c, borderWidth: sel ? 3 : 1, borderColor: sel ? '#007AFF' : 'rgba(0,0,0,0.14)' }, pressed && { transform: [{ scale: 0.88 }] }]} />; })}
+        <Pressable accessibilityLabel="색상 직접 고르기" accessibilityState={{ expanded: fineColor }} hitSlop={2} onPress={() => setFineColor((v) => !v)} style={({ pressed }) => [styles.cSw, { alignItems: 'center', justifyContent: 'center', borderWidth: fineColor ? 3 : 0, borderColor: '#007AFF' }, pressed && { transform: [{ scale: 0.88 }] }]}><ColorWheel size={22} /></Pressable>
+      </View>
+    </View>
+  );
+  const fineRow = fineColor ? <View style={styles.cardRow}><View style={{ width: 52 }} /><View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 }} /><HueRow color={cfg.color} onChange={(c) => onCfg({ color: c })} /></View> : null;
   const toggleRow = (label: string, value: boolean, onChange: (v: boolean) => void) => <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined, flex: 1 }]}>{label}</Text><Toggle value={value} onChange={onChange} /></View>;
   const sizeRow = (label: string) => <View style={styles.cardRow}><Text style={styles.rowLbl}>{label}</Text>{widthSlider}</View>;
   const cardW = Math.min(560, winW - 24);
@@ -153,6 +173,8 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
             {(panel === 'pen' || panel === 'highlighter') && <>
               <View style={styles.cardRow}><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k as Panel); }} /><View style={{ flex: 1 }} />
                 {cfg.tool === 'pen' ? <Seg items={[{ k: 'var', label: '가변 굵기' }, { k: 'fix', label: '고정 굵기' }]} value={viewer.fixedWidth ? 'fix' : 'var'} onChange={(k) => settings.setViewer({ fixedWidth: k === 'fix' })} /> : <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}</View>
+              {colorRow(cfg.tool === 'highlighter' ? HL_PALETTE : PALETTE)}
+              {fineRow}
               {sizeRow('굵기')}
               {cfg.tool !== 'highlighter' && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
               {favRow}
@@ -229,5 +251,8 @@ const styles = StyleSheet.create({
   toggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, height: 30, borderRadius: 8, borderWidth: 1, borderColor: 'transparent', marginLeft: 4 },
   seg: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.06)', borderRadius: 10, padding: 3, gap: 2 }, segItem: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 28, borderRadius: 8 },
   fav: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 28, minWidth: 34, paddingHorizontal: 6, borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.1)', backgroundColor: '#fff', justifyContent: 'center' },
+  favDel: { position: 'absolute', top: -7, right: -7, width: 17, height: 17, borderRadius: 9, backgroundColor: '#FF3B30', borderWidth: 1.5, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  favEditBtn: { height: 28, paddingHorizontal: 10, borderRadius: 8, backgroundColor: 'rgba(0,122,255,0.10)', alignItems: 'center', justifyContent: 'center' },
+  cSw: { width: 25, height: 25, borderRadius: 13 },
   ghostBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 30, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.05)' }, lbl: { fontSize: 12, fontWeight: '600', color: '#5B6578' },
 });
