@@ -10,7 +10,8 @@ import { useSettingsStore } from '@/store/settings';
 import { hsvToHex, hexToHsv } from '@/components/ColorPicker';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
-const TITLE_H = 34;
+import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
+const TITLE_H = 34; const MARK_H = 30; const MARK_GAP = 8;
 import { ToolArt, ToolArtKind, ColorWheel } from './ToolArt';
 
 export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
@@ -160,7 +161,9 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           {onSubDoc && iconBtn('서브교재', 'book-open-page-variant-outline', 'mci', false, onSubDoc)}
           {/* the empty space on the right carries the calligraphy title (only when it fits) */}
           <View style={{ flex: 1, minWidth: 8, alignSelf: 'stretch', alignItems: 'flex-end', justifyContent: 'center', paddingRight: 14 }} onLayout={(e) => setTitleSpace(e.nativeEvent.layout.width)} pointerEvents="none">
-            {titleSpace >= TITLE_H * ORUN_TITLE_RATIO + 30 && <OrunTitle height={TITLE_H} />}
+            {titleSpace >= MARK_H * ORUN_MARK_RATIO + MARK_GAP + TITLE_H * ORUN_TITLE_RATIO + 30
+              ? <View style={{ flexDirection: 'row', alignItems: 'center', gap: MARK_GAP }}><OrunMark height={MARK_H} /><OrunTitle height={TITLE_H} /></View>
+              : titleSpace >= TITLE_H * ORUN_TITLE_RATIO + 30 && <OrunTitle height={TITLE_H} />}
           </View>
           {onLock && chip('캔버스 고정', '캔버스 고정', locked ? 'lock' : 'lock-open-variant-outline', !!locked, onLock)}
           {onMore && roundBtn('더보기', 'ellipsis-horizontal', onMore)}
