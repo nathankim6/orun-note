@@ -24,7 +24,7 @@ type Props = {
 };
 
 export type InkOpts = { fixedWidth: boolean; straightHighlighter: boolean; eraseHighlighterOnly: boolean; lassoMode: 'free' | 'rect'; lassoPartial: boolean; neatShape: boolean };
-const DEFAULT_OPTS: InkOpts = { fixedWidth: false, straightHighlighter: false, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, neatShape: false };
+const DEFAULT_OPTS: InkOpts = { fixedWidth: true, straightHighlighter: false, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, neatShape: false };
 /** Lasso clipboard shared across pages (잘라내기/복사 → 붙여넣기). */
 let CLIP: { strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; b: { x: number; y: number; w: number; h: number } } | null = null;
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
@@ -94,7 +94,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
         if (sh && sh.kind !== 'poly') { commit([...strokesRef.current, { id: uid(), tool: 'shape', shape: sh.kind, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points: [sh.a, sh.b], createdAt: Date.now() }]); return; }
         if (sh && sh.kind === 'poly') { commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points: sh.points, poly: true, closed: true, createdAt: Date.now() }]); return; }
       }
-      commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points, createdAt: Date.now(), ...(poly ? { poly: true } : {}), ...(tool !== 'highlighter' && opts.fixedWidth ? { fixed: true } : {}) }]); return; }
+      commit([...strokesRef.current, { id: uid(), tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, points, createdAt: Date.now(), ...(poly ? { poly: true } : {}), ...(tool !== 'highlighter' ? { fixed: true } : {}) }]); return; }
     if (tool === 'shape' && pts.length >= 2) { commit([...strokesRef.current, { id: uid(), tool: 'shape', shape: cfg.shape, color: cfg.color, width: cfg.width, opacity: 1, points: [pts[0], pts[pts.length - 1]], createdAt: Date.now() }]); return; }
     if (tool === 'lasso' && pts.length > 3) { const ids = strokesRef.current.filter((st) => st.points.some((q) => pointInPolygon(q, pts))).map((st) => st.id); setSelection(ids); onSelectionChange?.(ids); return; }
     if ((tool === 'eraser' || tool === 'vectorEraser') && strokesRef.current !== strokes) { /* already committed progressively */ }
@@ -154,8 +154,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // The pen/finger decision, activation and stroke ownership happen ON THE UI THREAD (worklets), synchronously with the touch.
   // Earlier versions asked gesture-handler to activate / end the gesture from the JS thread; those requests arrive late, and a
   // late "end" from stroke N landed on stroke N+1 and cut it off after its first point → every other stroke went missing.
-  // The gesture now never gets an "end" from us (gesture-handler ends it itself when the pen lifts), and only a pen (or a
-  // mouse) can ever start a stroke — fingers and palms are left entirely to zoom / move the page.
+  // Android/web keep the Pan lifecycle. iOS uses a true Manual recognizer: a manually-activated UIPan can hold
+  // finger-only sequences pending and block ancestor pinch. Manual remains Possible for fingers, and is explicitly
+  // begun/activated/ended for the Pencil on the UI thread only (never delayed JS state-manager commands).
   const H = useRef<any>({});
   H.current = {
     down: (x: number, y: number, ax: number, ay: number, pt: any) => {
@@ -179,16 +180,23 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const jsFinish = useCallback(() => H.current.finish(), []); const jsAbort = useCallback(() => H.current.abort(), []);
   const penId = useSharedValue(-1); const pressSV = useSharedValue(-1); const handMode = useSharedValue(cfg.tool === 'hand');
   useEffect(() => { handMode.value = cfg.tool === 'hand'; }, [cfg.tool]);
-  const pan = useMemo(() => Gesture.Pan().enabled(enabled).minDistance(0).maxPointers(10).averageTouches(false).manualActivation(true)
+  const pan = useMemo(() => {
+    const manual = Platform.OS === 'ios';
+    const inkGesture = manual ? Gesture.Manual() : Gesture.Pan().minDistance(0).maxPointers(10).averageTouches(false).manualActivation(true);
+    inkGesture.enabled(enabled)
     .onTouchesDown((e, sm) => {
       'worklet';
       if (handMode.value) { sm.fail(); return; }
       if (penId.value !== -1) return;                           // a stroke is in progress: palm / extra fingers are ignored
-      const t = e.changedTouches[e.changedTouches.length - 1]; if (!t) return;
-      const pt = e.pointerType;
-      if (pt !== PointerType.STYLUS && pt !== PointerType.MOUSE) return; // finger / palm: never writes or erases — and keep listening for the pen
+      // iOS carries the actual type on each contact (native patch), not the event's aggregate Pencil-first type.
+      let t = e.changedTouches[e.changedTouches.length - 1];
+      if (manual) { const pencil = e.changedTouches.find((q) => (q as any).pointerType === PointerType.STYLUS); if (!pencil) return; t = pencil; }
+      if (!t) return;
+      const pt = manual ? (t as any).pointerType : e.pointerType;
+      if (pt !== PointerType.STYLUS && !(Platform.OS === 'web' && pt === PointerType.MOUSE)) return; // finger / palm: never writes or erases — and keep listening for the pen
       penId.value = t.id; pressSV.value = -1;
       const now = Date.now(); penSession.value = { ...penSession.value, writing: true, byPen: pt === PointerType.STYLUS, at: now, since: now };
+      if (manual) sm.begin(); // iOS cannot transition directly from Undetermined to Active on the first touch event
       sm.activate();
       runOnJS(jsDown)(t.x, t.y, t.absoluteX, t.absoluteY, pt);
     })
@@ -197,18 +205,20 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       const id = penId.value; if (id === -1) return;
       for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value); return; } }
     })
-    .onTouchesUp((e) => {
+    .onTouchesUp((e, sm) => {
       'worklet';
-      const id = penId.value; if (id === -1) return;
+      const id = penId.value;
+      if (id === -1) { if (manual && e.numberOfTouches === 0) sm.fail(); return; }
       for (let i = 0; i < e.changedTouches.length; i++) { const t = e.changedTouches[i]; if (t.id === id) {
         penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() };
-        runOnJS(jsUp)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value); return; } }
+        runOnJS(jsUp)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value);
+        if (manual) sm.end(); // clear ownership first: ending can synchronously cancel remaining palm pointers
+        return; } }
     })
-    .onTouchesCancelled(() => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); } })
-    // Apple Pencil force/maxForce and S Pen getPressure() arrive as 0..1 (handwriting sits around 0.15-0.5): gamma curve + smoothing
-    .onUpdate((e) => { 'worklet'; const pr = (e as any).stylusData?.pressure; if (typeof pr === 'number' && pr > 0) { const c = Math.min(1, Math.max(0.06, Math.pow(pr, 0.65))); pressSV.value = pressSV.value < 0 ? c : pressSV.value + (c - pressSV.value) * 0.35; } })
-    .onFinalize((_e, success) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; if (success) runOnJS(jsFinish)(); else runOnJS(jsAbort)(); } }),
-  [enabled]);
+    .onTouchesCancelled((_e, sm) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.fail(); } })
+    .onFinalize((_e, success) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; if (success) runOnJS(jsFinish)(); else runOnJS(jsAbort)(); } });
+    return inkGesture;
+  }, [enabled]);
   const longPress = useMemo(() => Gesture.LongPress().enabled(enabled && !!onLongPress).minDuration(450).runOnJS(true).onStart((e) => onLongPress?.(toPage(e.x, e.y))), [enabled, onLongPress, s]);
   const doubleTap = useMemo(() => Gesture.Tap().enabled(enabled && cfg.tool === 'select' && (!!onDoubleTap || !!words?.length)).numberOfTaps(2).maxDelay(280).runOnJS(true).onStart((e) => { const p = toPage(e.x, e.y); if (lookupAt(p, { x: e.absoluteX, y: e.absoluteY })) { lastLookupAt = Date.now(); return; } onDoubleTap?.(p); }), [enabled, onDoubleTap, s, words, onLookup, width, height, cfg.tool]);
   const composed = useMemo(() => Gesture.Simultaneous(pan, longPress, doubleTap), [pan, longPress, doubleTap]);
@@ -260,7 +270,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const geoCache = useRef(new WeakMap<Stroke, { s: number; d: string }>()).current;
   const dFor = (st: Stroke, kind: 'pen' | 'poly' | 'line'): string => {
     const sk = kind === 'pen' ? 1 : s; const c = geoCache.get(st); if (c && c.s === sk) return c.d;
-    const d = kind === 'pen' ? penOutline(st.points, st.width, false, st.fixed) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.tool === 'highlighter' ? cleanHighlight(st.points, st.width) : st.points, s, st.tool !== 'highlighter');
+    const d = kind === 'pen' ? penOutline(st.points, st.width) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.tool === 'highlighter' ? cleanHighlight(st.points, st.width) : st.points, s, st.tool !== 'highlighter');
     geoCache.set(st, { s: sk, d }); return d;
   };
   const { inkBounds, boxOf } = useMemo(() => {
@@ -335,7 +345,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   return (
     <View style={[StyleSheet.absoluteFill, { width, height }]} pointerEvents={enabled ? 'auto' : 'none'}>
       <GestureDetector gesture={composed}>
-        <View style={{ width, height }} collapsable={false}>
+        <View testID="ink-canvas" style={{ width, height }} collapsable={false}>
           {/* photos sit under the ink so pen notes drawn on a photo stay visible */}
           {images.map((im) => <ImageBoxView key={im.id} im={xfBox(im, selImg.includes(im.id))} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'text')} onEditStart={pushHistory} onChange={(patch) => onImages?.(imagesRef.current.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => commitAll({ images: imagesRef.current.filter((x) => x.id !== im.id) })} />)}
           {inkArea && (baseK >= 0.999
@@ -353,7 +363,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
           {liveBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: liveBox.x, top: liveBox.y }} width={liveBox.w} height={liveBox.h} viewBox={`${liveBox.x} ${liveBox.y} ${liveBox.w} ${liveBox.h}`}>
             <G>
               {marquee && <SvgRect x={Math.min(marquee.a.x, marquee.b.x) * s} y={Math.min(marquee.a.y, marquee.b.y) * s} width={Math.abs(marquee.b.x - marquee.a.x) * s} height={Math.abs(marquee.b.y - marquee.a.y) * s} fill="rgba(47,111,237,0.08)" stroke={colors.primary} strokeWidth={1} strokeDasharray="4 3" />}
-              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true, opts.fixedWidth)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
+              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
               {laser.length > 0 && <Path d={pathFromPoints(laser, s)} stroke="#FF3B30" strokeWidth={4} strokeOpacity={0.9} fill="none" strokeLinecap="round" />}
               {lasso.length > 1 && <Path d={pathFromPoints(lasso, s, false)} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="5 4" fill="rgba(14,124,123,0.08)" />}
               {(cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') && live.length > 0 && <Circle cx={live[live.length - 1].x * s} cy={live[live.length - 1].y * s} r={eraserR * s} stroke="#888" strokeWidth={1} fill="rgba(0,0,0,0.05)" />}

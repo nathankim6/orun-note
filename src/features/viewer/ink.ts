@@ -7,6 +7,9 @@ export const WIDTHS = [1, 2, 4, 8, 12];
 export type ToolConfig = { tool: Tool; color: string; width: number; shape: ShapeKind; opacity: number };
 export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> => {
   switch (tool) {
+    case 'pen': return { width: 0.5, opacity: 1 };
+    case 'eraser': return { width: 8, opacity: 1 };
+    case 'vectorEraser': return { width: 6, opacity: 1 };
     case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
     case 'pencil': return { opacity: 0.75 };
     case 'brush': return { opacity: 0.9 };
@@ -57,16 +60,15 @@ export function snapLine(points: Point[]): Point[] | null { if (points.length < 
 export function boundsOf(points: Point[]) { const xs = points.map((p) => p.x), ys = points.map((p) => p.y); return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }; }
 
 /**
- * Samsung-Notes-like pen ink: a filled, variable-width outline (perfect-freehand).
- * Uses real stylus pressure when present (Apple Pencil / S Pen), otherwise simulates it from speed.
+ * Fixed-width pen outline. Pressure and speed never change the width,
+ * including legacy strokes that were saved with variable-width metadata.
  * Returned path is in PDF page units; render with `scale={s}`. Cached per points array (immutable per stroke).
  */
 const outlineCache = new WeakMap<Point[], string>();
-export function penOutline(points: Point[], width: number, live = false, fixed = false): string {
+export function penOutline(points: Point[], width: number, live = false): string {
   if (!live) { const hit = outlineCache.get(points); if (hit) return hit; }
-  const hasPressure = !fixed && points.some((q) => typeof q.p === 'number' && q.p > 0);
-  const input = points.map((q) => [q.x, q.y, hasPressure ? Math.max(0.05, q.p ?? 0.5) : 0.5]);
-  const out = getStroke(input, { size: width * (fixed ? 1.05 : 1.35), thinning: fixed ? 0 : hasPressure ? 0.62 : 0.38, smoothing: 0.62, streamline: 0.4, simulatePressure: !hasPressure && !fixed, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+  const input = points.map((q) => [q.x, q.y, 0.5]);
+  const out = getStroke(input, { size: width * 1.05, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
   let d = '';
   if (out.length > 2) {
     d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;

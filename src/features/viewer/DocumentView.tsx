@@ -221,7 +221,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         panThresh.value = hoverRecent() ? 28 : 10;
       })
       .onTouchesMove((e, st) => {
-        if (inkOwns() || pinching.value) { st.fail(); return; }
+        if (e.numberOfTouches > 1 || inkOwns() || pinching.value) { st.fail(); return; }
         const t0 = e.allTouches[0]; if (!t0) return; const dx = t0.absoluteX - panStartX.value, dy = t0.absoluteY - panStartY.value;
         if (dx * dx + dy * dy > panThresh.value * panThresh.value) st.activate();
       })
@@ -329,7 +329,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const thumbStyle = useAnimatedStyle(() => { const ch = L.ch * z.value; if (mode !== 'vertical' || ch <= H + 1) return { opacity: 0, height: 0, transform: [{ translateY: 0 }] }; const th = Math.max(40, (H * H) / ch); const frac = Math.min(1, Math.max(0, -ty.value / (ch - H))); return { opacity: thumbActive.value ? 0.85 : 0.4, height: th, transform: [{ translateY: frac * (H - th) }] }; }, [L, H, mode]);
   return (
     <GestureDetector gesture={gesture}>
-      <View ref={hostRef} style={{ width: W, height: H, overflow: 'hidden', backgroundColor: dark ? '#0F1012' : '#E3EAF4' }} collapsable={false}>
+      <View testID="document-viewport" ref={hostRef} style={{ width: W, height: H, overflow: 'hidden', backgroundColor: dark ? '#0F1012' : '#E3EAF4' }} collapsable={false}>
         <Animated.View style={[{ width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
             <View key={i} style={[styles.page, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>

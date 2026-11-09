@@ -18,6 +18,8 @@ jobs:
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
       - run: npm ci
       - run: npx tsc --noEmit
+      - name: Test fixed-width defaults and ink gesture lifecycle
+        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --no-install
       - name: Create release keystore (kept only as a CI artifact; reuse it for updates)
