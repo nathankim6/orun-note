@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const { EXPECTED, verifyCertificate } = require('./verify-apk-certificate');
+assert(verifyCertificate('Signer #1 certificate DN: ignore\nSigner #1 certificate SHA-256 digest: '+EXPECTED));
+assert(verifyCertificate('Number of signers: 1\nV2 Signer: certificate SHA-256 digest: '+EXPECTED));
+assert(verifyCertificate('V2 Signer: certificate SHA-256 digest: '+EXPECTED+'\nV3 Signer: certificate SHA-256 digest: '+EXPECTED.toUpperCase()));
+assert.throws(()=>verifyCertificate('V2 Signer: certificate SHA-256 digest: '+'a'.repeat(64)));
+assert.throws(()=>verifyCertificate('Signer #1: public key SHA-256 digest: '+EXPECTED));
+assert.throws(()=>verifyCertificate('SourceStamp: certificate SHA-256 digest: '+EXPECTED));
+assert.throws(()=>verifyCertificate('V2 Signer: certificate SHA-256 digest: '+EXPECTED+'\nSigner #2: certificate SHA-256 digest: '+'a'.repeat(64)));
+console.log('PASS: old/new SDK signer labels, same-certificate multi-scheme, wrong/multiple/missing certificate rejection');

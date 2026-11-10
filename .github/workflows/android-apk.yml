@@ -19,7 +19,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - name: Test ink, update policy and PDF scheduling
-        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js
+        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js && node scripts/test-apk-certificate.js
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --no-install
       - name: Load the existing release keystore (never generate a replacement)
@@ -50,7 +50,7 @@ jobs:
           SDKTOOLS=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1 | xargs dirname)
           "$SDKTOOLS/apksigner" verify --verbose --print-certs "$APK" > apk-verification.txt
           cat apk-verification.txt
-          grep -qi 'Signer #1 certificate SHA-256 digest: b8124585d937d4f63d546f5f648976a5e79670726788a753938e45b1fff87096' apk-verification.txt
+          node scripts/verify-apk-certificate.js apk-verification.txt
           VER=$(node -p "require('./app.json').expo.version")
           CODE=$(node -e "const [a,b,c]=require('./app.json').expo.version.split('.').map(Number);console.log(a*10000+b*100+c)")
           "$SDKTOOLS/aapt" dump badging "$APK" > apk-badging.txt
