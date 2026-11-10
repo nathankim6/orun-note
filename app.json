@@ -97,7 +97,8 @@
       ],
       "./plugins/withLargeHeap.js",
       "./plugins/withAdiRegistration.js",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      "./plugins/withPdfDetailProcess.js"
     ],
     "experiments": {
       "typedRoutes": false

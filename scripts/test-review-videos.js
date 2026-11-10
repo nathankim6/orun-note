@@ -50,6 +50,8 @@ let statuses = [], latest = [];
 const props = { videoId: validId, onStatus: s => statuses.push(s) };
 const handle = { current: null }; const r = runner(stage, props, handle);
 let tree = r.render(); let web = all(tree, n => n.type === 'WebView')[0]; const source = web.props.source, message = web.props.onMessage;
+assert.equal(tree.props.accessibilityElementsHidden, true); assert.equal(tree.props.importantForAccessibility, 'no-hide-descendants');
+assert.equal(web.props.allowsPictureInPictureMediaPlayback, false); assert.equal(web.props.allowsAirPlayForMediaPlayback, false);
 let injected = []; web.props.ref.current = { injectJavaScript: js => injected.push(js) };
 message({ nativeEvent: { data: 'null' } }); assert.equal(statuses.length, 0);
 message({ nativeEvent: { data: '{"k":"ready","d":60}' } }); handle.current.play(); assert.equal(injected.length, 1);
@@ -76,6 +78,7 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   resolve({ videos: normalized }); await flush(); tree = screen.render();
   const cards = all(tree, n => n.props?.v); assert.equal(cards.length, 2); cards[0].props.onPress();
   tree = screen.render(); assert.equal(all(tree, n => n.props?.video).length, 1);
+  const hiddenList = find(tree, 'review-videos-list'); assert.equal(hiddenList.props['aria-hidden'], true); assert.equal(hiddenList.props.accessibilityElementsHidden, true); assert.equal(hiddenList.props.importantForAccessibility, 'no-hide-descendants');
   const playerElement = all(tree, n => n.props?.video)[0];
   const playback = []; const playerRunner = runner(playerElement.type, { ...playerElement.props, onPlaybackStatus: s => playback.push(s) });
   let playerTree = playerRunner.render();
@@ -84,7 +87,9 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   playerStage().props.onStatus({ playing: true }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).playing, true);
   playerStage().props.onStatus({ ready: false, playing: false, error: 'recoverable' }); playerTree = playerRunner.render(); assert.equal(playerStage(), undefined);
   find(playerTree, 'review-video-player-retry').props.onPress(); playerTree = playerRunner.render(); assert.ok(playerStage()); assert.equal(playback.at(-1).error, null);
-  playerRunner.unmount();
+  let pauses = 0; playerStage().props.ref.current = { pause() { pauses++; } };
+  const closePlayerControl = all(playerTree, n => n.props?.testID === 'review-video-player-close')[0]; closePlayerControl.props.onPress(); assert.equal(pauses, 1);
+  closePlayerControl.props.onPress(); assert.equal(pauses, 1); playerRunner.unmount();
   all(tree, n => n.props?.video)[0].props.onClose(); tree = screen.render(); assert.equal(all(tree, n => n.props?.video).length, 0);
   native.back(); assert.equal(closed, 1); screen.unmount();
   // Late load completion is ignored after close/unmount, and reopening starts a new request.
@@ -95,5 +100,9 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   for (const file of ['ReviewVideos.tsx', 'YouTubeStage.tsx', 'YouTubeStage.web.tsx']) {
     const source = fs.readFileSync(base + file, 'utf8'); assert.doesNotMatch(source, /<Modal\b|\.reload\(/); assert.doesNotMatch(source, /Linking\.openURL|window\.open\(/);
   }
+  const webSource = fs.readFileSync(base + 'YouTubeStage.web.tsx', 'utf8');
+  assert.match(webSource, /'aria-hidden': true, inert: true/); assert.match(webSource, /f\.setAttribute\('aria-hidden', 'true'\)/); assert.match(webSource, /f\.setAttribute\('inert', ''\)/);
+  const nativeSource = fs.readFileSync(base + 'YouTubeStage.tsx', 'utf8');
+  assert.match(nativeSource, /allowsPictureInPictureMediaPlayback=\{false\}/); assert.match(nativeSource, /allowsAirPlayForMediaPlayback=\{false\}/); assert.match(nativeSource, /accessibilityElementsHidden importantForAccessibility="no-hide-descendants"/);
   console.log('PASS review videos: normalization, malformed bridge, navigation, stable source/callbacks, process failure/unmount, dead refs, screen open/close/back/cancellation/retry. JS mocks only.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

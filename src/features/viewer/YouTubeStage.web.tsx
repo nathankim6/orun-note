@@ -56,7 +56,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
             if (disposed || failed || ready.current) return;
             try {
               ready.current = true; clearTimeout(guard);
-              const f = event.target.getIframe?.(); if (f) { f.setAttribute('tabindex', '-1'); f.style.pointerEvents = 'none'; }
+              const f = event.target.getIframe?.(); if (f) { f.setAttribute('tabindex', '-1'); f.setAttribute('aria-hidden', 'true'); f.setAttribute('inert', ''); f.setAttribute('allow', 'autoplay; encrypted-media'); f.style.pointerEvents = 'none'; }
               emit({ k: 'ready', d: event.target.getDuration() || 0 });
               tick = setInterval(() => { if (disposed || failed || !player.current) return; try { const p = player.current; emit({ k: 'time', t: p.getCurrentTime(), d: p.getDuration(), l: p.getVideoLoadedFraction() }); } catch { fail('gone'); } }, 250);
             } catch { fail('load'); }
@@ -70,7 +70,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
     return () => { disposed = true; clearTimeout(guard); destroy(); };
   }, [videoId]);
   return React.createElement('div', {
-    ref: host, onContextMenu: (e: any) => e.preventDefault(), 'data-testid': 'review-video-stage',
+    ref: host, 'aria-hidden': true, inert: true, onContextMenu: (e: any) => e.preventDefault(), 'data-testid': 'review-video-stage',
     style: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: '#000', pointerEvents: 'none', userSelect: 'none' },
   });
 });

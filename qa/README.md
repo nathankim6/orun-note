@@ -8,7 +8,7 @@ Only the manual `Native simulator smoke (QA only)` workflow runs this entry. `sc
 
 The QA root registers directly with Expo, wraps SafeAreaProvider/GestureHandlerRootView, and injects four typed fixtures into the actual ReviewVideosScreen. It never authenticates or requests a real review list. All videos reference public YouTube IFrame API sample `M7lc1UVf-VE`; titles/passages/PDF are synthetic. Network access to YouTube, youtube-nocookie, thumbnails and Google media hosts is required. Public sample availability/embed policy/autoplay can change. A timeout or unavailable callback is a failing `network_or_player_*` outcome, never a playback pass. No student/account/admin code/secret is supplied.
 
-Android uses API 35 x86_64 Google APIs emulator, Linux KVM, Java 17, Node 22, Android SDK and free built-in `adb uiautomator dump` plus coordinate taps derived from accessibility bounds. It builds a release-mode QA bundle with the generated project's local debug signing identity, not the production keystore. No APK is uploaded.
+Android uses API 36 x86_64 Google APIs emulator (Android version parity with the SM-X930 target only, not Samsung hardware emulation), Linux KVM, Java 17, Node 22, Android SDK and free built-in `adb uiautomator dump` plus coordinate taps derived from accessibility bounds. It builds a release-mode QA bundle with the generated project's local debug signing identity, not the production keystore. No APK is uploaded.
 
 iOS uses macOS 15, Xcode 26.2, its installed iPad simulator runtime, CocoaPods, Node 22, Homebrew XcodeGen and built-in XCTest UI automation. A tiny Swift host/UI runner is generated from `qa/ios/project.yml`; `simctl` installs the unsigned simulator `.app`. No signing certificate, Apple account, paid device/cloud service, IPA export or App Store upload is used. Availability of that Xcode/runtime on the hosted image is an external dependency. Simulator behavior does not establish real-device decode performance, capture resistance, audio routing or lifecycle correctness.
 
@@ -19,7 +19,7 @@ From repo root after `npm ci`:
 ```sh
 node scripts/native-generate-pdf.mjs
 NATIVE_SMOKE_QA=1 scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform android --no-install && cd android && ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=x86_64'
-# Boot an API35 x86_64 emulator first, then:
+# Boot an API36 x86_64 emulator first, then:
 adb install android/app/build/outputs/apk/release/app-release.apk
 mkdir -p qa/build
 node scripts/native-android-smoke.mjs > qa/build/android.raw 2>&1
@@ -37,3 +37,15 @@ PDF fixture generator creates a compact, compressed, valid two-page PDF TS base6
 Scheduling assertion is relative, not a hard speed threshold: all three native detail durations must exceed the reading duration plus dispatch lead, and all three reading completions must precede detail to pass. Repeatable detail-first under that discriminating load fails. Mixed ordering, inadequate load separation or missing telemetry cannot establish independence; they report inconclusive/failure and fail CI for investigation, not a fake success or a guaranteed hardware-speed regression.
 
 Driver deadline: Android 12 minutes; iOS XCTest 12-minute allowance/13-minute maximum. Workflow has separate bounded build and emulator steps and job timeouts. No retries hide a failure. Uploaded artifacts contain only sanitized JSONL QA events. Raw logs, accessibility XML, xcresults, screenshots, PDFs, rendered images, APKs and simulator apps are **not** uploaded. Existing screen protection is retained in the QA root; if FLAG_SECURE makes pixels black, accessibility/status logs remain the evidence. Never weaken production protection to obtain screenshots.
+
+## Failure-only symbol diagnostics
+
+Run the local privacy/process-attribution regression suite without a device:
+
+```sh
+node --test qa/native-diagnostics.test.mjs
+```
+
+Android snapshots the last 8,000 threadtime logcat lines **before** reporting a missing main PID, including when startup failed before the first UI frame. It retains that snapshot in memory if a later adb read fails. Only failure handling emits diagnostic events; raw logcat is never printed to artifacts. Attribution uses observed app PIDs, app/app-worker Process headers, app-owned native tombstone headers and WebView sandbox launch records attributed to the app. Unrelated process crashes are excluded when identifiable. This is best effort: truncated logs or absent child attribution can prevent recovering a child stack; missing main process and UI/liveness failures still fail the suite, never pass it. Native frame parsing deliberately accepts only Android tombstone PC/library entries; an unparseable frame is omitted, not replaced with raw text.
+
+`crash_java_exception` contains only a strict qualified exception class. `crash_java_frame` contains strict qualified class, method symbol and optional positive source line number, never a source filename. `crash_native_frame` contains only a validated `lib*.so` basename and up to 16 hex PC digits. `crash_ios_exception` contains only an allowlisted EXC/signal enum or fixed NS_EXCEPTION/CPP_TERMINATE enum, not exception text. Export limits per failure are 8 exception classes, 32 Java frames, 16 native frames and 8 iOS enums, deduplicated. The final sanitizer revalidates every field and drops diagnostics on a passing suite. Messages, paths, URLs, IDs, credentials, video identifiers and arbitrary extra JSON fields are never exported. The private-canary tests cover field stripping, invalid symbols, bounds, missing-main-PID startup crashes, worker frames, app-attributed WebView failures, unrelated system crashes and iOS enums. These are local parser/mocked-adb tests, not native playback or simulator pass evidence.

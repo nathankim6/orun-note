@@ -16,14 +16,14 @@ export function playerHtml(videoId: string, origin: string) {
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #p,iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}</style></head>
-<body><div id="p"></div>
+<body><div id="p" aria-hidden="true" inert></div>
 <script>
 var player=null,ready=false,tick=null,timeout=null;
 function post(m){try{window.ReactNativeWebView.postMessage(JSON.stringify(m))}catch(e){}}
 function onYouTubeIframeAPIReady(){
   player=new YT.Player('p',{host:'https://www.youtube-nocookie.com',videoId:${JSON.stringify(videoId)},width:'100%',height:'100%',playerVars:${vars},
     events:{
-      onReady:function(){ready=true;clearTimeout(timeout);post({k:'ready',d:player.getDuration()});
+      onReady:function(){var frame=player.getIframe();frame.setAttribute("aria-hidden","true");frame.setAttribute("tabindex","-1");frame.setAttribute("inert","");ready=true;clearTimeout(timeout);post({k:'ready',d:player.getDuration()});
         clearInterval(tick);tick=setInterval(function(){try{post({k:'time',t:player.getCurrentTime(),d:player.getDuration(),l:player.getVideoLoadedFraction()})}catch(e){}},250)},
       onStateChange:function(e){post({k:'state',s:e.data})},
       onAutoplayBlocked:function(){post({k:'state',s:2})},
@@ -72,10 +72,10 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
     latest.current(status);
   }, [fail]);
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none" testID="review-video-stage">
+    <View style={StyleSheet.absoluteFill} pointerEvents="none" testID="review-video-stage" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {!failure && validVideoId(videoId) && <WebView ref={web} source={source} originWhitelist={['*']} onMessage={onMessage}
         javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback mediaPlaybackRequiresUserAction={false}
-        allowsFullscreenVideo={false} allowsLinkPreview={false} setSupportMultipleWindows={false} javaScriptCanOpenWindowsAutomatically={false}
+        allowsFullscreenVideo={false} allowsPictureInPictureMediaPlayback={false} allowsAirPlayForMediaPlayback={false} allowsLinkPreview={false} setSupportMultipleWindows={false} javaScriptCanOpenWindowsAutomatically={false}
         scrollEnabled={false} bounces={false} overScrollMode="never" automaticallyAdjustContentInsets={false} contentInsetAdjustmentBehavior="never"
         mixedContentMode="never" textInteractionEnabled={false} dataDetectorTypes="none"
         onShouldStartLoadWithRequest={allowPlayerNavigation} onOpenWindow={blockWindow}

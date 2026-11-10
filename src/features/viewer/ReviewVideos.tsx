@@ -134,19 +134,25 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
   useEffect(() => { if (st.playing && !scrubbing) poke(); else { clearTimeout(hide.current); setChrome(true); } return () => clearTimeout(hide.current); }, [st.playing, scrubbing]);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; clearTimeout(hide.current); }; }, []);
+  const closePlayer = useCallback(() => {
+    if (!active.current) return;
+    // Pause only while the live ref still exists; unmount cleanup never calls a dead renderer.
+    try { stage.current?.pause(); } catch {}
+    active.current = false; clearTimeout(hide.current); onClose();
+  }, [onClose]);
   const onStatus = useCallback((p: Partial<StageStatus>) => { if (active.current) setSt((s) => ({ ...s, ...p })); }, []);
   useEffect(() => { onPlaybackStatus?.(st); }, [st, onPlaybackStatus]);
   useEffect(() => {
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { if (full) setFull(false); else onClose(); return true; });
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { if (full) setFull(false); else closePlayer(); return true; });
     return () => subscription.remove();
-  }, [full, onClose]);
+  }, [full, closePlayer]);
   const toggle = () => { if (!st.ready) return; if (st.playing) stage.current?.pause(); else { if (st.ended) stage.current?.seek(0); stage.current?.play(); } poke(); };
   const skip = (d: number) => { if (!st.ready) return; const t = Math.max(0, Math.min(st.duration || 0, st.time + d)); stage.current?.seek(t); setSt((s) => ({ ...s, time: t, ended: false })); poke(); };
   const retry = () => { started.current = false; setSt(EMPTY_STATUS); setAttempt((n) => n + 1); };
   // desktop keyboard: space / arrows / esc
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === ' ') { e.preventDefault(); toggle(); } else if (e.key === 'ArrowLeft') skip(-10); else if (e.key === 'ArrowRight') skip(10); else if (e.key === 'Escape') { if (full) setFull(false); else onClose(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === ' ') { e.preventDefault(); toggle(); } else if (e.key === 'ArrowLeft') skip(-10); else if (e.key === 'ArrowRight') skip(10); else if (e.key === 'Escape') { if (full) setFull(false); else closePlayer(); } };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   });
   const maxW = full ? W : Math.min(W - 40, 1040);
@@ -164,7 +170,7 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
             <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '600' }}>보강영상</Text>
             <Text numberOfLines={1} style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>{video.title}</Text>
           </View>
-          <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
+          <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={closePlayer} iconSize={22} />
         </View>
       )}
       <View style={{ flex: full ? 1 : undefined, alignItems: 'center', justifyContent: 'center', marginTop: full ? 0 : 6 }}>
@@ -182,7 +188,7 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
               {full && (
                 <View style={{ position: 'absolute', top: 12 + insets.top, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <Text numberOfLines={1} style={{ flex: 1, color: '#fff', fontSize: 16, fontWeight: '700' }}>{video.title}</Text>
-                  <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
+                  <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={closePlayer} iconSize={22} />
                 </View>
               )}
               <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: stageW < 420 ? 22 : 40 }]}>
@@ -299,7 +305,7 @@ function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlayba
   const list = useMemo(() => { const k = q.trim().toLowerCase(); if (!videos || !k) return videos ?? []; return videos.filter((v) => v.title.toLowerCase().includes(k) || v.passages.some((p) => p.title.toLowerCase().includes(k))); }, [videos, q]);
   return (
     <View testID="review-videos-screen" style={{ flex: 1, backgroundColor: '#F2F2F7' }} {...(Platform.OS === 'web' ? { onContextMenu: (e: any) => e.preventDefault() } : {})}>
-        <View testID="review-videos-list" accessibilityElementsHidden={!!playing} importantForAccessibility={playing ? 'no-hide-descendants' : 'auto'} style={{ flex: 1, width: panelW, paddingTop: insets.top, paddingBottom: insets.bottom }}>
+        <View testID="review-videos-list" aria-hidden={!!playing} accessibilityElementsHidden={!!playing} importantForAccessibility={playing ? 'no-hide-descendants' : 'auto'} style={{ flex: 1, width: panelW, paddingTop: insets.top, paddingBottom: insets.bottom }}>
           <View style={[styles.header, { paddingHorizontal: pad }]}>
             <VideoTile />
             <View style={{ flex: 1, minWidth: 0 }}>
