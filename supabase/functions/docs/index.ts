@@ -94,6 +94,67 @@ async function lookup(raw: string) {
   return data;
 }
 
+// ---- Published app updates (never compare iOS against Android/APK versions) ----
+type UpdateChannel = 'ios' | 'android-apk' | 'android-play' | 'windows' | 'mac';
+type PublishedUpdate = { version: string; url: string; publishedAt: string };
+const updateMemo = new Map<UpdateChannel, { at: number; release: PublishedUpdate | null }>();
+let githubReleaseMemo: { at: number; releases: any[] } | null = null;
+const validVersion = (v: unknown): v is string => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
+const compareVersion = (a: string, b: string) => { const aa = a.split('.').map(Number), bb = b.split('.').map(Number); for (let i = 0; i < 3; i++) { if (aa[i] !== bb[i]) return aa[i] > bb[i] ? 1 : -1; } return 0; };
+async function updateJson(url: string) {
+  const r = await fetch(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'OrunNote-Release-Check' }, signal: AbortSignal.timeout(4500) });
+  if (!r.ok) throw new Error('배포 서버 확인 실패'); return r.json();
+}
+async function publishedUpdate(channel: UpdateChannel): Promise<PublishedUpdate | null> {
+  const now = Date.now(), hit = updateMemo.get(channel); if (hit && now - hit.at < 5 * 60e3) return hit.release;
+  const { data: cached, error: cacheError } = await supa.from('app_update_cache').select('release,checked_at,refresh_after').eq('channel', channel).maybeSingle();
+  if (cacheError || !cached) throw new Error('업데이트 캐시 확인 실패');
+  const checkedAt = Date.parse(cached.checked_at ?? '');
+  if (Number.isFinite(checkedAt) && now - checkedAt < 5 * 60e3) {
+    updateMemo.set(channel, { at: checkedAt, release: cached.release }); return cached.release;
+  }
+  const { data: lease, error: leaseError } = await supa.from('app_update_cache').update({ refresh_after: new Date(now + 15_000).toISOString() }).eq('channel', channel).lte('refresh_after', new Date(now).toISOString()).select('channel');
+  if (leaseError || !lease?.length) {
+    if (Number.isFinite(checkedAt)) return cached.release;
+    throw new Error('배포 정보를 확인 중입니다');
+  }
+  try {
+  let release: PublishedUpdate | null = null;
+  if (channel === 'ios') {
+    // Public App Store availability, NOT TestFlight or an App Store Connect submission.
+    const data = await updateJson('https://itunes.apple.com/lookup?id=6829351204&country=kr');
+    const app = data.results?.find((a: any) => a.trackId === 6829351204 && a.bundleId === 'com.paperly.study');
+    if (app && validVersion(app.version)) release = { version: app.version, url: 'https://apps.apple.com/kr/app/id6829351204', publishedAt: app.currentVersionReleaseDate ?? app.releaseDate };
+  } else if (channel === 'android-play') {
+    // Google Play has no public version API. A release operator enables this ONLY after public availability is verified.
+    const { data, error } = await supa.from('app_update_releases').select('version,url,published_at').eq('channel', channel).eq('enabled', true).lte('published_at', new Date(now).toISOString()).maybeSingle();
+    if (error) throw new Error('업데이트 정보 확인 실패');
+    if (data && validVersion(data.version) && data.url === 'https://play.google.com/store/apps/details?id=com.paperly.study') release = { version: data.version, url: data.url, publishedAt: data.published_at };
+  } else {
+    if (!githubReleaseMemo || now - githubReleaseMemo.at >= 5 * 60e3) {
+      const rows = await updateJson('https://api.github.com/repos/nathankim6/orun-note/releases?per_page=100');
+      if (!Array.isArray(rows)) throw new Error('잘못된 배포 정보'); githubReleaseMemo = { at: now, releases: rows };
+    }
+    const suffix = channel === 'android-apk' ? 'android' : channel;
+    const candidates: PublishedUpdate[] = [];
+    for (const r of githubReleaseMemo.releases) {
+      if (r.draft || r.prerelease || !r.published_at) continue;
+      const m = new RegExp('^v(\\d+\\.\\d+\\.\\d+)-' + suffix + '$').exec(r.tag_name ?? ''); if (!m) continue;
+      const name = channel === 'android-apk' ? 'orun-note-galaxytab-arm64.apk' : channel === 'windows' ? 'OrunNote-Setup-' + m[1] + '.exe' : 'OrunNote-' + m[1] + '-mac.dmg';
+      const asset = r.assets?.find((a: any) => a.name === name && a.state === 'uploaded' && a.size > 0);
+      const prefix = 'https://github.com/nathankim6/orun-note/releases/download/' + r.tag_name + '/';
+      if (asset && String(asset.browser_download_url).startsWith(prefix)) candidates.push({ version: m[1], url: asset.browser_download_url, publishedAt: r.published_at });
+    }
+    candidates.sort((a, b) => compareVersion(b.version, a.version)); release = candidates[0] ?? null;
+  }
+  await supa.from('app_update_cache').update({ release, checked_at: new Date(now).toISOString(), refresh_after: new Date(now + 5 * 60e3).toISOString() }).eq('channel', channel);
+  updateMemo.set(channel, { at: now, release }); return release;
+  } catch (error) {
+    await supa.from('app_update_cache').update({ refresh_after: new Date(now + 60_000).toISOString() }).eq('channel', channel);
+    throw error;
+  }
+}
+
 // ---- identity ----
 type Who = { role: "admin"; email?: string; label: string } | { role: "student"; email: string; student: HwStudent; label: string };
 async function emailFromToken(token: string): Promise<{ email: string; uid: string } | null> {
@@ -152,6 +213,12 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return fail("POST only", 405);
   let body: any; try { body = await req.json(); } catch { return fail("invalid json"); }
   const action = String(body.action ?? "");
+  if (action === 'app.update') {
+    const channel = String(body.channel ?? '');
+    if (!['ios', 'android-apk', 'android-play', 'windows', 'mac'].includes(channel)) return fail('invalid update channel');
+    try { return json({ ok: true, channel, release: await publishedUpdate(channel as UpdateChannel), checkedAt: new Date().toISOString() }); }
+    catch { return fail('업데이트 정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.', 503); }
+  }
   // crash / error diagnostics from the apps (no sign-in needed: a crash can happen before it). Size-capped.
   if (action === "crash.report") {
     const items = (Array.isArray(body.items) ? body.items : []).slice(0, 12);

@@ -307,6 +307,18 @@ class PdfRendererModule : Module() {
       null
     }
 
+    // Update routing: Google Play installations must update through Google Play, not a sideload URL.
+    AsyncFunction("getInstallSource") {
+      try {
+        if (android.os.Build.VERSION.SDK_INT >= 30) ctx.packageManager.getInstallSourceInfo(ctx.packageName).installingPackageName
+        else {
+          @Suppress("DEPRECATION")
+          val installer = ctx.packageManager.getInstallerPackageName(ctx.packageName)
+          installer
+        }
+      } catch (_: Exception) { "unknown" }
+    }
+
     AsyncFunction("getInfo") Coroutine { uri: String ->
       withContext(Dispatchers.IO) {
         withRenderer(uri) { r ->

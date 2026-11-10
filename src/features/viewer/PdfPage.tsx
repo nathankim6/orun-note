@@ -1,68 +1,98 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, Image, PixelRatio, Text } from 'react-native';
+import { View, ActivityIndicator, Image, PixelRatio, Text, Platform } from 'react-native';
 import { PdfRenderer } from '../../../modules/pdf-renderer';
 import { useTheme } from '@/theme';
+import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
+import { createRenderScheduler, RenderPriority, type RenderLease } from './renderScheduler';
 
-/**
- * One render worker (the native engines are single-threaded anyway) with priorities:
- *   0 = sharp zoom tile, 1 = page on screen, 2 = prefetch of neighbours. Newest request first within a priority,
- * and a queued prefetch is promoted when the page actually becomes visible — scrolling never waits behind old work.
- */
-type Job = { pri: number; seq: number; run: () => void };
-const jobs: Job[] = []; let busy = false; let seqN = 0;
-function pump() { if (busy || !jobs.length) return; jobs.sort((a, b) => a.pri - b.pri || b.seq - a.seq); const j = jobs.shift()!; busy = true; j.run(); }
-function schedule<T>(pri: number, fn: () => Promise<T>): { p: Promise<T>; job: Job } {
-  let job!: Job; const p = new Promise<T>((resolve, reject) => { job = { pri, seq: seqN++, run: () => { fn().then(resolve, reject).finally(() => { busy = false; pump(); }); } }; jobs.push(job); });
-  pump(); return { p, job };
-}
-const cache = new Map<string, { p: Promise<string>; job: Job }>();
-const request = (key: string, pri: number, fn: () => Promise<string>) => {
-  const hit = cache.get(key); if (hit) { if (hit.job.pri > pri) { hit.job.pri = pri; hit.job.seq = seqN++; } return hit.p; }
-  const e = schedule(pri, fn); e.p.catch(() => cache.delete(key)); cache.set(key, e); return e.p;
-};
-// base page bitmap: about the on-screen width at 100 % (sharpness when zoomed comes from tiles, not from huge bitmaps)
+let slowPreparationsReported = 0;
+const renders = createRenderScheduler(64, 2, {
+  onComplete: ({ index, width, waitMs, preparationMs }) => {
+    if (Platform.OS === 'web' || slowPreparationsReported >= 2 || index == null || width == null) return;
+    if (waitMs < 1000 && preparationMs < 800) return;
+    slowPreparationsReported++;
+    // Preparation includes render + JPEG + disk + bridge, not raster-only timing or first paint.
+    reportError('render', 'PDF preparation page=' + index + ' width=' + width +
+      ' waitMs=' + Math.round(waitMs) + ' preparationMs=' + Math.round(preparationMs));
+  },
+});
+// Owns leases even when the existing onPrefetch callback does not return them.
+export const withPagePrefetchWindow = (run: () => void) => renders.prefetchWindow(run);
+// Full-page density and sharp zoom tiles are unchanged.
 const bucket = (w: number) => Math.min(2400, Math.max(300, Math.ceil(w / 300) * 300));
 const pxFor = (displayWidth: number) => bucket(displayWidth * Math.min(2.5, PixelRatio.get()));
+type PageImage = { page: string; src: string | null; preview: string | null; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number) {
-  const [src, setSrc] = useState<string | null>(null); const [preview, setPreview] = useState<string | null>(null); const [err, setErr] = useState(false);
-  const px = pxFor(displayWidth);
+  const [image, setImage] = useState<PageImage>({ page: '', src: null, preview: null, err: false });
+  const px = pxFor(displayWidth), page = uri + '|' + index;
   useEffect(() => {
-    if (!uri || uri === 'blank:') return; let alive = true; const key = `${uri}|${index}|${px}`;
-    const full = () => request(key, 1, () => PdfRenderer.renderPage(uri, index, px)).then((u) => { if (alive) setSrc(u); }).catch(() => { if (alive) setErr(true); });
-    if (cache.has(key)) { full(); return () => { alive = false; }; }
-    // Already rendered in an earlier session? Show it at once instead of waiting behind the render queue.
-    PdfRenderer.cachedPage(uri, index, px).then((hit) => {
-      if (!alive) return;
-      if (hit) { cache.set(key, { p: Promise.resolve(hit), job: { pri: -1, seq: 0, run: () => {} } }); setSrc(hit); return; }
-      // Not rendered yet: a quick low-resolution pass first (ahead of full renders), then the sharp page replaces it.
-      const pv = Math.max(300, Math.min(900, Math.round(px / 3 / 150) * 150));
-      if (pv < px) request(`${uri}|${index}|${pv}`, 0.5, () => PdfRenderer.renderPage(uri, index, pv)).then((u) => { if (alive) setPreview(u); }).catch(() => {});
-      full();
+    if (!uri || uri === 'blank:') return;
+    let alive = true; const leases: RenderLease[] = [];
+    const key = page + '|' + px, meta = { page, width: px, index };
+    const available = renders.available(page, px);
+    setImage(old => ({ page, src: null, preview: available ?? (old.page === page ? old.src ?? old.preview : null), err: false }));
+    const show = (src: string, full: boolean) => {
+      if (alive) setImage(old => ({ ...old, page, ...(full ? { src, err: false } : { preview: src }) }));
+    };
+    const request = (key: string, priority: number, width: number) => {
+      const lease = renders.acquire(key, priority, () => PdfRenderer.renderPage(uri, index, width), { page, width, index });
+      leases.push(lease); return lease.promise;
+    };
+    const full = () => request(key, RenderPriority.visible, px).then(u => show(u, true)).catch(() => {
+      if (alive) setImage(old => ({ ...old, err: true }));
     });
-    return () => { alive = false; };
+    const pv = Math.max(300, Math.min(900, Math.round(px / 3 / 150) * 150));
+    const previewKey = page + '|' + pv;
+    const preview = async (mayRender: boolean) => {
+      if (pv >= px || available) return;
+      const ready = renders.value(previewKey); if (ready) { show(ready, false); return; }
+      const disk = await PdfRenderer.cachedPage(uri, index, pv);
+      if (!alive) return;
+      if (disk) { renders.remember(previewKey, disk, { page, width: pv, index }); show(disk, false); }
+      // Never add a redundant preview pass behind an already-running full render.
+      else if (mayRender && renders.state(key) !== 'running' && renders.state(key) !== 'settled') {
+        request(previewKey, RenderPriority.preview, pv).then(u => show(u, false)).catch(() => {});
+      }
+    };
+    const start = async () => {
+      if (renders.state(key)) {
+        const queued = renders.state(key) === 'queued';
+        void full(); // Promotion must not wait for a disk preview lookup.
+        void preview(queued).catch(() => {}); return;
+      }
+      const disk = await PdfRenderer.cachedPage(uri, index, px);
+      if (!alive) return;
+      if (disk) { renders.remember(key, disk, meta); show(disk, true); return; }
+      await preview(true);
+      if (alive) void full();
+    };
+    void start().catch(() => { if (alive) void full(); });
+    return () => { alive = false; leases.forEach(lease => lease.release()); };
   }, [uri, index, px]);
-  return { src: src ?? preview, err: err && !preview };
+  const current = image.page === page ? image : null;
+  return { src: current?.src ?? current?.preview ?? null, err: !!current?.err && !current.src && !current.preview };
 }
-/** Warm the cache for pages the reader is about to see. `rank` 1 = the page most likely next (rendered first). */
+/** Warm only the current bounded neighbour window. */
 export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
-  if (!uri || uri === 'blank:' || index < 0) return; const px = pxFor(displayWidth);
-  request(`${uri}|${index}|${px}`, 2 + rank / 100, () => PdfRenderer.renderPage(uri, index, px)).catch(() => {});
+  if (!uri || uri === 'blank:' || index < 0) return;
+  const px = pxFor(displayWidth), page = uri + '|' + index;
+  return renders.prefetch(page + '|' + px, RenderPriority.prefetch + rank / 100,
+    () => PdfRenderer.renderPage(uri, index, px), { page, width: px, index }).release;
 }
 export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
-const tileCache = new Map<string, Promise<string>>();
 /** Sharp re-render of the visible part of a zoomed page, laid over the base bitmap (old tile stays until the new one is ready). */
 function TileLayer({ uri, index, tile, width, height }: { uri: string; index: number; tile?: PageTile; width: number; height: number }) {
-  const [shown, setShown] = useState<{ src: string; t: PageTile } | null>(null);
+  const [shown, setShown] = useState<{ page: string; src: string; t: PageTile } | null>(null);
   const rr = ((PdfRenderer as any).hasRenderRegion?.() ?? true) ? ((PdfRenderer as any).renderRegion as undefined | ((u: string, i: number, pw: number, x: number, y: number, w: number, h: number) => Promise<string>)) : undefined;
   useEffect(() => {
     if (!tile || !rr) { setShown(null); return; } let alive = true;
     const key = `${uri}|${index}|${tile.pxW}|${tile.x}|${tile.y}|${tile.w}|${tile.h}`;
-    let p = tileCache.get(key); if (!p) { p = schedule(0, () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h)).p; tileCache.set(key, p); p.catch(() => tileCache.delete(key)); if (tileCache.size > 24) tileCache.delete(tileCache.keys().next().value as string); }
-    p.then((src) => { if (alive && src) setShown({ src, t: tile }); }).catch(() => {});
-    return () => { alive = false; };
+    const lease = renders.acquire('tile|' + key, RenderPriority.tile, () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
+    lease.promise.then((src) => { if (alive && src) setShown({ page: uri + '|' + index, src, t: tile }); }).catch(() => {});
+    return () => { alive = false; lease.release(); };
   }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h]);
-  if (!shown || !tile) return null; const t = shown.t;
+  if (!shown || !tile || shown.page !== uri + '|' + index) return null; const t = shown.t;
   return <Image source={{ uri: shown.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height }} resizeMode="stretch" fadeDuration={0} />;
 }
 
@@ -87,4 +117,4 @@ export function PdfPage({ uri, index, width, height, renderScale = 1, template, 
     </View>
   );
 }
-export function clearImageCache() { cache.clear(); }
+export function clearImageCache() { renders.clear(); }

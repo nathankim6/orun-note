@@ -10,6 +10,7 @@ import { useSession } from '@/store/session';
 import { Toast, T } from '@/components/ui';
 import { useContentProtection } from '@/lib/security';
 import { Logo } from '@/components/Logo';
+import { UpdateGate } from '@/components/UpdateGate';
 import { supabase } from '@/lib/supabase';
 import { GlassBackground } from '@/components/Glass';
 import { reportError, flushNativeCrashes } from '@/lib/diag';
@@ -52,6 +53,7 @@ export default function RootLayout() {
             <Stack.Screen name="auth/callback" />
           </Stack>
           <Toast message={toast} />
+          <UpdateGate />
           {hidden && <View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}><Logo size={48} /><T variant="caption" color={colors.textMuted} style={{ marginTop: 12 }}>콘텐츠 보호를 위해 화면을 가렸어요</T></View>}
         </GlassBackground>
       </SafeAreaProvider>

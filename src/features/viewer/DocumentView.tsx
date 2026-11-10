@@ -2,6 +2,7 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo
 import { View, Text, Platform, StyleSheet, PixelRatio } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDecay, runOnJS, cancelAnimation, useAnimatedReaction, Easing } from 'react-native-reanimated';
+import { withPagePrefetchWindow } from './PdfPage';
 import { lastLookupAt } from './InkCanvas';
 import { penSession, PALM_WINDOW_MS } from './penSession';
 
@@ -84,7 +85,18 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   const computeTilesRef = useRef<() => void>(() => {});
   const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); computeTilesRef.current(); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
   const badgeJS = useCallback((zz: number) => badge.current?.show(`${Math.round(zz * 100)}%`), []);
-  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; if (onPrefetch) [b + 1, a - 1, b + 2, b + 3, a - 2].forEach((i, k) => { if (i >= 0 && i < L.boxes.length && (i < a || i > b)) onPrefetch(i, L.boxes[i], k + 1); }); return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange, onPrefetch, L]);
+  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange]);
+
+  const prefetchRef = useRef(onPrefetch); prefetchRef.current = onPrefetch;
+  useEffect(() => {
+    if (!prefetchRef.current) return;
+    const [a, b] = range;
+    return withPagePrefetchWindow(() => {
+      [b + 1, a - 1, b + 2, b + 3, a - 2]
+        .filter(i => i >= 0 && i < L.boxes.length && (i < a || i > b)).slice(0, 2)
+        .forEach((i, k) => prefetchRef.current?.(i, L.boxes[i], k + 1));
+    });
+  }, [range, L, !!onPrefetch]);
 
   const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const tileTimer = useRef<any>(null); const rangeRef = useRef(range); rangeRef.current = range;
   const computeTiles = useCallback(() => {
