@@ -1,9 +1,19 @@
 name: Android APK (Galaxy Tab sideload)
 on:
   push: { branches: [main] }
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish only after native QA passes on this commit
+        type: boolean
+        default: false
+      qa_run:
+        description: Successful native-smoke.yml run ID for this exact commit
+        type: string
+        default: ''
 permissions:
   contents: write
+  actions: read
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -19,7 +29,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - name: Test ink, update policy and PDF scheduling
-        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js && node scripts/test-apk-certificate.js
+        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js && node scripts/test-pdf-pipeline.js && node scripts/test-review-videos.js && node scripts/test-native-qa-gate.js && node scripts/test-apk-certificate.js
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --no-install
       - name: Load the existing release keystore (never generate a replacement)
@@ -61,7 +71,14 @@ jobs:
         with:
           name: paperly-release-apk
           path: android/app/build/outputs/apk/release/*.apk
+      - name: Verify native simulation release gate
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QA_RUN: ${{ inputs.qa_run }}
+        run: node scripts/verify-native-qa.js
       - name: Publish APK to GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
         run: |
           VER=$(node -p "require('./app.json').expo.version")

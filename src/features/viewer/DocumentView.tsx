@@ -3,6 +3,8 @@ import { View, Text, Platform, StyleSheet, PixelRatio } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDecay, runOnJS, cancelAnimation, useAnimatedReaction, Easing } from 'react-native-reanimated';
 import { withPagePrefetchWindow } from './PdfPage';
+import { PageQualityContext } from './pageQuality';
+import { createIdleQualityGate } from './idleQuality';
 import { lastLookupAt } from './InkCanvas';
 import { penSession, PALM_WINDOW_MS } from './penSession';
 
@@ -22,6 +24,7 @@ export type PageTile = { pxW: number; x: number; y: number; w: number; h: number
 export type PageBox = { x: number; y: number; w: number; h: number; s: number }; // content coords at zoom 1; s = PDF pt → px at zoom 1
 export type DocHandle = { goto: (i: number, animated?: boolean) => void; zoomTo: (z: number, fx?: number, fy?: number) => void; zoomBy: (f: number) => void; fit: () => void; fitPage: () => void; getZoom: () => number };
 type Props = {
+  /** Stop background preparation/refinement when a different app screen covers this document. */ active?: boolean;
   width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number;
   renderPage: (i: number, box: PageBox, rs: number, tile?: PageTile) => React.ReactNode;
   /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox, rank?: number) => void;
@@ -58,13 +61,16 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
   const sZ = useSharedValue(1), sTx = useSharedValue(0), sTy = useSharedValue(0), sFx = useSharedValue(0), sFy = useSharedValue(0);
   const pinching = useSharedValue(false); const lastKey = useSharedValue('');
   const [range, setRange] = useState<[number, number]>([0, 0]); const [rs, setRs] = useState(1); const [cur, setCur] = useState(initialPage);
+  const [detailReady, setDetailReady] = useState(false); const [visiblePages, setVisiblePages] = useState<number[]>([initialPage]);
+  const detailActivityRef = useRef<() => void>(() => {});
+  const kickDetail = useCallback(() => detailActivityRef.current(), []);
   const curRef = useRef(initialPage); const badge = useRef<{ show: (t: string | null) => void } | null>(null);
   const lastMv = useSharedValue(0); const lastTr = useSharedValue(0);
   const pullStage = useSharedValue(0); const [pullHint, setPullHint] = useState(0); const canPull = !!onPullAddPage && mode === 'vertical';
@@ -83,22 +89,22 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
   // ---------- JS-side callbacks ----------
   const computeTilesRef = useRef<() => void>(() => {});
-  const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); computeTilesRef.current(); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
+  const settledJS = useCallback((zz: number) => { setRs(densityFor(zz)); detailActivityRef.current(); onZoomSettled?.(zz); badge.current?.show(null); }, [onZoomSettled]);
   const badgeJS = useCallback((zz: number) => badge.current?.show(`${Math.round(zz * 100)}%`), []);
-  const rangeJS = useCallback((a: number, b: number, c: number) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; return [a, b]; }); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange]);
+  const rangeJS = useCallback((a: number, b: number, c: number, visible: number[]) => { setRange((r) => { if (r[0] === a && r[1] === b) return r; return [a, b]; }); setVisiblePages(old => old.join(',') === visible.join(',') ? old : visible); if (c !== curRef.current) { curRef.current = c; setCur(c); onPageChange?.(c); } }, [onPageChange]);
 
   const prefetchRef = useRef(onPrefetch); prefetchRef.current = onPrefetch;
   useEffect(() => {
-    if (!prefetchRef.current) return;
+    if (!active || !prefetchRef.current) return;
     const [a, b] = range;
     return withPagePrefetchWindow(() => {
-      [b + 1, a - 1, b + 2, b + 3, a - 2]
-        .filter(i => i >= 0 && i < L.boxes.length && (i < a || i > b)).slice(0, 2)
+      [b + 1, b + 2, a - 1]
+        .filter(i => i >= 0 && i < L.boxes.length && (i < a || i > b)).slice(0, 3)
         .forEach((i, k) => prefetchRef.current?.(i, L.boxes[i], k + 1));
     });
-  }, [range, L, !!onPrefetch]);
+  }, [range, L, !!onPrefetch, active]);
 
-  const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const tileTimer = useRef<any>(null); const rangeRef = useRef(range); rangeRef.current = range;
+  const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const rangeRef = useRef(range); rangeRef.current = range;
   const computeTiles = useCallback(() => {
     const zz = z.value, x0 = tx.value, y0 = ty.value; const dpr = Math.min(3, PixelRatio.get());
     if (zz <= 1.2) { setTiles((t) => (Object.keys(t).length ? {} : t)); return; } // same threshold as the 2x page density
@@ -114,9 +120,17 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     setTiles(out);
   }, [L, W, H]);
   computeTilesRef.current = computeTiles;
-  const kickTiles = useCallback(() => { clearTimeout(tileTimer.current); tileTimer.current = setTimeout(computeTiles, 260); }, [computeTiles]);
-  useAnimatedReaction(() => (z.value <= 1.2 ? -1 : Math.round(tx.value / 48) * 7919 + Math.round(ty.value / 48) * 31 + Math.round(z.value * 50)), (k, prev) => { if (k !== prev) runOnJS(kickTiles)(); }, [kickTiles]);
-  useEffect(() => () => clearTimeout(tileTimer.current), []);
+  useEffect(() => {
+    if (!active) { setDetailReady(false); detailActivityRef.current = () => {}; return; }
+    const gate = createIdleQualityGate({
+      onReady: ready => { setDetailReady(ready); if (ready) computeTilesRef.current(); },
+      isBusy: () => { const ps = penSession.value; return ps.writing && Date.now() - ps.since < 20000; },
+    });
+    detailActivityRef.current = gate.activity; gate.activity();
+    return () => { gate.dispose(); detailActivityRef.current = () => {}; };
+  }, [active]);
+  // Recompute only after motion settles; expensive detail work has its own native lane.
+  useAnimatedReaction(() => Math.round(tx.value / 24) * 7919 + Math.round(ty.value / 24) * 31 + Math.round(z.value * 80), (k, prev) => { if (k !== prev) runOnJS(kickDetail)(); }, [kickDetail]);
 
   // visible pages + current page, recomputed on the UI thread whenever the transform moves
   const boxes = L.boxes;
@@ -124,15 +138,16 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     if (!boxes.length) return;
     const left = -v.x / v.z, top = -v.y / v.z, right = left + W / v.z, bottom = top + H / v.z; const padX = (W / v.z) * 0.6, padY = (H / v.z) * 0.6;
     const cx = (left + right) / 2, cy = (top + bottom) / 2;
-    let a = -1, b = -1, c = 0, best = 1e12;
+    let a = -1, b = -1, c = 0, best = 1e12; const visible: number[] = [];
     for (let i = 0; i < boxes.length; i++) {
       const bx = boxes[i];
+      if (bx.x + bx.w > left && bx.x < right && bx.y + bx.h > top && bx.y < bottom) visible.push(i);
       if (bx.x + bx.w >= left - padX && bx.x <= right + padX && bx.y + bx.h >= top - padY && bx.y <= bottom + padY) { if (a < 0) a = i; b = i; }
       const dx = cx < bx.x ? bx.x - cx : cx > bx.x + bx.w ? cx - (bx.x + bx.w) : 0; const dy = cy < bx.y ? bx.y - cy : cy > bx.y + bx.h ? cy - (bx.y + bx.h) : 0; const d = dx * dx + dy * dy;
       if (d < best) { best = d; c = i; }
     }
     if (a < 0) { a = c; b = c; }
-    const key = `${a}:${b}:${c}`; if (key !== lastKey.value) { lastKey.value = key; runOnJS(rangeJS)(a, b, c); }
+    const key = `${a}:${b}:${c}|${visible.join(',')}`; if (key !== lastKey.value) { lastKey.value = key; runOnJS(rangeJS)(a, b, c, visible); }
   }, [boxes, W, H, rangeJS]);
 
   // ---------- imperative positioning ----------
@@ -163,7 +178,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   }, [L, W, H, mode, pages.length]);
 
   useImperativeHandle(ref, () => ({
-    goto: (i, animated = true) => { const zz = mode === 'vertical' ? z.value : 1; place(i, zz, animated); if (mode !== 'vertical' && z.value !== 1) { setRs(1); onZoomSettled?.(1); } },
+    goto: (i, animated = true) => { detailActivityRef.current(); const zz = mode === 'vertical' ? z.value : 1; place(i, zz, animated); if (mode !== 'vertical' && z.value !== 1) { setRs(1); onZoomSettled?.(1); } },
     zoomTo: (zz, fx = W / 2, fy = H / 2) => zoomJS(zz, fx, fy),
     zoomBy: (f) => zoomJS(z.value * f, W / 2, H / 2),
     fit: () => zoomJS(1, W / 2, H / 2),
@@ -193,6 +208,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   // ---------- page turns by flick (one finger never drags the paper, so a resting palm / hand edge can't move it) ----------
   const slideCfg = { duration: 190, easing: Easing.in(Easing.quad) }; const inCfg = { duration: 230, easing: Easing.out(Easing.cubic) };
   const turnJS = useCallback((dir: number, vertical: boolean) => {
+    detailActivityRef.current();
     const n = L.boxes.length; if (!n) return; const zz = z.value; const x0 = tx.value, y0 = ty.value; const b = bounds(zz);
     if (mode === 'vertical') {
       if (vertical) {
@@ -345,7 +361,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         <Animated.View style={[{ width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
             <View key={i} style={[styles.page, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>
-              {i >= a && i <= b ? <PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /> : null}
+              {i >= a && i <= b ? <PageQualityContext.Provider value={active && detailReady && visiblePages.includes(i)}><PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /></PageQualityContext.Provider> : null}
             </View>
           ))}
         </Animated.View>

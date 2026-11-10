@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.util.Log
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -16,8 +15,13 @@ import android.security.keystore.KeyProperties
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.os.Bundle
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -34,7 +38,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.math.roundToInt
+import java.util.ArrayDeque
+import kotlin.math.sqrt
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -55,19 +60,39 @@ import com.tom_roush.pdfbox.text.TextPosition
  */
 class PdfRendererModule : Module() {
   companion object {
-    /** PdfRenderer, PdfBox and the decrypt cache are not thread-safe; every access holds this lock. */
+    /** Main renderer/PdfBox/decryption lock. Nested order is always LOCK -> READING_LOCK. */
     val LOCK = Any()
     private val MAGIC = byteArrayOf(0x4F, 0x50, 0x44, 0x46, 0x32) // "OPDF2"
     private const val CHUNK = 4 * 1024 * 1024
     private const val IV = 12
     private const val TAG = 16
     private const val KEEP_PLAIN = 3
+    private const val READING_WIDTH = 1200
+    private const val READING_PIXELS = 4_000_000
+    private val READING_LOCK = Any()
+    private var readingUri: String? = null
+    private var readingPfd: ParcelFileDescriptor? = null
+    private var readingRenderer: PdfRenderer? = null
+    private val TIMING_LOCK = Any()
+    private val renderTimings = ArrayDeque<Map<String, Any>>()
+    private const val TIMING_LIMIT = 12
     // One open renderer / text document, reused until another document is needed (opening re-parses the whole file).
     private var rUri: String? = null
     private var rPfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
     private var pbUri: String? = null
     private var pbDoc: PDDocument? = null
+  }
+  @Volatile private var destroyed = false
+  private val detailGate = Mutex()
+  // Main LOCK protects client/epoch; no native lock is held while awaiting a worker reply.
+  private var detailClient: PdfDetailClient? = null
+  private val detailSession = java.util.UUID.randomUUID().toString()
+  private var detailEpoch = 0L
+  private fun closeDetailLocked() {
+    detailEpoch++
+    detailClient?.close()
+    detailClient = null
   }
   private val alias = "com.paperly.study.pdfkey"
   private val ctx get() = appContext.reactContext ?: throw IllegalStateException("No context")
@@ -198,9 +223,54 @@ class PdfRendererModule : Module() {
   }
   /** Keeps the most recently used decrypted copies (and the ones in use). Call with LOCK held. */
   private fun trimPlain(keep: String) {
-    val inUse = listOfNotNull(rUri, pbUri).map { "${keyOf(it)}.pdf" }.toMutableSet().apply { add(keep) }
-    val files = decDir().listFiles()?.filter { it.name.endsWith(".pdf") }?.sortedByDescending { it.lastModified() } ?: return
-    files.drop(KEEP_PLAIN).filter { it.name !in inUse }.forEach { it.delete() }
+    synchronized(READING_LOCK) {
+      val inUse = listOfNotNull(rUri, pbUri, readingUri).map { "${keyOf(it)}.pdf" }.toMutableSet().apply { add(keep) }
+      val files = decDir().listFiles()?.filter { it.name.endsWith(".pdf") }?.sortedByDescending { it.lastModified() } ?: return
+      files.drop(KEEP_PLAIN).filter { it.name !in inUse }.forEach { it.delete() }
+    }
+  }
+
+  // Warm path never acquires LOCK. Holding READING_LOCK pins the file against trim/clear/delete.
+  private fun existingPlainFile(uri: String): File? {
+    val source = fileFor(uri)
+    val plain = if (source.name.endsWith(".pdfenc")) File(decDir(), "${keyOf(uri)}.pdf") else source
+    return plain.takeIf { it.exists() && it.length() > 0L }?.also { it.setLastModified(System.currentTimeMillis()) }
+  }
+  private fun closeReadingLocked() {
+    try { readingRenderer?.close() } catch (_: Throwable) {}
+    try { readingPfd?.close() } catch (_: Throwable) {}
+    readingRenderer = null; readingPfd = null; readingUri = null
+  }
+  private fun <T> useReadingLocked(uri: String, plain: File, timing: RenderTiming, block: (PdfRenderer) -> T): T {
+    check(!destroyed) { "Module destroyed" }
+    try {
+      val start = System.nanoTime()
+      if (readingRenderer == null || readingUri != uri) {
+        closeReadingLocked()
+        val fd = ParcelFileDescriptor.open(plain, ParcelFileDescriptor.MODE_READ_ONLY)
+        val doc = try { PdfRenderer(fd) } catch (e: Throwable) { try { fd.close() } catch (_: Throwable) {}; throw e }
+        readingPfd = fd; readingRenderer = doc; readingUri = uri
+      }
+      timing.openNanos += System.nanoTime() - start
+      return block(checkNotNull(readingRenderer))
+    } catch (e: Throwable) { closeReadingLocked(); throw e }
+  }
+  private fun <T> withReadingRenderer(uri: String, timing: RenderTiming, block: (PdfRenderer) -> T): T {
+    synchronized(READING_LOCK) {
+      check(!destroyed) { "Module destroyed" }
+      val plain = existingPlainFile(uri)
+      if (plain != null) return useReadingLocked(uri, plain, timing, block)
+      // An OS-evicted backing file must not leave a stale descriptor cached.
+      closeReadingLocked()
+    }
+    // Cold decrypt may serialize. Never wait for LOCK while holding READING_LOCK.
+    return synchronized(LOCK) {
+      check(!destroyed) { "Module destroyed" }
+      val start = System.nanoTime()
+      val plain = plainFile(uri)
+      timing.openNanos += System.nanoTime() - start
+      synchronized(READING_LOCK) { useReadingLocked(uri, plain, timing, block) }
+    }
   }
 
   // ---- cached renderer / text document (call with LOCK held) ----
@@ -219,11 +289,15 @@ class PdfRendererModule : Module() {
     renderer = r; rPfd = pfd; rUri = uri
     return r
   }
-  private fun <T> withRenderer(uri: String, block: (PdfRenderer) -> T): T = synchronized(LOCK) {
+  private fun <T> withRenderer(uri: String, timing: RenderTiming? = null, block: (PdfRenderer) -> T): T = synchronized(LOCK) {
+    check(!destroyed) { "Module destroyed" }
+    val start = System.nanoTime()
     val r = rendererFor(uri)
+    timing?.let { it.openNanos += System.nanoTime() - start }
     try { block(r) } catch (e: Throwable) { closeRendererLocked(); throw e }
   }
   private fun <T> withPdfBox(uri: String, block: (PDDocument) -> T): T = synchronized(LOCK) {
+    check(!destroyed) { "Module destroyed" }
     val cur = pbDoc
     val d = if (cur != null && pbUri == uri) cur else {
       closePdfBoxLocked()
@@ -236,10 +310,110 @@ class PdfRendererModule : Module() {
     block(d)
   }
 
-  private fun writeImage(bmp: Bitmap, out: File, jpeg: Boolean, quality: Int) {
+  /** Only numeric raster diagnostics; no URI, document key, title or identity. */
+  private class RenderTiming(val lane: String, val page: Int, val width: Int) {
+    val start = System.nanoTime()
+    var openNanos = 0L
+    var drawNanos = 0L
+    var encodeNanos = 0L
+    var writeNanos = 0L
+    fun snapshot(): Map<String, Any> = mapOf(
+      "lane" to lane, "page" to page, "width" to width,
+      "openMs" to openNanos / 1_000_000.0, "drawMs" to drawNanos / 1_000_000.0,
+      "encodeMs" to encodeNanos / 1_000_000.0, "writeMs" to writeNanos / 1_000_000.0,
+      "totalMs" to (System.nanoTime() - start) / 1_000_000.0)
+  }
+  private fun recordTiming(timing: RenderTiming) = synchronized(TIMING_LOCK) {
+    if (renderTimings.size >= TIMING_LIMIT) renderTimings.removeFirst()
+    renderTimings.addLast(timing.snapshot())
+  }
+  private fun writeImage(bmp: Bitmap, out: File, jpeg: Boolean, quality: Int, timing: RenderTiming) {
+    val start = System.nanoTime()
     val part = File(out.parentFile, out.name + ".part")
-    try { FileOutputStream(part).use { fos -> bmp.compress(if (jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG, quality, fos) } } catch (e: Throwable) { part.delete(); throw e }
-    if (!part.renameTo(out)) { out.delete(); part.renameTo(out) }
+    var diskNanos = 0L
+    var encodeNanos = 0L
+    try {
+      // clearCaches can remove the directory after a caller constructed its File.
+      val parent = out.parentFile ?: throw IOException("missing image directory")
+      if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) throw IOException("cannot create image directory")
+      FileOutputStream(part).use { fos ->
+        val measured = object : OutputStream() {
+          override fun write(value: Int) { val t = System.nanoTime(); try { fos.write(value) } finally { diskNanos += System.nanoTime() - t } }
+          override fun write(bytes: ByteArray, offset: Int, count: Int) { val t = System.nanoTime(); try { fos.write(bytes, offset, count) } finally { diskNanos += System.nanoTime() - t } }
+        }
+        // Fixed 64 KiB staging only, never a whole compressed page/ByteArrayOutputStream.
+        BufferedOutputStream(measured, 1 shl 16).use { buffer ->
+          val t = System.nanoTime()
+          val ok = bmp.compress(if (jpeg) Bitmap.CompressFormat.JPEG else Bitmap.CompressFormat.PNG, quality, buffer)
+          encodeNanos = (System.nanoTime() - t - diskNanos).coerceAtLeast(0L)
+          if (!ok) throw IOException("image compression failed")
+        }
+      }
+      if (!part.renameTo(out)) { out.delete(); if (!part.renameTo(out)) throw IOException("image rename failed") }
+      timing.encodeNanos += encodeNanos
+      timing.writeNanos += (System.nanoTime() - start - encodeNanos).coerceAtLeast(0L)
+    } catch (e: Throwable) { part.delete(); throw e }
+  }
+
+  private class DetailTicket(
+    val input: ParcelFileDescriptor, val output: ParcelFileDescriptor, val part: File,
+    val client: PdfDetailClient, val epoch: Long, val args: Bundle)
+
+  private suspend fun renderDetail(uri: String, index: Int, width: Int, out: File,
+    tile: Boolean = false, x: Int = 0, y: Int = 0, w: Int = 0, h: Int = 0): String {
+    val timing = RenderTiming(if (tile) "tile" else "detail", index, width)
+    val operationContext = coroutineContext
+    return detailGate.withLock {
+      val ticket = synchronized(LOCK) {
+        operationContext.ensureActive()
+        check(!destroyed) { "Module destroyed" }
+        if (out.exists() && out.length() > 0L) null else {
+          val opened = System.nanoTime()
+          val plain = plainFile(uri)
+          val parent = out.parentFile ?: throw IOException("missing image directory")
+          if (!parent.isDirectory && !parent.mkdirs() && !parent.isDirectory) throw IOException("cannot create image directory")
+          val part = File(parent, out.name + "." + java.util.UUID.randomUUID().toString() + ".part")
+          val input = ParcelFileDescriptor.open(plain, ParcelFileDescriptor.MODE_READ_ONLY)
+          try {
+            val output = ParcelFileDescriptor.open(part, ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE or ParcelFileDescriptor.MODE_WRITE_ONLY)
+            try {
+              val client = detailClient ?: PdfDetailClient(ctx).also { detailClient = it }
+              val args = Bundle().apply {
+                putString("key", keyOf(uri) + "-" + detailSession + "-" + detailEpoch)
+                putInt("page", index); putInt("width", width); putBoolean("tile", tile)
+                putInt("x", x); putInt("y", y); putInt("w", w); putInt("h", h)
+              }
+              timing.openNanos += System.nanoTime() - opened
+              DetailTicket(input, output, part, client, detailEpoch, args)
+            } catch (e: Throwable) { output.close(); throw e }
+          } catch (e: Throwable) { input.close(); part.delete(); throw e }
+        }
+      }
+      if (ticket != null) {
+        try {
+          val result = ticket.client.render(ticket.args, ticket.input, ticket.output)
+          synchronized(LOCK) {
+            operationContext.ensureActive()
+            check(!destroyed && detailEpoch == ticket.epoch && detailClient === ticket.client) { "Detail render invalidated" }
+            val write = System.nanoTime()
+            if (!ticket.part.exists() || ticket.part.length() <= 0L) throw IOException("empty detail image")
+            if (!ticket.part.renameTo(out)) { out.delete(); if (!ticket.part.renameTo(out)) throw IOException("image rename failed") }
+            timing.openNanos += result.getLong("openNs").coerceAtLeast(0L)
+            timing.drawNanos += result.getLong("drawNs").coerceAtLeast(0L)
+            timing.encodeNanos += result.getLong("encodeNs").coerceAtLeast(0L)
+            timing.writeNanos += result.getLong("writeNs").coerceAtLeast(0L) + System.nanoTime() - write
+            recordTiming(timing)
+          }
+        } catch (e: Throwable) {
+          ticket.part.delete()
+          throw e
+        } finally {
+          try { ticket.input.close() } catch (_: Throwable) {}
+          try { ticket.output.close() } catch (_: Throwable) {}
+        }
+      }
+      "file://${out.absolutePath}"
+    }
   }
 
   override fun definition() = ModuleDefinition {
@@ -250,14 +424,14 @@ class PdfRendererModule : Module() {
       // Page images / decrypted copies written by older builds used a different key scheme and are never reused.
       Thread {
         try {
-          synchronized(LOCK) {
+          synchronized(LOCK) { synchronized(READING_LOCK) {
             pagesDir().listFiles()?.forEach { f -> val dash = f.name.indexOf('-'); if ((dash >= 0 && dash != 24) || f.name.endsWith(".png")) f.delete() }
             decDir().listFiles()?.forEach { f -> val dot = f.name.indexOf('.'); if (dot >= 0 && dot != 24) f.delete() }
-          }
+          } }
         } catch (e: Throwable) {}
       }.start()
     }
-    OnDestroy { synchronized(LOCK) { closeRendererLocked(); closePdfBoxLocked() } }
+    OnDestroy { synchronized(LOCK) { destroyed = true; closeDetailLocked(); synchronized(READING_LOCK) { closeReadingLocked(); closeRendererLocked(); closePdfBoxLocked() } } }
 
     /** Encrypts a picked/downloaded PDF into app storage (v2, streamed) and keeps a decrypted working copy so the first open is instant. */
     AsyncFunction("importFile") Coroutine { srcUri: String, id: String ->
@@ -274,36 +448,52 @@ class PdfRendererModule : Module() {
               BufferedOutputStream(FileOutputStream(plainPart), 1 shl 16).use { po -> encryptV2(ins, eo, po) }
             }
           }
-          if (!plainPart.renameTo(plain)) throw IOException("rename failed")
-          // validate: the working copy must open as a PDF (it also becomes the open renderer for the first getInfo/render)
-          synchronized(LOCK) { rendererFor(outUri); trimPlain(plain.name) }
-          if (!encPart.renameTo(out)) throw IOException("rename failed")
+          synchronized(LOCK) {
+            check(!destroyed) { "Module destroyed" }
+            closeDetailLocked()
+            synchronized(READING_LOCK) {
+              if (readingUri == outUri) closeReadingLocked()
+              if (rUri == outUri) closeRendererLocked()
+              if (pbUri == outUri) closePdfBoxLocked()
+              // Replace only after invalidation: cached remote descriptors may still refer to
+              // the old inode, but their result can no longer pass the host epoch check.
+              if (!plainPart.renameTo(plain)) throw IOException("rename failed")
+              val cacheKey = keyOf(outUri)
+              pagesDir().listFiles()?.filter { it.name.startsWith("$cacheKey-") }?.forEach { it.delete() }
+              rendererFor(outUri); trimPlain(plain.name)
+              if (!encPart.renameTo(out)) throw IOException("rename failed")
+            }
+          }
           mapOf("uri" to outUri, "size" to total.toDouble())
         } catch (e: Throwable) {
-          synchronized(LOCK) { if (rUri == outUri) closeRendererLocked() }
-          encPart.delete(); plainPart.delete(); plain.delete()
+          synchronized(LOCK) { closeDetailLocked(); synchronized(READING_LOCK) {
+            if (rUri == outUri) closeRendererLocked()
+            if (readingUri == outUri) closeReadingLocked()
+            encPart.delete(); plainPart.delete(); plain.delete()
+          } }
           throw e
         }
       }
     }
     AsyncFunction("deleteFile") { uri: String ->
-      synchronized(LOCK) {
+      synchronized(LOCK) { closeDetailLocked(); synchronized(READING_LOCK) {
+        if (readingUri == uri) closeReadingLocked()
         if (rUri == uri) closeRendererLocked()
         if (pbUri == uri) closePdfBoxLocked()
         fileFor(uri).delete()
         val k = keyOf(uri); val legacy = legacyKey(uri)
         File(decDir(), "$k.pdf").delete(); File(decDir(), "$legacy.pdf").delete()
         pagesDir().listFiles()?.filter { it.name.startsWith("$k-") || it.name.startsWith("$legacy-") }?.forEach { it.delete() }
-      }
+      } }
       null
     }
     AsyncFunction("fileExists") { uri: String -> fileFor(uri).exists() }
     AsyncFunction("clearCaches") {
-      synchronized(LOCK) {
-        closeRendererLocked(); closePdfBoxLocked()
+      synchronized(LOCK) { closeDetailLocked(); synchronized(READING_LOCK) {
+        closeReadingLocked(); closeRendererLocked(); closePdfBoxLocked()
         decDir().deleteRecursively(); pagesDir().deleteRecursively()
         storeDir().listFiles()?.filter { it.name.endsWith(".part") }?.forEach { it.delete() } // interrupted imports
-      }
+      } }
       null
     }
 
@@ -334,56 +524,75 @@ class PdfRendererModule : Module() {
       if (out.exists() && out.length() > 0L) "file://${out.absolutePath}" else null
     }
 
-    /** Whole page at [width] px, cached on disk (a cached page returns without touching the PDF). Always JPEG 92:
-     *  several times faster to encode and decode than PNG, and text stays crisp at this quality. */
-    AsyncFunction("renderPage") Coroutine { uri: String, index: Int, width: Int ->
+    /** Separate reading cache/renderer: capped raster, no main lock on a warm working copy. */
+    AsyncFunction("cachedReading") { uri: String, index: Int, width: Int ->
+      require(width > 0) { "bad reading width" }
+      val requested = width.coerceAtMost(READING_WIDTH)
+      val key = keyOf(uri)
+      val full = File(pagesDir(), "$key-$index-$requested.jpg")
+      val read = File(pagesDir(), "$key-$index-read-$requested.jpg")
+      val hit = listOf(full, read).firstOrNull { it.exists() && it.length() > 0L }
+      hit?.let { "file://${it.absolutePath}" }
+    }
+    AsyncFunction("renderReading") Coroutine { uri: String, index: Int, width: Int ->
       withContext(Dispatchers.IO) {
-        val jpeg = true
-        val out = File(pagesDir(), "${keyOf(uri)}-$index-$width.jpg")
-        if (!out.exists()) {
-          withRenderer(uri) { r ->
-            if (!out.exists()) {
-              r.openPage(index).use { p ->
-                val h = (p.height.toDouble() * width / p.width).roundToInt().coerceAtLeast(1)
-                val bmp = Bitmap.createBitmap(width, h, Bitmap.Config.ARGB_8888)
+        require(width > 0) { "bad reading width" }
+        val requested = width.coerceAtMost(READING_WIDTH)
+        val key = keyOf(uri)
+        val full = File(pagesDir(), "$key-$index-$requested.jpg")
+        val out = File(pagesDir(), "$key-$index-read-$requested.jpg")
+        fun hit(): File? = listOf(full, out).firstOrNull { it.exists() && it.length() > 0L }
+        val cached = hit()
+        if (cached != null) "file://${cached.absolutePath}" else {
+          val timing = RenderTiming("reading", index, requested)
+          val result = withReadingRenderer(uri, timing) { r ->
+            val raced = hit()
+            if (raced != null) raced else {
+              val opened = System.nanoTime()
+              val p = r.openPage(index)
+              timing.openNanos += System.nanoTime() - opened
+              p.use {
+                require(p.width > 0 && p.height > 0) { "bad page size" }
+                val aspect = p.height.toDouble() / p.width
+                val rasterWidth = if (requested.toDouble() * requested * aspect > READING_PIXELS)
+                  sqrt(READING_PIXELS / aspect).toInt().coerceIn(1, requested) else requested
+                val rasterHeight = (rasterWidth * aspect).toLong().coerceIn(1L, (READING_PIXELS / rasterWidth).toLong()).toInt()
+                val bmp = Bitmap.createBitmap(rasterWidth, rasterHeight, Bitmap.Config.ARGB_8888)
                 try {
+                  val draw = System.nanoTime()
                   bmp.eraseColor(Color.WHITE)
                   p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                  writeImage(bmp, out, jpeg, if (jpeg) 92 else 100)
+                  timing.drawNanos += System.nanoTime() - draw
+                  writeImage(bmp, out, true, 84, timing)
+                  recordTiming(timing)
                 } finally { bmp.recycle() }
               }
+              out
             }
           }
+          "file://${result.absolutePath}"
         }
-        "file://${out.absolutePath}"
       }
     }
+    AsyncFunction("takeRenderTimings") {
+      synchronized(TIMING_LOCK) { renderTimings.toList().also { renderTimings.clear() } }
+    }
 
-    /** A [w]×[h] px window (top-left [x],[y]) of the page scaled to [pageWidthPx] wide, clamped to the page. JPEG 90, cached on disk. */
+    /** Host cache hit is immediate. Full JPEG92 and tile JPEG90 execute only in :pdfdetail. */
+    AsyncFunction("renderPage") Coroutine { uri: String, index: Int, width: Int ->
+      withContext(Dispatchers.IO) {
+        require(width in 1..PdfDetailProtocol.MAX_FULL_WIDTH && index >= 0) { "bad page parameters" }
+        val out = File(pagesDir(), "${keyOf(uri)}-$index-$width.jpg")
+        if (out.exists() && out.length() > 0L) "file://${out.absolutePath}"
+        else renderDetail(uri, index, width, out)
+      }
+    }
     AsyncFunction("renderRegion") Coroutine { uri: String, index: Int, pageWidthPx: Int, x: Int, y: Int, w: Int, h: Int ->
       withContext(Dispatchers.IO) {
+        require(pageWidthPx in 1..PdfDetailProtocol.MAX_PAGE_WIDTH && index >= 0) { "bad tile parameters" }
         val out = File(pagesDir(), "${keyOf(uri)}-$index-$pageWidthPx-r${x}_${y}_${w}_$h.jpg")
-        if (!out.exists()) {
-          withRenderer(uri) { r ->
-            if (!out.exists()) {
-              r.openPage(index).use { p ->
-                if (pageWidthPx <= 0 || p.width <= 0) throw IllegalArgumentException("bad page width")
-                val scale = pageWidthPx.toFloat() / p.width
-                val fullH = (p.height.toDouble() * pageWidthPx / p.width).roundToInt().coerceAtLeast(1)
-                val x0 = x.coerceIn(0, pageWidthPx - 1); val y0 = y.coerceIn(0, fullH - 1)
-                val rw = w.coerceAtMost(pageWidthPx - x0).coerceAtLeast(1); val rh = h.coerceAtMost(fullH - y0).coerceAtLeast(1)
-                val bmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
-                try {
-                  bmp.eraseColor(Color.WHITE)
-                  val m = Matrix(); m.setScale(scale, scale); m.postTranslate(-x0.toFloat(), -y0.toFloat())
-                  p.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                  writeImage(bmp, out, true, 90)
-                } finally { bmp.recycle() }
-              }
-            }
-          }
-        }
-        "file://${out.absolutePath}"
+        if (out.exists() && out.length() > 0L) "file://${out.absolutePath}"
+        else renderDetail(uri, index, pageWidthPx, out, true, x, y, w, h)
       }
     }
 
@@ -448,8 +657,8 @@ class PdfRendererModule : Module() {
               if (!bad) continue
               var trace = ""
               if (r == ApplicationExitInfo.REASON_ANR) try { x.traceInputStream?.use { trace = String(it.readBytes().take(16000).toByteArray()) } } catch (e: Throwable) {}
-              out.add(mapOf("kind" to "exit", "at" to x.timestamp.toDouble(),
-                "detail" to "reason=$r status=${x.status} importance=${x.importance} pss=${x.pss / 1024}MB rss=${x.rss / 1024}MB desc=${x.description ?: ""}" + (if (trace.isNotEmpty()) "\n$trace" else "")))
+              out.add(mapOf("kind" to "exit", "at" to x.timestamp.toDouble(), "processName" to (x.processName ?: ""),
+                "detail" to "process=${x.processName} reason=$r status=${x.status} importance=${x.importance} pss=${x.pss / 1024}MB rss=${x.rss / 1024}MB desc=${x.description ?: ""}" + (if (trace.isNotEmpty()) "\n$trace" else "")))
             }
             if (newest > last) prefs.edit().putLong("exitTs", newest).apply()
           }

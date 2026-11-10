@@ -14,6 +14,9 @@ type Native = {
   /** Android: saved crash stack traces + system exit records since the last call (missing on iOS / older builds). */
   takeCrashReports?(): Promise<{ kind: string; at: number; detail: string }[]>;
   /** file URI of an already-rendered page (no rendering, no lock), or null. Missing on older builds. */
+  renderReading?(uri: string, index: number, width: number): Promise<string>;
+  cachedReading?(uri: string, index: number, width: number): Promise<string | null>;
+  takeRenderTimings?(): Promise<Record<string, unknown>[]>;
   getInstallSource?(): Promise<string | null>;
   cachedPage?(uri: string, index: number, width: number): Promise<string | null>;
 };
@@ -38,6 +41,10 @@ export const PdfRenderer = {
   getInfo: (uri: string) => impl.getInfo(uri),
   /** Renders one page and returns a file:// (native) or blob: (web) URI; cached on disk/memory, so repeat calls are instant.
    *  `width` is the target pixel width. PNG up to 1600 px, JPEG above. */
+  hasReadingRenderer: () => typeof impl.renderReading === 'function',
+  renderReading: (uri: string, index: number, width: number): Promise<string> => typeof impl.renderReading === 'function' ? impl.renderReading(uri, index, Math.min(1200, Math.round(width))) : impl.renderPage(uri, index, Math.min(1200, Math.round(width))),
+  cachedReading: (uri: string, index: number, width: number): Promise<string | null> => typeof impl.cachedReading === 'function' ? impl.cachedReading(uri, index, Math.min(1200, Math.round(width))).catch(() => null) : Promise.resolve(null),
+  takeRenderTimings: (): Promise<Record<string, unknown>[]> => typeof impl.takeRenderTimings === 'function' ? impl.takeRenderTimings().catch(() => []) : Promise.resolve([]),
   renderPage: (uri: string, index: number, width: number) => impl.renderPage(uri, index, Math.round(width)),
   /** Renders only the `w`×`h` px window whose top-left is (`x`,`y`) of the page as it looks when the whole page is `pageWidthPx`
    *  wide (clamped to the page) — sharp tiles for zoomed-in views without rasterizing the whole page. JPEG, cached like renderPage. */

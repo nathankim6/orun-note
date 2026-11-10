@@ -131,40 +131,7 @@ function gate() { let resolve; const promise = new Promise(r => { resolve = r; }
   const observedJobs = [1, 2, 3].map(i => q.acquire('observed' + i, 1, async () => String(i)).promise);
   await flush(); assert.deepEqual(await Promise.all(observedJobs), ['1', '2', '3']); assert.equal(observerCalls, 3);
 
-  // Load the actual PdfPage module wiring with inert UI/native mocks to test per-process diagnostics policy.
-  const pageJs = ts.transpileModule(fs.readFileSync('src/features/viewer/PdfPage.tsx', 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
-  }).outputText;
-  function diagnostics(OS) {
-    let complete; const reports = [];
-    const mocks = {
-      react: {}, 'react-native': { Platform: { OS } }, '../../../modules/pdf-renderer': { PdfRenderer: {} },
-      '@/theme': {}, '@/lib/diag': { reportError: (kind, message) => reports.push({ kind, message }) },
-      './renderScheduler': { ...exports_, createRenderScheduler: (_max, _prefetch, options) => {
-        complete = options.onComplete; return {};
-      } },
-    };
-    vm.runInNewContext(pageJs, { exports: {}, require: name => {
-      if (!(name in mocks)) throw new Error('Unexpected import ' + name); return mocks[name];
-    } });
-    return { complete, reports };
-  }
-  const native = diagnostics('android');
-  const normal = { index: 0, width: 2400, waitMs: 999, preparationMs: 799 };
-  native.complete(normal); native.complete({ waitMs: 9999, preparationMs: 9999 });
-  assert.equal(native.reports.length, 0);
-  native.complete({ ...normal, waitMs: 1000, uri: 'secret', title: 'secret', student: 'secret' });
-  native.complete({ ...normal, index: 1, preparationMs: 800 });
-  for (let i = 0; i < 10; i++) native.complete({ ...normal, waitMs: 9999 });
-  assert.equal(native.reports.length, 2);
-  assert.deepEqual(native.reports, [
-    { kind: 'render', message: 'PDF preparation page=0 width=2400 waitMs=1000 preparationMs=799' },
-    { kind: 'render', message: 'PDF preparation page=1 width=2400 waitMs=999 preparationMs=800' },
-  ]);
-  const web = diagnostics('web');
-  for (let i = 0; i < 5; i++) web.complete({ ...normal, preparationMs: 9999 });
-  assert.equal(web.reports.length, 0);
-
+  // Native diagnostics policy and dual-worker behavior are tested by test-pdf-pipeline.js.
   await new Promise(resolve => setImmediate(resolve)); assert.equal(unhandled.length, 0);
-  console.log('PASS: preview priority, recency, shared dedup/refcounts, cancellation/demotion, running reuse, settled preview cache, bounded LRU/prefetch windows, retry, sync failures, observer timing/safety, native-only private capped diagnostics, no unhandled rejections');
+  console.log('PASS: preview priority, recency, shared dedup/refcounts, cancellation/demotion, running reuse, settled preview cache, bounded LRU/prefetch windows, retry, sync failures, observer timing/safety, no unhandled rejections');
 })().catch(e => { console.error(e); process.exitCode = 1; });

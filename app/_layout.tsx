@@ -50,6 +50,7 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="viewer/[docId]" options={{ animation: 'fade', gestureEnabled: false }} />
+            <Stack.Screen name="review-videos" options={{ animation: 'fade', gestureEnabled: false, contentStyle: { backgroundColor: '#F6F6FB' } }} />
             <Stack.Screen name="auth/callback" />
           </Stack>
           <Toast message={toast} />

@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, View, Text, Pressable, StyleSheet, Image, ScrollView, TextInput, ActivityIndicator, useWindowDimensions, Platform, Animated, Easing, PanResponder } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BackHandler, View, Text, Pressable, StyleSheet, Image, ScrollView, TextInput, ActivityIndicator, useWindowDimensions, Platform, Animated, Easing, PanResponder } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, ReviewVideo } from '@/lib/api';
 import { useSession } from '@/store/session';
 import { YouTubeStage, StageHandle, StageStatus, EMPTY_STATUS } from './YouTubeStage';
+import { normalizeReviewVideos } from './reviewVideoSafety';
+export type { StageStatus } from './YouTubeStage';
 
 // Thumbnail of the video (never shown as text). hqdefault is 4:3 with letterbox bars; a 16:9 cover crop removes them.
 const thumb = (id: string) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
@@ -66,7 +68,7 @@ function Shimmer({ style }: { style: any }) {
 function VideoCard({ v, width, onPress }: { v: ReviewVideo; width: number; onPress: () => void }) {
   const h = (width - 20) * 9 / 16;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`${v.title} 재생`} onPress={onPress} style={({ pressed }) => [styles.card, { width }, pressed && { transform: [{ scale: 0.98 }], opacity: 0.94 }]}>
+    <Pressable testID={`review-video-card-${v.id}`} accessibilityRole="button" accessibilityLabel={`${v.title} 재생`} onPress={onPress} style={({ pressed }) => [styles.card, { width }, pressed && { transform: [{ scale: 0.98 }], opacity: 0.94 }]}>
       <View style={[styles.thumb, { height: h }]}>
         <Image source={{ uri: thumb(v.videoId) }} style={StyleSheet.absoluteFill} resizeMode="cover" />
         <LinearGradient colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.55)']} style={[StyleSheet.absoluteFill, { top: '45%' }]} />
@@ -110,18 +112,18 @@ function Scrubber({ time, duration, loaded, onSeek, onScrub }: { time: number; d
   );
 }
 
-function RoundBtn({ icon, lib = 'ion', size = 52, onPress, label, solid, iconSize, disabled }: { icon: any; lib?: 'ion' | 'mci'; size?: number; onPress: () => void; label: string; solid?: boolean; iconSize?: number; disabled?: boolean }) {
+function RoundBtn({ icon, lib = 'ion', size = 52, onPress, label, solid, iconSize, disabled, testID }: { icon: any; lib?: 'ion' | 'mci'; size?: number; onPress: () => void; label: string; solid?: boolean; iconSize?: number; disabled?: boolean; testID?: string }) {
   const I: any = lib === 'mci' ? MaterialCommunityIcons : Ionicons;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} hitSlop={6}
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} disabled={disabled} onPress={onPress} hitSlop={6}
       style={({ pressed }) => [{ width: size, height: size, borderRadius: size / 2, alignItems: 'center', justifyContent: 'center', backgroundColor: solid ? 'rgba(255,255,255,0.96)' : 'rgba(18,18,22,0.58)', borderWidth: solid ? 0 : 1, borderColor: 'rgba(255,255,255,0.22)', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 3 }, pressed && { transform: [{ scale: 0.92 }] }, disabled && { opacity: 0.4 }]}>
       <I name={icon} size={iconSize ?? size * 0.46} color={solid ? '#111' : '#fff'} style={icon === 'play' ? { marginLeft: size * 0.06 } : undefined} />
     </Pressable>
   );
 }
 
-/** Full-screen dark player with custom controls. Rendered inside the list modal (no nested modal). */
-function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void }) {
+/** Full-screen dark player with custom controls. Rendered in the normal screen tree. */
+function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onClose: () => void; onPlaybackStatus?: (status: StageStatus) => void }) {
   const { width: W, height: H } = useWindowDimensions(); const insets = useSafeAreaInsets();
   const stage = useRef<StageHandle>(null);
   const [st, setSt] = useState<StageStatus>(EMPTY_STATUS); const [attempt, setAttempt] = useState(0);
@@ -130,7 +132,14 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
   const hide = useRef<any>(null);
   const poke = () => { setChrome(true); clearTimeout(hide.current); hide.current = setTimeout(() => setChrome(false), 2800); };
   useEffect(() => { if (st.playing && !scrubbing) poke(); else { clearTimeout(hide.current); setChrome(true); } return () => clearTimeout(hide.current); }, [st.playing, scrubbing]);
-  const onStatus = (p: Partial<StageStatus>) => setSt((s) => ({ ...s, ...p }));
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; clearTimeout(hide.current); }; }, []);
+  const onStatus = useCallback((p: Partial<StageStatus>) => { if (active.current) setSt((s) => ({ ...s, ...p })); }, []);
+  useEffect(() => { onPlaybackStatus?.(st); }, [st, onPlaybackStatus]);
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { if (full) setFull(false); else onClose(); return true; });
+    return () => subscription.remove();
+  }, [full, onClose]);
   const toggle = () => { if (!st.ready) return; if (st.playing) stage.current?.pause(); else { if (st.ended) stage.current?.seek(0); stage.current?.play(); } poke(); };
   const skip = (d: number) => { if (!st.ready) return; const t = Math.max(0, Math.min(st.duration || 0, st.time + d)); stage.current?.seek(t); setSt((s) => ({ ...s, time: t, ended: false })); poke(); };
   const retry = () => { started.current = false; setSt(EMPTY_STATUS); setAttempt((n) => n + 1); };
@@ -145,7 +154,8 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
   const stageW = Math.max(240, Math.min(maxW, maxH * 16 / 9)); const stageH = stageW * 9 / 16;
   const showChrome = chrome || !st.playing || !!st.error;
   return (
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: '#05060A' }]} accessibilityViewIsModal>
+    <View testID="review-video-player" style={[StyleSheet.absoluteFill, { backgroundColor: '#05060A' }]} accessibilityViewIsModal>
+      <Text testID="review-video-playback-status" accessibilityLabel={st.error ? '영상 오류' : st.playing ? '재생 중' : st.ready ? '재생 준비 완료' : '영상 준비 중'} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden' }}>{st.error ? 'error' : st.playing ? 'playing' : st.ready ? 'ready' : 'loading'}</Text>
       <StatusBar hidden={full} style="light" />
       {!full && (
         <View style={[styles.pTop, { paddingTop: insets.top + 10, width: Math.min(W, stageW + 8) }]}>
@@ -154,7 +164,7 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
             <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '600' }}>보강영상</Text>
             <Text numberOfLines={1} style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>{video.title}</Text>
           </View>
-          <RoundBtn icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
+          <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
         </View>
       )}
       <View style={{ flex: full ? 1 : undefined, alignItems: 'center', justifyContent: 'center', marginTop: full ? 0 : 6 }}>
@@ -172,7 +182,7 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
               {full && (
                 <View style={{ position: 'absolute', top: 12 + insets.top, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <Text numberOfLines={1} style={{ flex: 1, color: '#fff', fontSize: 16, fontWeight: '700' }}>{video.title}</Text>
-                  <RoundBtn icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
+                  <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={onClose} iconSize={22} />
                 </View>
               )}
               <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: stageW < 420 ? 22 : 40 }]}>
@@ -180,7 +190,7 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
                   <View style={{ alignItems: 'center', gap: 12, paddingHorizontal: 24 }}>
                     <Ionicons name="alert-circle-outline" size={40} color="#fff" />
                     <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600', textAlign: 'center' }}>{st.error}</Text>
-                    <Pressable onPress={retry} style={({ pressed }) => [styles.pill, pressed && { opacity: 0.7 }]}><Ionicons name="refresh" size={16} color="#111" /><Text style={styles.pillText}>다시 시도</Text></Pressable>
+                    <Pressable testID="review-video-player-retry" accessibilityRole="button" accessibilityLabel="영상 다시 시도" onPress={retry} style={({ pressed }) => [styles.pill, pressed && { opacity: 0.7 }]}><Ionicons name="refresh" size={16} color="#111" /><Text style={styles.pillText}>다시 시도</Text></Pressable>
                   </View>
                 ) : !st.ready ? (
                   <View style={{ alignItems: 'center', gap: 10 }}><ActivityIndicator color="#fff" size="large" /><Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '600' }}>영상을 준비하고 있어요</Text></View>
@@ -225,45 +235,78 @@ function Player({ video, onClose }: { video: ReviewVideo; onClose: () => void })
   );
 }
 
-/** 보강영상 list popup (videos linked to the student's homework passages) + the in-app player. */
-export function ReviewVideosSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { width: W, height: H } = useWindowDimensions(); const insets = useSafeAreaInsets();
+export type ReviewVideosScreenProps = {
+  onClose: () => void;
+  loadVideos?: (credential: string | null) => Promise<{ videos: ReviewVideo[] }>;
+  onPlaybackStatus?: (status: StageStatus) => void;
+};
+const defaultLoadVideos = (credential: string | null) => api.reviewVideos(credential);
+
+/** JS errors are recoverable here; native SIGSEGVs cannot be caught by this boundary. */
+class ReviewVideosBoundary extends React.Component<React.PropsWithChildren<{ onClose: () => void }>, { failed: boolean; generation: number }> {
+  state = { failed: false, generation: 0 };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (this.state.failed) return <View testID="review-videos-boundary-error" style={[styles.center, { backgroundColor: '#F2F2F7' }]}>
+      <Text style={styles.emptyTitle}>영상을 표시하지 못했어요</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="다시 시도" onPress={() => this.setState((s) => ({ failed: false, generation: s.generation + 1 }))}><Text style={styles.emptyTitle}>다시 시도</Text></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="닫기" onPress={this.props.onClose}><Text style={styles.emptySub}>닫기</Text></Pressable>
+    </View>;
+    return <React.Fragment key={this.state.generation}>{this.props.children}</React.Fragment>;
+  }
+}
+
+export function ReviewVideosScreen(props: ReviewVideosScreenProps) {
+  return <ReviewVideosBoundary onClose={props.onClose}><ReviewVideosContent {...props} /></ReviewVideosBoundary>;
+}
+
+function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlaybackStatus }: ReviewVideosScreenProps) {
+  const { width: W } = useWindowDimensions(); const insets = useSafeAreaInsets();
   const cred = useSession((s) => s.adminCode); const who = useSession((s) => s.student?.id ?? s.role ?? '');
   const key = `${who}|${cred ?? ''}`;
-  const [videos, setVideos] = useState<ReviewVideo[] | null>(cache?.key === key ? cache.videos : null);
-  const [loading, setLoading] = useState(false); const [error, setError] = useState<string | null>(null);
+  const canCache = loadVideos === defaultLoadVideos;
+  const [videos, setVideos] = useState<ReviewVideo[] | null>(null);
+  const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState(''); const [playing, setPlaying] = useState<ReviewVideo | null>(null);
-  const load = async (force = false) => {
-    if (!force && cache?.key === key && Date.now() - cache.at < 3 * 60000) { setVideos(cache.videos); return; }
-    setLoading(true); setError(null);
-    try { const r = await api.reviewVideos(cred); cache = { key, at: Date.now(), videos: r.videos }; setVideos(r.videos); }
-    catch (e: any) { setError(e?.message ?? '목록을 불러오지 못했어요'); }
-    finally { setLoading(false); }
-  };
-  useEffect(() => { if (visible) { setQ(''); load(); } else setPlaying(null); }, [visible]);
-  const a = useRef(new Animated.Value(0)).current;
-  useEffect(() => { if (visible) { a.setValue(0); Animated.timing(a, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: Platform.OS !== 'web' }).start(); } }, [visible]);
-  const wide = W >= 700;
-  const panelW = wide ? Math.min(860, W - 64) : W;
-  const panelH = wide ? Math.min(H - 80, 780) : H - insets.top - 24;
+  const request = useRef(0); const mounted = useRef(false);
+  const load = useCallback(async (force = false) => {
+    const id = ++request.current;
+    if (!force && canCache && cache?.key === key && Date.now() - cache.at < 3 * 60000) { setVideos(cache.videos); setLoading(false); setError(null); return; }
+    setLoading(true); setError(null); setVideos(null);
+    try {
+      const result = await loadVideos(cred);
+      if (!mounted.current || id !== request.current) return;
+      const normalized = normalizeReviewVideos(result?.videos);
+      if (canCache) cache = { key, at: Date.now(), videos: normalized };
+      setVideos(normalized);
+    } catch (e: unknown) {
+      if (mounted.current && id === request.current) setError(e instanceof Error ? e.message : '목록을 불러오지 못했어요');
+    } finally { if (mounted.current && id === request.current) setLoading(false); }
+  }, [key, cred, loadVideos, canCache]);
+  useEffect(() => {
+    mounted.current = true; setQ(''); setPlaying(null); void load();
+    return () => { mounted.current = false; ++request.current; };
+  }, [load]);
+  const close = () => { mounted.current = false; ++request.current; setPlaying(null); onClose(); };
+  useEffect(() => {
+    if (playing) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { close(); return true; });
+    return () => subscription.remove();
+  }, [playing, onClose]);
+  const panelW = W;
   const cols = panelW >= 760 ? 3 : panelW >= 520 ? 2 : 1;
   const gap = 14, pad = 18; const cardW = (panelW - pad * 2 - gap * (cols - 1)) / cols;
   const list = useMemo(() => { const k = q.trim().toLowerCase(); if (!videos || !k) return videos ?? []; return videos.filter((v) => v.title.toLowerCase().includes(k) || v.passages.some((p) => p.title.toLowerCase().includes(k))); }, [videos, q]);
-  const back = () => (playing ? setPlaying(null) : onClose());
-  const anim = wide ? { opacity: a, transform: [{ scale: a.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] } : { opacity: a, transform: [{ translateY: a.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }) }] };
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={back} statusBarTranslucent supportedOrientations={['portrait', 'landscape', 'landscape-left', 'landscape-right']}>
-      <View style={[StyleSheet.absoluteFill, wide ? { alignItems: 'center', justifyContent: 'center' } : { justifyContent: 'flex-end' }]} {...(Platform.OS === 'web' ? { onContextMenu: (e: any) => e.preventDefault() } : {})}>
-        <Pressable accessibilityLabel="닫기" style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.38)' }]} onPress={onClose} />
-        <Animated.View style={[styles.panel, { width: panelW, height: panelH }, wide ? { borderRadius: 24 } : { borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingBottom: insets.bottom }, anim]}>
-          {!wide && <View style={styles.grabber} />}
+    <View testID="review-videos-screen" style={{ flex: 1, backgroundColor: '#F2F2F7' }} {...(Platform.OS === 'web' ? { onContextMenu: (e: any) => e.preventDefault() } : {})}>
+        <View testID="review-videos-list" accessibilityElementsHidden={!!playing} importantForAccessibility={playing ? 'no-hide-descendants' : 'auto'} style={{ flex: 1, width: panelW, paddingTop: insets.top, paddingBottom: insets.bottom }}>
           <View style={[styles.header, { paddingHorizontal: pad }]}>
             <VideoTile />
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.hTitle}>보강영상</Text>
               <Text numberOfLines={1} style={styles.hSub}>{videos == null ? '숙제 지문과 연결된 영상을 불러오는 중' : videos.length ? `숙제 지문과 연결된 영상 ${videos.length}개` : '숙제 지문과 연결된 영상'}</Text>
             </View>
-            <Pressable accessibilityRole="button" accessibilityLabel="닫기" onPress={onClose} hitSlop={6} style={({ pressed }) => [styles.close, pressed && { opacity: 0.6 }]}><Ionicons name="close" size={22} color="#3A3A3C" /></Pressable>
+            <Pressable testID="review-videos-list-close" accessibilityRole="button" accessibilityLabel="닫기" onPress={close} hitSlop={6} style={({ pressed }) => [styles.close, pressed && { opacity: 0.6 }]}><Ionicons name="close" size={22} color="#3A3A3C" /></Pressable>
           </View>
           {(videos?.length ?? 0) > 6 && (
             <View style={[styles.search, { marginHorizontal: pad }]}>
@@ -281,7 +324,7 @@ export function ReviewVideosSheet({ visible, onClose }: { visible: boolean; onCl
                 <Ionicons name="cloud-offline-outline" size={44} color={FAINT} />
                 <Text style={styles.emptyTitle}>영상 목록을 불러오지 못했어요</Text>
                 <Text style={styles.emptySub}>{error}</Text>
-                <Pressable onPress={() => load(true)} style={({ pressed }) => [styles.retry, pressed && { opacity: 0.7 }]}><Ionicons name="refresh" size={16} color="#fff" /><Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>다시 시도</Text></Pressable>
+                <Pressable testID="review-videos-list-retry" accessibilityRole="button" accessibilityLabel="목록 다시 시도" onPress={() => void load(true)} style={({ pressed }) => [styles.retry, pressed && { opacity: 0.7 }]}><Ionicons name="refresh" size={16} color="#fff" /><Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>다시 시도</Text></Pressable>
               </View>
             )}
             {videos != null && videos.length === 0 && (
@@ -296,11 +339,16 @@ export function ReviewVideosSheet({ visible, onClose }: { visible: boolean; onCl
             )}
             {list.map((v) => <VideoCard key={v.id} v={v} width={cardW} onPress={() => setPlaying(v)} />)}
           </ScrollView>
-        </Animated.View>
-        {playing && <Player video={playing} onClose={() => setPlaying(null)} />}
-      </View>
-    </Modal>
+        </View>
+        {playing && <Player key={playing.id} video={playing} onClose={() => setPlaying(null)} onPlaybackStatus={onPlaybackStatus} />}
+    </View>
   );
+}
+
+/** Compatibility only: ordinary view overlay, never a native Modal. Hidden means disposed. */
+export function ReviewVideosSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  if (!visible) return null;
+  return <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 24 }]}><ReviewVideosScreen onClose={onClose} /></View>;
 }
 
 const styles = StyleSheet.create({

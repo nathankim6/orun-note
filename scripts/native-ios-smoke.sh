@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p qa/output qa/build
+command -v xcodegen >/dev/null || brew install xcodegen
+UDID=$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{const d=Object.values(JSON.parse(s).devices).flat().find(x=>x.isAvailable&&x.name.startsWith("iPad"));if(!d)process.exit(1);console.log(d.udid)})')
+xcrun simctl boot "$UDID" || true
+xcrun simctl bootstatus "$UDID" -b
+xcodebuild -workspace ios/Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination "id=$UDID" -derivedDataPath qa/build/app CODE_SIGNING_ALLOWED=NO build
+xcrun simctl install "$UDID" qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
+(cd qa/ios && xcodegen generate)
+# Raw simulator/XCTest output and xcresult stay local. Never upload them or screenshots.
+xcrun simctl spawn "$UDID" log stream --style compact --level debug --predicate 'process == "Paperly"' > qa/build/ios-system.raw 2>&1 &
+LOG_PID=$!
+trap 'kill "$LOG_PID" 2>/dev/null || true' EXIT
+set +e
+xcodebuild -project qa/ios/NativeSmoke.xcodeproj -scheme NativeSmoke -configuration Debug -destination "id=$UDID" -derivedDataPath qa/build/runner CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -test-timeouts-enabled YES -default-test-execution-time-allowance 720 -maximum-test-execution-time-allowance 780 test > qa/build/ios-test.raw 2>&1
+STATUS=$?
+kill "$LOG_PID" 2>/dev/null || true
+cat qa/build/ios-test.raw qa/build/ios-system.raw > qa/build/ios.raw
+node scripts/native-sanitize.mjs qa/build/ios.raw qa/output/ios.jsonl ios
+SANITIZED=$?
+exit $(( STATUS != 0 || SANITIZED != 0 ))

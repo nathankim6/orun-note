@@ -1,18 +1,13 @@
-import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
 
 const WebView: any = RNWebView;
 
-export type StageStatus = { ready: boolean; playing: boolean; ended: boolean; buffering: boolean; time: number; duration: number; loaded: number; error: string | null };
-export type StageHandle = { play(): void; pause(): void; seek(seconds: number): void };
-export const EMPTY_STATUS: StageStatus = { ready: false, playing: false, ended: false, buffering: false, time: 0, duration: 0, loaded: 0, error: null };
+import { StageStatus, StageHandle, stageError, bridgeStatus, validVideoId, allowPlayerNavigation, PLAYER_ORIGIN, PLAYER_BASE } from './reviewVideoSafety';
+export { StageStatus, StageHandle, EMPTY_STATUS, stageError } from './reviewVideoSafety';
 
-// The embedded player needs a real https origin as its referrer (YouTube rejects embeds without one).
-const ORIGIN = 'https://nathankim6.github.io';
-const BASE = `${ORIGIN}/orun-note/`;
-// Top-level navigations allowed inside the player page; everything else (youtube.com/watch, youtu.be, app links) is dropped.
-const ALLOW_TOP = /^(about:blank|https:\/\/nathankim6\.github\.io\/orun-note\/)/;
+const blockWindow = () => {};
 
 export function playerHtml(videoId: string, origin: string) {
   const vars = JSON.stringify({ autoplay: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, playsinline: 1, modestbranding: 1, iv_load_policy: 3, cc_load_policy: 0, hl: 'ko', origin });
@@ -23,13 +18,13 @@ export function playerHtml(videoId: string, origin: string) {
 #p,iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0;pointer-events:none}</style></head>
 <body><div id="p"></div>
 <script>
-var player=null,ready=false;
+var player=null,ready=false,tick=null,timeout=null;
 function post(m){try{window.ReactNativeWebView.postMessage(JSON.stringify(m))}catch(e){}}
 function onYouTubeIframeAPIReady(){
   player=new YT.Player('p',{host:'https://www.youtube-nocookie.com',videoId:${JSON.stringify(videoId)},width:'100%',height:'100%',playerVars:${vars},
     events:{
-      onReady:function(){ready=true;post({k:'ready',d:player.getDuration()});
-        setInterval(function(){try{post({k:'time',t:player.getCurrentTime(),d:player.getDuration(),l:player.getVideoLoadedFraction()})}catch(e){}},250)},
+      onReady:function(){ready=true;clearTimeout(timeout);post({k:'ready',d:player.getDuration()});
+        clearInterval(tick);tick=setInterval(function(){try{post({k:'time',t:player.getCurrentTime(),d:player.getDuration(),l:player.getVideoLoadedFraction()})}catch(e){}},250)},
       onStateChange:function(e){post({k:'state',s:e.data})},
       onAutoplayBlocked:function(){post({k:'state',s:2})},
       onError:function(e){post({k:'error',c:e.data})}}});
@@ -37,46 +32,55 @@ function onYouTubeIframeAPIReady(){
 window.cmd=function(c){if(!player||!ready)return;
   if(c.t==='play')player.playVideo();else if(c.t==='pause')player.pauseVideo();else if(c.t==='seek')player.seekTo(c.v,true);};
 document.addEventListener('contextmenu',function(e){e.preventDefault()});
-setTimeout(function(){if(!ready)post({k:'error',c:'timeout'})},30000);
+window.addEventListener('pagehide',function(){ready=false;clearInterval(tick);clearTimeout(timeout);try{if(player)player.destroy()}catch(e){}player=null;});
+timeout=setTimeout(function(){if(!ready)post({k:'error',c:'timeout'})},30000);
 </script>
 <script src="https://www.youtube.com/iframe_api"></script>
 </body></html>`;
 }
 
-export function stageError(code: unknown) {
-  if (code === 100) return '영상을 찾을 수 없어요. 선생님께 알려 주세요.';
-  if (code === 101 || code === 150 || code === 152) return '이 영상은 앱 안에서 재생할 수 없도록 설정되어 있어요. 선생님께 알려 주세요.';
-  if (code === 'timeout') return '영상을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.';
-  return '영상을 재생하지 못했어요. 잠시 후 다시 시도해 주세요.';
-}
-
-/**
- * Locked in-app YouTube player. The WebView never receives touches (pointerEvents none on its host), YouTube's own
- * controls are off, and every navigation that would leave the player page is blocked, so the video can only be
- * watched inside 옳은Note and its link is never shown.
- */
+/** No native presentation boundary, external navigation, or automatic process reload. */
 export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus: (s: Partial<StageStatus>) => void }>(function YouTubeStage({ videoId, onStatus }, ref) {
   const web = useRef<any>(null);
-  const send = (c: object) => web.current?.injectJavaScript(`window.cmd && window.cmd(${JSON.stringify(c)}); true;`);
-  useImperativeHandle(ref, () => ({ play: () => send({ t: 'play' }), pause: () => send({ t: 'pause' }), seek: (v: number) => send({ t: 'seek', v }) }), []);
-  const html = useMemo(() => playerHtml(videoId, ORIGIN), [videoId]);
-  const onMessage = (e: any) => {
-    let m: any; try { m = JSON.parse(e.nativeEvent.data); } catch { return; }
-    if (m.k === 'ready') onStatus({ ready: true, duration: m.d || 0, error: null });
-    else if (m.k === 'time') onStatus({ time: m.t || 0, duration: m.d || 0, loaded: m.l || 0 });
-    else if (m.k === 'state') onStatus({ playing: m.s === 1, buffering: m.s === 3, ended: m.s === 0 });
-    else if (m.k === 'error') onStatus({ error: stageError(m.c), playing: false });
-  };
+  const latest = useRef(onStatus); latest.current = onStatus;
+  const alive = useRef(true); const ready = useRef(false); const failed = useRef(false);
+  const [failure, setFailure] = useState(false);
+  // Crucial: polling status rerenders must not replace the WebView source object.
+  const source = useMemo(() => ({ html: playerHtml(videoId, PLAYER_ORIGIN), baseUrl: PLAYER_BASE }), [videoId]);
+  const fail = useCallback((error?: unknown) => {
+    if (!alive.current || failed.current) return;
+    failed.current = true; ready.current = false; web.current = null;
+    setFailure(true);
+    latest.current({ ready: false, playing: false, buffering: false, error: typeof error === 'string' ? error : stageError('gone') });
+  }, []);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; ready.current = false; };
+  }, []);
+  useEffect(() => { ready.current = false; if (!validVideoId(videoId)) fail(); }, [videoId, fail]);
+  const send = useCallback((command: object) => {
+    if (!alive.current || failed.current || !ready.current || !web.current) return;
+    try { web.current.injectJavaScript(`window.cmd && window.cmd(${JSON.stringify(command)}); true;`); } catch { fail(); }
+  }, [fail]);
+  useImperativeHandle(ref, () => ({ play: () => send({ t: 'play' }), pause: () => send({ t: 'pause' }), seek: (v: number) => { if (Number.isFinite(v)) send({ t: 'seek', v: Math.max(0, v) }); } }), [send]);
+  const onMessage = useCallback((event: any) => {
+    if (!alive.current || failed.current) return;
+    const status = bridgeStatus(event?.nativeEvent?.data);
+    if (!status) return;
+    if (status.error) { fail(status.error); return; }
+    if (status.ready) ready.current = true;
+    latest.current(status);
+  }, [fail]);
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      <WebView ref={web} source={{ html, baseUrl: BASE }} originWhitelist={['*']} onMessage={onMessage}
+    <View style={StyleSheet.absoluteFill} pointerEvents="none" testID="review-video-stage">
+      {!failure && validVideoId(videoId) && <WebView ref={web} source={source} originWhitelist={['*']} onMessage={onMessage}
         javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback mediaPlaybackRequiresUserAction={false}
         allowsFullscreenVideo={false} allowsLinkPreview={false} setSupportMultipleWindows={false} javaScriptCanOpenWindowsAutomatically={false}
         scrollEnabled={false} bounces={false} overScrollMode="never" automaticallyAdjustContentInsets={false} contentInsetAdjustmentBehavior="never"
         mixedContentMode="never" textInteractionEnabled={false} dataDetectorTypes="none"
-        onShouldStartLoadWithRequest={(r: any) => r.isTopFrame === false || ALLOW_TOP.test(r.url)}
-        onContentProcessDidTerminate={() => web.current?.reload()} onRenderProcessGone={() => onStatus({ error: stageError('gone'), playing: false })}
-        style={{ flex: 1, backgroundColor: '#000' }} containerStyle={{ backgroundColor: '#000' }} />
+        onShouldStartLoadWithRequest={allowPlayerNavigation} onOpenWindow={blockWindow}
+        onError={fail} onHttpError={fail} onContentProcessDidTerminate={fail} onRenderProcessGone={fail}
+        style={{ flex: 1, backgroundColor: '#000' }} containerStyle={{ backgroundColor: '#000' }} />}
     </View>
   );
 });

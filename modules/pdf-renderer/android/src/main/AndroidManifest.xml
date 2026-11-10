@@ -1,1 +1,10 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"></manifest>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <service
+      android:name="expo.modules.pdfrenderer.PdfDetailService"
+      android:process=":pdfdetail"
+      android:isolatedProcess="true"
+      android:exported="false"
+      android:stopWithTask="true" />
+  </application>
+</manifest>

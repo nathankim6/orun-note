@@ -1,97 +1,88 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Image, PixelRatio, Text, Platform } from 'react-native';
 import { PdfRenderer } from '../../../modules/pdf-renderer';
 import { useTheme } from '@/theme';
 import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
-import { createRenderScheduler, RenderPriority, type RenderLease } from './renderScheduler';
+import { RenderPriority, type RenderLease } from './renderScheduler';
+import { createPdfWork, readingPixels, detailPixels } from './pdfWork';
+import { createPreparationReporter } from './pdfDiagnostics';
+import { PageQualityContext } from './pageQuality';
 
-let slowPreparationsReported = 0;
-const renders = createRenderScheduler(64, 2, {
-  onComplete: ({ index, width, waitMs, preparationMs }) => {
-    if (Platform.OS === 'web' || slowPreparationsReported >= 2 || index == null || width == null) return;
-    if (waitMs < 1000 && preparationMs < 800) return;
-    slowPreparationsReported++;
-    // Preparation includes render + JPEG + disk + bridge, not raster-only timing or first paint.
-    reportError('render', 'PDF preparation page=' + index + ' width=' + width +
-      ' waitMs=' + Math.round(waitMs) + ' preparationMs=' + Math.round(preparationMs));
-  },
-});
-// Owns leases even when the existing onPrefetch callback does not return them.
-export const withPagePrefetchWindow = (run: () => void) => renders.prefetchWindow(run);
-// Full-page density and sharp zoom tiles are unchanged.
-const bucket = (w: number) => Math.min(2400, Math.max(300, Math.ceil(w / 300) * 300));
-const pxFor = (displayWidth: number) => bucket(displayWidth * Math.min(2.5, PixelRatio.get()));
-type PageImage = { page: string; src: string | null; preview: string | null; err: boolean };
-export function usePageImage(uri: string | null, index: number, displayWidth: number) {
-  const [image, setImage] = useState<PageImage>({ page: '', src: null, preview: null, err: false });
-  const px = pxFor(displayWidth), page = uri + '|' + index;
+const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
+export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
+type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
+export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
+  const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
+  const readKey = `${page}|read|${readPx}`, fullKey = `${page}|detail|${fullPx}`;
+  const [presentedPage, setPresentedPage] = useState(''); const pageRef = useRef(page); pageRef.current = page;
+  const [image, setImage] = useState<PageImage>({ page: '', reading: null, detail: null, detailWidth: 0, err: false });
   useEffect(() => {
     if (!uri || uri === 'blank:') return;
-    let alive = true; const leases: RenderLease[] = [];
-    const key = page + '|' + px, meta = { page, width: px, index };
-    const available = renders.available(page, px);
-    setImage(old => ({ page, src: null, preview: available ?? (old.page === page ? old.src ?? old.preview : null), err: false }));
-    const show = (src: string, full: boolean) => {
-      if (alive) setImage(old => ({ ...old, page, ...(full ? { src, err: false } : { preview: src }) }));
-    };
-    const request = (key: string, priority: number, width: number) => {
-      const lease = renders.acquire(key, priority, () => PdfRenderer.renderPage(uri, index, width), { page, width, index });
-      leases.push(lease); return lease.promise;
-    };
-    const full = () => request(key, RenderPriority.visible, px).then(u => show(u, true)).catch(() => {
-      if (alive) setImage(old => ({ ...old, err: true }));
-    });
-    const pv = Math.max(300, Math.min(900, Math.round(px / 3 / 150) * 150));
-    const previewKey = page + '|' + pv;
-    const preview = async (mayRender: boolean) => {
-      if (pv >= px || available) return;
-      const ready = renders.value(previewKey); if (ready) { show(ready, false); return; }
-      const disk = await PdfRenderer.cachedPage(uri, index, pv);
-      if (!alive) return;
-      if (disk) { renders.remember(previewKey, disk, { page, width: pv, index }); show(disk, false); }
-      // Never add a redundant preview pass behind an already-running full render.
-      else if (mayRender && renders.state(key) !== 'running' && renders.state(key) !== 'settled') {
-        request(previewKey, RenderPriority.preview, pv).then(u => show(u, false)).catch(() => {});
-      }
+    let alive = true; let lease: RenderLease | undefined;
+    setImage(old => old.page === page ? { ...old, err: false } : { page, reading: null, detail: null, detailWidth: 0, err: false });
+    const show = (src: string, sharp: boolean) => {
+      if (alive) setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false }));
     };
     const start = async () => {
-      if (renders.state(key)) {
-        const queued = renders.state(key) === 'queued';
-        void full(); // Promotion must not wait for a disk preview lookup.
-        void preview(queued).catch(() => {}); return;
-      }
-      const disk = await PdfRenderer.cachedPage(uri, index, px);
+      const sharp = work.detail.value(fullKey), ready = work.reading.value(readKey);
+      if (sharp) { show(sharp, true); return; }
+      if (ready) { show(ready, false); return; }
+      const available = work.detail.available(page, fullPx) ?? work.reading.available(page, readPx);
+      if (available) show(available, false);
+      // Reusing a ready full image is cheap; neither lookup waits behind the native drawing workers.
+      const [cachedFull, cachedRead] = await Promise.all([PdfRenderer.cachedPage(uri, index, fullPx), PdfRenderer.cachedReading(uri, index, readPx)]);
       if (!alive) return;
-      if (disk) { renders.remember(key, disk, meta); show(disk, true); return; }
-      await preview(true);
-      if (alive) void full();
+      if (cachedFull) { work.detail.remember(fullKey, cachedFull, { page, width: fullPx, index }); show(cachedFull, true); return; }
+      if (cachedRead) { work.reading.remember(readKey, cachedRead, { page, width: readPx, index }); show(cachedRead, false); return; }
+      lease = work.reading.acquire(readKey, RenderPriority.preview, () => PdfRenderer.renderReading(uri, index, readPx), { page, width: readPx, index });
+      show(await lease.promise, false);
     };
-    void start().catch(() => { if (alive) void full(); });
-    return () => { alive = false; leases.forEach(lease => lease.release()); };
-  }, [uri, index, px]);
+    void start().catch(() => { if (alive) setImage(old => ({ ...old, page, err: true })); });
+    return () => { alive = false; lease?.release(); };
+  }, [uri, index, readPx, fullPx]);
+  useEffect(() => {
+    if (!uri || uri === 'blank:' || !detailAllowed || presentedPage !== page) return;
+    let alive = true; let lease: RenderLease | undefined;
+    const show = (src: string) => { if (alive) setImage(old => ({ ...old, page, detail: src, detailWidth: fullPx, err: false })); };
+    void (async () => {
+      const ready = work.detail.value(fullKey); if (ready) { show(ready); return; }
+      const cached = await PdfRenderer.cachedPage(uri, index, fullPx); if (!alive) return;
+      if (cached) { work.detail.remember(fullKey, cached, { page, width: fullPx, index }); show(cached); return; }
+      await work.reading.whenIdle(); if (!alive) return;
+      lease = work.detail.acquire(fullKey, RenderPriority.visible, () => PdfRenderer.renderPage(uri, index, fullPx), { page, width: fullPx, index });
+      show(await lease.promise);
+    })().catch(() => {}); // a refinement failure must not hide the usable reading page
+    return () => { alive = false; lease?.release(); };
+  }, [uri, index, fullPx, detailAllowed, presentedPage]);
   const current = image.page === page ? image : null;
-  return { src: current?.src ?? current?.preview ?? null, err: !!current?.err && !current.src && !current.preview };
+  return { onLoad: () => { if (pageRef.current === page) setPresentedPage(page); }, src: current?.detail ?? current?.reading ?? null, err: !!current?.err && !current.detail && !current.reading };
 }
-/** Warm only the current bounded neighbour window. */
+/** Neighbours get reading images only, never speculative 2400px detail rasters. */
 export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
   if (!uri || uri === 'blank:' || index < 0) return;
-  const px = pxFor(displayWidth), page = uri + '|' + index;
-  return renders.prefetch(page + '|' + px, RenderPriority.prefetch + rank / 100,
-    () => PdfRenderer.renderPage(uri, index, px), { page, width: px, index }).release;
+  const width = readingPixels(displayWidth), page = `${uri}|${index}`;
+  return work.reading.prefetch(`${page}|read|${width}`, RenderPriority.prefetch + rank / 100,
+    () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
 }
 export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
-/** Sharp re-render of the visible part of a zoomed page, laid over the base bitmap (old tile stays until the new one is ready). */
 function TileLayer({ uri, index, tile, width, height }: { uri: string; index: number; tile?: PageTile; width: number; height: number }) {
+  const allowed = useContext(PageQualityContext);
   const [shown, setShown] = useState<{ page: string; src: string; t: PageTile } | null>(null);
-  const rr = ((PdfRenderer as any).hasRenderRegion?.() ?? true) ? ((PdfRenderer as any).renderRegion as undefined | ((u: string, i: number, pw: number, x: number, y: number, w: number, h: number) => Promise<string>)) : undefined;
+  const rr = PdfRenderer.hasRenderRegion() ? PdfRenderer.renderRegion : undefined;
   useEffect(() => {
-    if (!tile || !rr) { setShown(null); return; } let alive = true;
+    if (!tile || !rr) { setShown(null); return; }
+    if (!allowed) return; // retain a valid old tile, but enqueue no expensive work while moving
+    let alive = true;
     const key = `${uri}|${index}|${tile.pxW}|${tile.x}|${tile.y}|${tile.w}|${tile.h}`;
-    const lease = renders.acquire('tile|' + key, RenderPriority.tile, () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
-    lease.promise.then((src) => { if (alive && src) setShown({ page: uri + '|' + index, src, t: tile }); }).catch(() => {});
-    return () => { alive = false; lease.release(); };
-  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h]);
+    let lease: RenderLease | undefined;
+    void (async () => {
+      await work.reading.whenIdle(); if (!alive) return;
+      lease = work.detail.acquire('tile|' + key, RenderPriority.tile, () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
+      const src = await lease.promise; if (alive && src) setShown({ page: uri + '|' + index, src, t: tile });
+    })().catch(() => {});
+    return () => { alive = false; lease?.release(); };
+  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed]);
   if (!shown || !tile || shown.page !== uri + '|' + index) return null; const t = shown.t;
   return <Image source={{ uri: shown.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height }} resizeMode="stretch" fadeDuration={0} />;
 }
@@ -107,14 +98,15 @@ export function BlankPaper({ width, height, template = 'plain' }: { width: numbe
   if (t === 'music') { const staffGap = width / 70; const block = staffGap * 4 + width / 14; for (let y = height * 0.08, j = 0; y + staffGap * 4 < height * 0.95; y += block, j++) for (let i = 0; i < 5; i++) hline(y + i * staffGap, `m${j}_${i}`, 'rgba(23,32,51,0.35)'); }
   return <View style={{ width, height, backgroundColor: '#fff', overflow: 'hidden' }} pointerEvents="none">{els}</View>;
 }
-export function PdfPage({ uri, index, width, height, renderScale = 1, template, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; template?: PaperTemplate; tile?: PageTile }) {
-  if (uri === 'blank:') return <BlankPaper width={width} height={height} template={template} />;
-  // renderScale > 1 asks the native renderer for a sharper bitmap while the page is zoomed in via transform.
-  const { colors } = useTheme(); const { src, err } = usePageImage(uri, index, width * renderScale);
-  return (
-    <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-      {src ? <><Image source={{ uri: src }} style={{ width, height }} resizeMode="stretch" fadeDuration={0} />{uri ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
-    </View>
-  );
+export function PdfPage(props: { uri: string | null; index: number; width: number; height: number; renderScale?: number; template?: PaperTemplate; tile?: PageTile }) {
+  if (props.uri === 'blank:') return <BlankPaper width={props.width} height={props.height} template={props.template} />;
+  return <RasterPdfPage {...props} />;
 }
-export function clearImageCache() { renders.clear(); }
+function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile }) {
+  const allowed = useContext(PageQualityContext), { colors } = useTheme();
+  const { src, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed);
+  return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
+    {src ? <><Image key={`${uri}|${index}|${src}`} onLoad={onLoad} source={{ uri: src }} style={{ width, height }} resizeMode="stretch" fadeDuration={0} />{uri ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
+  </View>;
+}
+export function clearImageCache() { work.reading.clear(); work.detail.clear(); }

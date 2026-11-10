@@ -11,17 +11,21 @@ async function open(uri: string) {
   return docs.get(uri)!;
 }
 
-// One reusable canvas; renders are serialized on it (allocating a fresh multi-megapixel canvas per page is slow and churns memory).
-let canvasEl: HTMLCanvasElement | null = null; let canvasChain: Promise<unknown> = Promise.resolve();
-function withCanvas<T>(fn: (c: HTMLCanvasElement) => Promise<T>): Promise<T> {
-  const run = () => fn(canvasEl ?? (canvasEl = document.createElement('canvas')));
-  const p = canvasChain.then(run, run); canvasChain = p.catch(() => {}); return p;
+// Separate reusable canvases: detail encoding must not queue reading behind the same canvas lease.
+type CanvasLane = 'reading' | 'detail';
+const canvases: Record<CanvasLane, { element: HTMLCanvasElement | null; chain: Promise<unknown> }> = {
+  reading: { element: null, chain: Promise.resolve() }, detail: { element: null, chain: Promise.resolve() },
+};
+function withCanvas<T>(lane: CanvasLane, fn: (c: HTMLCanvasElement) => Promise<T>): Promise<T> {
+  const state = canvases[lane];
+  const run = () => fn(state.element ?? (state.element = document.createElement('canvas')));
+  const p = state.chain.then(run, run); state.chain = p.catch(() => {}); return p;
 }
 function canvasUrl(c: HTMLCanvasElement, jpeg: boolean, quality: number): Promise<string> {
   return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('canvas encode failed'))), jpeg ? 'image/jpeg' : 'image/png', quality));
 }
-async function paint(pg: any, vp: any, w: number, h: number, jpeg: boolean, quality: number): Promise<string> {
-  return withCanvas(async (canvas) => {
+async function paint(pg: any, vp: any, w: number, h: number, jpeg: boolean, quality: number, lane: CanvasLane = 'detail'): Promise<string> {
+  return withCanvas(lane, async (canvas) => {
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { alpha: false })!; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
     await pg.render({ canvasContext: ctx, viewport: vp }).promise;
@@ -31,9 +35,10 @@ async function paint(pg: any, vp: any, w: number, h: number, jpeg: boolean, qual
 // Same image requested again (e.g. a remounted page or tile) -> same URL, no re-render. Bounded; old URLs are not revoked
 // because a still-mounted <img> may be using them.
 const images = new Map<string, Promise<string>>();
+const readyImages = new Map<string, string>();
 function memo(key: string, make: () => Promise<string>): Promise<string> {
   let p = images.get(key);
-  if (!p) { p = make(); images.set(key, p); p.catch(() => images.delete(key)); if (images.size > 400) { const first = images.keys().next().value; if (first !== undefined) images.delete(first); } }
+  if (!p) { p = make(); images.set(key, p); p.then(value => { if (images.get(key) === p) readyImages.set(key, value); }, () => { if (images.get(key) === p) images.delete(key); }); if (images.size > 400) { const first = images.keys().next().value; if (first !== undefined) { images.delete(first); readyImages.delete(first); } } }
   return p;
 }
 
@@ -59,8 +64,24 @@ function joinItems(items: any[]): string {
 export default {
   // Web is a development/preview target only: no at-rest encryption is applied here.
   async importFile(srcUri: string, _id: string) { const blob = await (await fetch(srcUri)).blob(); return { uri: srcUri, size: blob.size }; },
-  async deleteFile(uri: string) { const p = docs.get(uri); docs.delete(uri); p?.then((d: any) => d.destroy?.()).catch(() => {}); }, async fileExists(_uri: string) { return true; }, async clearCaches() { docs.clear(); images.clear(); },
+  async deleteFile(uri: string) { const p = docs.get(uri); docs.delete(uri); p?.then((d: any) => d.destroy?.()).catch(() => {}); }, async fileExists(_uri: string) { return true; }, async clearCaches() { docs.clear(); images.clear(); readyImages.clear(); },
   async getInfo(uri: string): Promise<PdfInfo> { const doc = await open(uri); const pages = []; for (let i = 1; i <= doc.numPages; i++) { const pg = await doc.getPage(i); const vp = pg.getViewport({ scale: 1 }); pages.push({ width: vp.width, height: vp.height }); } let title: string | undefined; try { title = (await doc.getMetadata())?.info?.Title; } catch {} return { pageCount: doc.numPages, pages, title }; },
+  async cachedReading(uri: string, index: number, width: number): Promise<string | null> {
+    const w = Math.max(1, Math.min(1200, Math.round(width)));
+    return readyImages.get(`${uri}|${index}|${w}`) ?? readyImages.get(`read|${uri}|${index}|${w}`) ?? null;
+  },
+  renderReading(uri: string, index: number, width: number): Promise<string> {
+    const w = Math.max(1, Math.min(1200, Math.round(width)));
+    const cached = readyImages.get(`${uri}|${index}|${w}`); if (cached) return Promise.resolve(cached);
+    return memo(`read|${uri}|${index}|${w}`, async () => {
+      const doc = await open(uri), pg = await doc.getPage(index + 1), base = pg.getViewport({ scale: 1 });
+      let scale = w / base.width, vp = pg.getViewport({ scale });
+      if (Math.ceil(vp.width) * Math.ceil(vp.height) > 4_000_000) {
+        scale *= Math.sqrt(3_990_000 / (Math.ceil(vp.width) * Math.ceil(vp.height))); vp = pg.getViewport({ scale });
+      }
+      return paint(pg, vp, Math.max(1, Math.floor(vp.width)), Math.max(1, Math.floor(vp.height)), true, 0.84, 'reading');
+    });
+  },
   /** Whole page `width` px wide. PNG up to 1600 px, JPEG 0.92 above (much faster to encode). */
   renderPage(uri: string, index: number, width: number): Promise<string> {
     return memo(`${uri}|${index}|${width}`, async () => {

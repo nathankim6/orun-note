@@ -1,0 +1,35 @@
+name: NativeSmoke
+options:
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  SmokeHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paperly.qa.host
+  NativeSmokeTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [NativeSmokeTests.swift]
+    dependencies:
+      - target: SmokeHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paperly.qa.tests
+        TEST_TARGET_NAME: SmokeHost
+schemes:
+  NativeSmoke:
+    build:
+      targets:
+        SmokeHost: all
+        NativeSmokeTests: [test]
+    test:
+      targets: [NativeSmokeTests]

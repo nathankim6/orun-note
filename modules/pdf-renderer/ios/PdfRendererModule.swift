@@ -4,7 +4,7 @@ import UIKit
 import CryptoKit
 import Security
 
-enum PdfRendererError: Error { case cannotOpen(String); case badPage(Int); case crypto(String) }
+enum PdfRendererError: Error { case cannotOpen(String); case badPage(Int); case crypto(String); case unavailable }
 
 // MARK: - Storage format v2 (streamed; a file is never held in memory as a whole)
 //   header: "OPDF2" | u32 BE chunk size | u8 key mode (0 = device key, 1 = per-file data key wrapped by the device key)
@@ -36,11 +36,61 @@ public class PdfRendererModule: Module {
   private let maxDocs = 3
   /// Decrypted working copies of v2 files kept on disk so reopening is instant (most recently used `maxPlainFiles`).
   private let maxPlainFiles = 3
-  /// PDFKit and the document cache are not thread-safe; every PDFKit call is serialized on this queue.
+  /// Detail PDFKit objects and the detail document cache are confined to this queue.
   private let queue = DispatchQueue(label: "com.paperly.study.pdf", qos: .userInitiated)
   /// Expo runs the async functions of every module on one shared serial queue. PDF work is dispatched here instead so a
   /// long import or render never blocks other native calls, and cached page images return without waiting behind a render.
   private let ioQueue = DispatchQueue(label: "com.paperly.study.pdf.io", qos: .userInitiated, attributes: .concurrent)
+  // Each lane owns its PDFKit objects. The reading lane never waits on detail for a warm working copy.
+  private let readingQueue = DispatchQueue(label: "com.paperly.study.pdf.reading", qos: .userInitiated)
+  private struct ReadingDocument { let document: PDFDocument; let backing: URL? }
+  private var readingCache: [String: ReadingDocument] = [:] // readingQueue only
+  private var readingLRU: [String] = []
+  private let maxReadingDocs = 2
+  // Only filenames/refcounts cross lanes, never either lane's PDFDocument dictionary.
+  private let plainMetadataLock = NSLock()
+  private var readingPins: [String: Int] = [:]
+  // Admission happens on ioQueue, before entering either PDF queue. Maintenance drains admitted work,
+  // then visits the two queues separately. Neither PDF queue ever synchronously enters readingQueue.
+  private let lifecycle = NSCondition()
+  private let maintenanceLock = NSLock()
+  private var activeOperations = 0
+  private var maintaining = false
+  private var destroyed = false
+  private let timingLock = NSLock()
+  private var renderTimings: [[String: Any]] = []
+  private let maxRenderTimings = 20
+
+  private func beginOperation() throws {
+    lifecycle.lock(); defer { lifecycle.unlock() }
+    while maintaining && !destroyed { lifecycle.wait() }
+    guard !destroyed else { throw PdfRendererError.unavailable }
+    activeOperations += 1
+  }
+  private func endOperation() {
+    lifecycle.lock(); activeOperations -= 1
+    if activeOperations == 0 { lifecycle.broadcast() }
+    lifecycle.unlock()
+  }
+  private func withMaintenance(allowDestroyed: Bool = false, _ body: () throws -> Void) throws {
+    maintenanceLock.lock(); defer { maintenanceLock.unlock() }
+    lifecycle.lock()
+    if destroyed && !allowDestroyed { lifecycle.unlock(); throw PdfRendererError.unavailable }
+    maintaining = true
+    while activeOperations > 0 { lifecycle.wait() }
+    lifecycle.unlock()
+    defer { lifecycle.lock(); maintaining = false; lifecycle.broadcast(); lifecycle.unlock() }
+    try body()
+  }
+  private func milliseconds() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
+  private func recordTiming(lane: String, page: Int, width: Int, start: Double, opened: Double, drawn: Double, encoded: Double, written: Double) {
+    let record: [String: Any] = ["lane": lane, "page": page, "width": width,
+      "openMs": opened - start, "drawMs": drawn - opened, "encodeMs": encoded - drawn,
+      "writeMs": written - encoded, "totalMs": written - start]
+    timingLock.lock(); defer { timingLock.unlock() }
+    renderTimings.append(record)
+    if renderTimings.count > maxRenderTimings { renderTimings.removeFirst(renderTimings.count - maxRenderTimings) }
+  }
   private let keyTag = "com.paperly.study.pdfkey"
   private var memoryObserver: NSObjectProtocol?
 
@@ -200,7 +250,18 @@ public class PdfRendererModule: Module {
       if isV2(u) {
         let fm = FileManager.default
         let plain = plainURL(uri)
-        if fm.fileExists(atPath: plain.path) { doc = PDFDocument(url: plain); if doc == nil { try? fm.removeItem(at: plain) } }
+        // Trim and reading pins share this lock. Never replace a file backing a reading document.
+        plainMetadataLock.lock()
+        do {
+          defer { plainMetadataLock.unlock() }
+          if fm.fileExists(atPath: plain.path) { doc = PDFDocument(url: plain) }
+          if doc == nil {
+            guard readingPins[plain.lastPathComponent] == nil else { throw PdfRendererError.cannotOpen(uri) }
+            try? fm.removeItem(at: plain)
+          }
+        }
+        // Destination is absent until decrypt atomically publishes it. Do not hold the metadata lock
+        // through cold crypto/I/O: unrelated warm reading copies can still be pinned immediately.
         if doc == nil { try decryptFileV2(from: u, to: plain); doc = PDFDocument(url: plain) }
         if doc != nil {
           try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: plain.path)
@@ -218,15 +279,80 @@ public class PdfRendererModule: Module {
   }
   /// Keeps only the most recently used decrypted copies (never the ones backing open documents).
   private func trimPlainFiles(keeping current: String) {
+    plainMetadataLock.lock(); defer { plainMetadataLock.unlock() }
     let fm = FileManager.default
     guard let items = try? fm.contentsOfDirectory(at: plainDir(), includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return }
     var keep = Set(lru.map { plainURL($0).lastPathComponent }); keep.insert(current)
+    keep.formUnion(readingPins.keys)
     let pdfs = items.filter { $0.pathExtension == "pdf" }.sorted { a, b in
       let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
       let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
       return da > db
     }
     for (n, f) in pdfs.enumerated() where n >= maxPlainFiles && !keep.contains(f.lastPathComponent) { try? fm.removeItem(at: f) }
+  }
+  private func pinExistingPlain(_ uri: String) -> URL? {
+    let plain = plainURL(uri)
+    plainMetadataLock.lock(); defer { plainMetadataLock.unlock() }
+    guard FileManager.default.fileExists(atPath: plain.path) else { return nil }
+    readingPins[plain.lastPathComponent, default: 0] += 1
+    return plain
+  }
+  private func unpinPlain(_ plain: URL?) {
+    guard let plain = plain else { return }
+    plainMetadataLock.lock(); defer { plainMetadataLock.unlock() }
+    let name = plain.lastPathComponent
+    let count = (readingPins[name] ?? 1) - 1
+    if count == 0 { readingPins.removeValue(forKey: name) } else { readingPins[name] = count }
+  }
+  // readingQueue only. Release PDFKit objects before releasing their backing-file pins.
+  private func forgetReading(_ uri: String) {
+    let backing = readingCache[uri]?.backing
+    readingCache[uri] = nil; readingLRU.removeAll { $0 == uri }
+    unpinPlain(backing)
+  }
+  private func clearReadingDocuments() {
+    for uri in Array(readingCache.keys) { forgetReading(uri) }
+  }
+  private func readingDocument(_ uri: String) throws -> PDFDocument {
+    if let entry = readingCache[uri] {
+      readingLRU.removeAll { $0 == uri }; readingLRU.append(uri)
+      return entry.document
+    }
+    let source = resolved(uri)
+    var backing: URL?
+    var document: PDFDocument?
+    if source.pathExtension == "pdfenc" {
+      // An imported/decrypted working copy is the common path: no detail-queue hop, not even for isV2.
+      backing = pinExistingPlain(uri)
+      if let plain = backing { document = PDFDocument(url: plain) }
+      if document == nil {
+        unpinPlain(backing); backing = nil
+        // Cold decrypt is owned by detail. This is the only reading -> detail synchronous edge.
+        backing = try queue.sync {
+          _ = try self.document(uri)
+          return self.pinExistingPlain(uri)
+        }
+        if let plain = backing { document = PDFDocument(url: plain) }
+        else { document = PDFDocument(data: try decrypt(Data(contentsOf: source))) } // legacy v1
+      }
+    } else { document = PDFDocument(url: source) }
+    guard let doc = document else { unpinPlain(backing); throw PdfRendererError.cannotOpen(uri) }
+    readingCache[uri] = ReadingDocument(document: doc, backing: backing)
+    readingLRU.append(uri)
+    while readingLRU.count > maxReadingDocs { forgetReading(readingLRU[0]) }
+    return doc
+  }
+  private func readingWidth(_ width: Int) -> Int { min(1200, width) }
+  private func readingImageURL(_ uri: String, _ index: Int, _ width: Int) -> URL {
+    pagesDir().appendingPathComponent("\(cacheKey(uri))-\(index)-read-\(readingWidth(width)).jpg")
+  }
+  private func cachedReadingURL(_ uri: String, _ index: Int, _ width: Int) -> URL? {
+    guard width > 0 else { return nil }
+    let reading = readingImageURL(uri, index, width)
+    if FileManager.default.fileExists(atPath: reading.path) { return reading }
+    let full = pagesDir().appendingPathComponent("\(cacheKey(uri))-\(index)-\(readingWidth(width)).jpg")
+    return FileManager.default.fileExists(atPath: full.path) ? full : nil
   }
   private func pageSize(_ page: PDFPage) -> CGSize { let b = page.bounds(for: .mediaBox); let rotated = (page.rotation % 180) != 0; return CGSize(width: rotated ? b.height : b.width, height: rotated ? b.width : b.height) }
 
@@ -254,9 +380,12 @@ public class PdfRendererModule: Module {
       module.memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak module] _ in
         guard let m = module else { return }
         m.queue.async { m.cache.removeAll(); m.lru.removeAll() }
+        m.readingQueue.async { m.clearReadingDocuments() }
       }
       // Page images written by older builds were keyed by a per-launch random hash and can never be reused.
       module.ioQueue.async {
+        do { try module.beginOperation() } catch { return }
+        defer { module.endOperation() }
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(at: module.pagesDir(), includingPropertiesForKeys: nil) else { return }
         for f in items { let name = f.lastPathComponent; if let dash = name.firstIndex(of: "-"), name.distance(from: name.startIndex, to: dash) != 24 { try? fm.removeItem(at: f) } }
@@ -265,41 +394,64 @@ public class PdfRendererModule: Module {
     OnDestroy {
       if let o = self.memoryObserver { NotificationCenter.default.removeObserver(o) }
       self.memoryObserver = nil
+      self.lifecycle.lock(); self.destroyed = true; self.lifecycle.broadcast(); self.lifecycle.unlock()
+      // Do not block the main thread or release a backing file while a render is still using it.
+      self.ioQueue.async {
+        try? self.withMaintenance(allowDestroyed: true) {
+          self.queue.sync { self.cache.removeAll(); self.lru.removeAll() }
+          self.readingQueue.sync { self.clearReadingDocuments() }
+        }
+      }
     }
 
     /// Copies a picked PDF into encrypted app storage (v2, streamed in 4 MiB chunks) and returns the stored URI.
     /// The source is left untouched (caller deletes temp copies). A decrypted working copy is kept so the first open is instant.
     AsyncFunction("importFile") { (srcUri: String, id: String) throws -> [String: Any] in
-      let fm = FileManager.default
-      let src = self.url(from: srcUri)
-      let out = try self.storeDir().appendingPathComponent("\(id).pdfenc")
-      let outUri = out.absoluteString
-      let plain = self.plainURL(outUri)
-      let plainPart = plain.appendingPathExtension("part")
-      let encPart = out.appendingPathExtension("part")
-      try? fm.removeItem(at: plainPart); try? fm.removeItem(at: encPart); try? fm.removeItem(at: plain)
-      var ok = false
-      defer { if !ok { try? fm.removeItem(at: plainPart); try? fm.removeItem(at: encPart); try? fm.removeItem(at: plain) } }
-      // Working copy = APFS clone of the picked file (no extra time or space), validated before spending time on encryption.
-      do { try fm.copyItem(at: src, to: plainPart) } catch { throw PdfRendererError.cannotOpen(srcUri) }
-      try? fm.setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: plainPart.path)
-      try fm.moveItem(at: plainPart, to: plain)
-      let doc: PDFDocument = try self.queue.sync { () throws -> PDFDocument in
-        guard let d = PDFDocument(url: plain) else { throw PdfRendererError.cannotOpen(srcUri) }
-        return d
+      var result: [String: Any] = [:]
+      try self.withMaintenance {
+        let fm = FileManager.default
+        let src = self.url(from: srcUri)
+        let out = try self.storeDir().appendingPathComponent("\(id).pdfenc")
+        let outUri = out.absoluteString
+        self.queue.sync {
+          for key in Array(self.cache.keys) where self.cacheKey(key) == self.cacheKey(outUri) { self.forget(key) }
+        }
+        self.readingQueue.sync {
+          for key in Array(self.readingCache.keys) where self.cacheKey(key) == self.cacheKey(outUri) { self.forgetReading(key) }
+        }
+        let plain = self.plainURL(outUri)
+        let plainPart = plain.appendingPathExtension("part")
+        let encPart = out.appendingPathExtension("part")
+        try? fm.removeItem(at: plainPart); try? fm.removeItem(at: encPart); try? fm.removeItem(at: plain)
+        var ok = false
+        defer { if !ok { try? fm.removeItem(at: plainPart); try? fm.removeItem(at: encPart); try? fm.removeItem(at: plain) } }
+        // Working copy = APFS clone of the picked file (no extra time or space), validated before spending time on encryption.
+        do { try fm.copyItem(at: src, to: plainPart) } catch { throw PdfRendererError.cannotOpen(srcUri) }
+        try? fm.setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: plainPart.path)
+        try fm.moveItem(at: plainPart, to: plain)
+        let doc: PDFDocument = try self.queue.sync { () throws -> PDFDocument in
+          guard let d = PDFDocument(url: plain) else { throw PdfRendererError.cannotOpen(srcUri) }
+          return d
+        }
+        let size = try self.encryptFileV2(from: src, to: encPart)
+        if fm.fileExists(atPath: out.path) { try? fm.removeItem(at: out) }
+        try fm.moveItem(at: encPart, to: out)
+        var v = URLResourceValues(); v.isExcludedFromBackup = true; var o = out; try? o.setResourceValues(v)
+        ok = true
+        self.queue.sync { self.remember(outUri, doc); self.trimPlainFiles(keeping: plain.lastPathComponent) }
+        result = ["uri": outUri, "size": size]
       }
-      let size = try self.encryptFileV2(from: src, to: encPart)
-      if fm.fileExists(atPath: out.path) { try? fm.removeItem(at: out) }
-      try fm.moveItem(at: encPart, to: out)
-      var v = URLResourceValues(); v.isExcludedFromBackup = true; var o = out; try? o.setResourceValues(v)
-      ok = true
-      self.queue.sync { self.remember(outUri, doc); self.trimPlainFiles(keeping: plain.lastPathComponent) }
-      return ["uri": outUri, "size": size]
+      return result
     }.runOnQueue(self.ioQueue)
 
-    AsyncFunction("deleteFile") { (uri: String) in
-      self.queue.sync {
-        self.forget(uri)
+    AsyncFunction("deleteFile") { (uri: String) throws in
+      try self.withMaintenance {
+        self.queue.sync {
+          for key in Array(self.cache.keys) where self.cacheKey(key) == self.cacheKey(uri) { self.forget(key) }
+        }
+        self.readingQueue.sync {
+          for key in Array(self.readingCache.keys) where self.cacheKey(key) == self.cacheKey(uri) { self.forgetReading(key) }
+        }
         let fm = FileManager.default
         try? fm.removeItem(at: self.resolved(uri))
         try? fm.removeItem(at: self.plainURL(uri))
@@ -308,13 +460,15 @@ public class PdfRendererModule: Module {
       }
     }.runOnQueue(self.ioQueue)
 
-    AsyncFunction("fileExists") { (uri: String) -> Bool in
-      FileManager.default.fileExists(atPath: self.resolved(uri).path)
-    }
+    AsyncFunction("fileExists") { (uri: String) throws -> Bool in
+      try self.beginOperation(); defer { self.endOperation() }
+      return FileManager.default.fileExists(atPath: self.resolved(uri).path)
+    }.runOnQueue(self.ioQueue)
 
-    AsyncFunction("clearCaches") {
-      self.queue.sync {
-        self.cache.removeAll(); self.lru.removeAll()
+    AsyncFunction("clearCaches") { () throws in
+      try self.withMaintenance {
+        self.queue.sync { self.cache.removeAll(); self.lru.removeAll() }
+        self.readingQueue.sync { self.clearReadingDocuments() }
         let fm = FileManager.default
         try? fm.removeItem(at: self.cachesDir().appendingPathComponent("pdf-pages", isDirectory: true))
         try? fm.removeItem(at: self.cachesDir().appendingPathComponent("pdf-plain", isDirectory: true))
@@ -324,7 +478,8 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("getInfo") { (uri: String) throws -> [String: Any] in
-      try self.queue.sync { () throws -> [String: Any] in
+      try self.beginOperation(); defer { self.endOperation() }
+      return try self.queue.sync { () throws -> [String: Any] in
         let doc = try self.document(uri)
         var pages: [[String: Double]] = []
         for i in 0..<doc.pageCount { guard let p = doc.page(at: i) else { continue }; let s = self.pageSize(p); pages.append(["width": Double(s.width), "height": Double(s.height)]) }
@@ -333,27 +488,79 @@ public class PdfRendererModule: Module {
       }
     }.runOnQueue(self.ioQueue)
 
-    /// An already-rendered page (no rendering, no queue): the viewer shows it at once instead of waiting for other work.
-    AsyncFunction("cachedPage") { (uri: String, index: Int, width: Int) -> String? in
+    AsyncFunction("takeRenderTimings") { () -> [[String: Any]] in
+      self.timingLock.lock(); defer { self.timingLock.unlock() }
+      let records = self.renderTimings; self.renderTimings.removeAll(keepingCapacity: true)
+      return records
+    }
+
+    AsyncFunction("cachedReading") { (uri: String, index: Int, width: Int) throws -> String? in
+      try self.beginOperation(); defer { self.endOperation() }
+      return self.cachedReadingURL(uri, index, width)?.absoluteString
+    }.runOnQueue(self.ioQueue)
+
+    AsyncFunction("renderReading") { (uri: String, index: Int, width: Int) throws -> String in
+      try self.beginOperation(); defer { self.endOperation() }
+      guard width > 0 else { throw PdfRendererError.badPage(index) }
+      if let cached = self.cachedReadingURL(uri, index, width) { return cached.absoluteString }
+      return try self.readingQueue.sync {
+        try autoreleasepool {
+          if let cached = self.cachedReadingURL(uri, index, width) { return cached.absoluteString }
+          let start = self.milliseconds()
+          let doc = try self.readingDocument(uri)
+          guard let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+          let size = self.pageSize(page)
+          guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { throw PdfRendererError.badPage(index) }
+          // Bound actual bitmap area as well as width, including unusually tall pages.
+          let ratio = size.height / size.width
+          guard ratio.isFinite, ratio > 0 else { throw PdfRendererError.badPage(index) }
+          let target = CGFloat(self.readingWidth(width))
+          let pixelWidth = max(1, min(target, floor(sqrt(4_000_000 / ratio))))
+          let pixelHeight = max(1, min(floor(4_000_000 / pixelWidth), floor(pixelWidth * ratio)))
+          let scale = min(pixelWidth / size.width, pixelHeight / size.height)
+          let opened = self.milliseconds()
+          let image = self.draw(page, canvas: CGSize(width: pixelWidth, height: pixelHeight), scale: scale, origin: .zero, pageHeightPx: pixelHeight)
+          let drawn = self.milliseconds()
+          guard let data = image.jpegData(compressionQuality: 0.84) else { throw PdfRendererError.badPage(index) }
+          let encoded = self.milliseconds()
+          let out = self.readingImageURL(uri, index, width)
+          try data.write(to: out, options: [.atomic, .completeFileProtection])
+          let written = self.milliseconds()
+          self.recordTiming(lane: "reading", page: index, width: Int(pixelWidth), start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
+          return out.absoluteString
+        }
+      }
+    }.runOnQueue(self.ioQueue)
+
+    /// An already-rendered page (no rendering, no PDF queue): the viewer shows it at once instead of waiting for other work.
+    AsyncFunction("cachedPage") { (uri: String, index: Int, width: Int) throws -> String? in
+      try self.beginOperation(); defer { self.endOperation() }
       let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(width).jpg")
       return FileManager.default.fileExists(atPath: out.path) ? out.absoluteString : nil
-    }
+    }.runOnQueue(self.ioQueue)
 
     /// Whole page at `width` px. Cached on disk under a stable key: a cached page returns without opening the document.
     /// Always JPEG (q 0.92): several times faster to encode and decode than PNG.
     AsyncFunction("renderPage") { (uri: String, index: Int, width: Int) throws -> String in
+      try self.beginOperation(); defer { self.endOperation() }
       let jpeg = true
       let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(width).jpg")
       if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
+        let start = self.milliseconds()
         let doc = try self.document(uri)
         guard width > 0, let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
         let size = self.pageSize(page); let scale = CGFloat(width) / size.width
         let h = max(1, (size.height * scale).rounded())
+        let opened = self.milliseconds()
         let image = self.draw(page, canvas: CGSize(width: CGFloat(width), height: h), scale: scale, origin: .zero, pageHeightPx: h)
+        let drawn = self.milliseconds()
         guard let data = jpeg ? image.jpegData(compressionQuality: 0.92) : image.pngData() else { throw PdfRendererError.badPage(index) }
+        let encoded = self.milliseconds()
         try data.write(to: out, options: [.atomic, .completeFileProtection])
+        let written = self.milliseconds()
+        self.recordTiming(lane: "detail", page: index, width: width, start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
         return out.absoluteString
       }
     }.runOnQueue(self.ioQueue)
@@ -361,30 +568,39 @@ public class PdfRendererModule: Module {
     /// A `w`×`h` px window (top-left `x`,`y`) of the page as it looks scaled to `pageWidthPx` wide — sharp tiles when zoomed in.
     /// The region is clamped to the page. JPEG (q 0.9), cached on disk.
     AsyncFunction("renderRegion") { (uri: String, index: Int, pageWidthPx: Int, x: Int, y: Int, w: Int, h: Int) throws -> String in
+      try self.beginOperation(); defer { self.endOperation() }
       let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(pageWidthPx)-r\(x)_\(y)_\(w)_\(h).jpg")
       if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
+        let start = self.milliseconds()
         let doc = try self.document(uri)
         guard pageWidthPx > 0, let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
         let size = self.pageSize(page); let scale = CGFloat(pageWidthPx) / size.width
         let fullH = max(1, Int((size.height * scale).rounded()))
         let x0 = min(max(0, x), pageWidthPx - 1), y0 = min(max(0, y), fullH - 1)
         let rw = max(1, min(w, pageWidthPx - x0)), rh = max(1, min(h, fullH - y0))
+        let opened = self.milliseconds()
         let image = self.draw(page, canvas: CGSize(width: rw, height: rh), scale: scale, origin: CGPoint(x: x0, y: y0), pageHeightPx: CGFloat(fullH))
+        let drawn = self.milliseconds()
         guard let data = image.jpegData(compressionQuality: 0.9) else { throw PdfRendererError.badPage(index) }
+        let encoded = self.milliseconds()
         try data.write(to: out, options: [.atomic, .completeFileProtection])
+        let written = self.milliseconds()
+        self.recordTiming(lane: "tile", page: index, width: pageWidthPx, start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
         return out.absoluteString
       }
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("getPageText") { (uri: String, index: Int) throws -> String in
-      try self.queue.sync { () throws -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
+      try self.beginOperation(); defer { self.endOperation() }
+      return try self.queue.sync { () throws -> String in (try self.document(uri)).page(at: index)?.string ?? "" }
     }.runOnQueue(self.ioQueue)
 
     /// Words on a page with rectangles normalized to the displayed page (0..1, top-left origin) for tap-to-define.
     AsyncFunction("getWords") { (uri: String, index: Int) throws -> [[String: Any]] in
-      try self.queue.sync { () throws -> [[String: Any]] in
+      try self.beginOperation(); defer { self.endOperation() }
+      return try self.queue.sync { () throws -> [[String: Any]] in
       let doc = try self.document(uri)
       guard let page = doc.page(at: index), let text = page.string, !text.isEmpty else { return [] }
       let box = page.bounds(for: .mediaBox); let rot = ((page.rotation % 360) + 360) % 360
@@ -403,7 +619,8 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("getOutline") { (uri: String) throws -> [[String: Any]] in
-      try self.queue.sync { () throws -> [[String: Any]] in
+      try self.beginOperation(); defer { self.endOperation() }
+      return try self.queue.sync { () throws -> [[String: Any]] in
       let doc = try self.document(uri); var out: [[String: Any]] = []
       func walk(_ node: PDFOutline, _ level: Int) { for i in 0..<node.numberOfChildren { guard let child = node.child(at: i) else { continue }; let idx = child.destination?.page.flatMap { doc.index(for: $0) } ?? 0; out.append(["title": child.label ?? "", "pageIndex": idx, "level": level]); walk(child, level + 1) } }
       if let root = doc.outlineRoot { walk(root, 0) }

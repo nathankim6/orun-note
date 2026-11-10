@@ -1,0 +1,6 @@
+fixtures/pdf.generated.ts
+output/
+build/
+*.xcodeproj/
+
+.index-backup
