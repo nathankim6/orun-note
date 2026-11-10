@@ -14,6 +14,7 @@ const javaCrash = [
   line(321, '\tat expo.modules.pdfrenderer.PdfRendererModule.onCreate(PdfRendererModule.kt:123)'),
   line(321, '\tat com.paperly.study.Application.<init>(Application.java:44)'),
 ].join('\n');
+fs.mkdirSync(path.resolve('qa/build'), { recursive: true });
 const work = fs.mkdtempSync(path.resolve('qa/build/diagnostics-test-'));
 function sanitize(text, name = 'sample') {
   const input = path.join(work, name + '.raw'), output = path.join(work, name + '.jsonl');
