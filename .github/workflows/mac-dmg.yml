@@ -1,6 +1,5 @@
 name: macOS installer (dmg)
 on:
-  push: { branches: [main], paths: ['app/**', 'src/**', 'desktop/**', 'modules/pdf-renderer/src/**', 'package.json', 'package-lock.json', 'app.json', '.github/workflows/mac-dmg.yml'] }
   workflow_dispatch:
 permissions:
   contents: write

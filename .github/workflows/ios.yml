@@ -77,16 +77,9 @@ jobs:
           xcodebuild -exportArchive -archivePath build/Paperly.xcarchive -exportOptionsPlist ExportOptions.plist -exportPath build/out
       - name: Verify IPA identity and versions before upload
         run: |
+          set -euo pipefail
           IPA=$(ls ios/build/out/*.ipa)
-          INFO=$(unzip -Z -1 "$IPA" | grep -E '^Payload/[^/]+[.]app/Info[.]plist
-        env:
-          KEY_P8: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
-        run: |
-          mkdir -p ~/private_keys; echo "$KEY_P8" | base64 -d > ~/private_keys/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
-          xcrun altool --upload-app -f ios/build/out/*.ipa -t ios --apiKey ${{ secrets.ASC_KEY_ID }} --apiIssuer ${{ secrets.ASC_ISSUER_ID }}
-      - uses: actions/upload-artifact@v4
-        with: { name: paperly-ipa, path: ios/build/out/*.ipa }
-)
+          INFO=$(unzip -Z -1 "$IPA" | grep -E '^Payload/[^/]+[.]app/Info[.]plist$')
           unzip -p "$IPA" "$INFO" > verified-Info.plist
           test "$(plutil -extract CFBundleIdentifier raw verified-Info.plist)" = com.paperly.study
           test "$(plutil -extract CFBundleShortVersionString raw verified-Info.plist)" = "$APP_VERSION"
