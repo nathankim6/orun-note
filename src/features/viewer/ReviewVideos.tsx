@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, ReviewVideo } from '@/lib/api';
 import { useSession } from '@/store/session';
 import { YouTubeStage, StageHandle, StageStatus, EMPTY_STATUS } from './YouTubeStage';
-import { normalizeReviewVideos } from './reviewVideoSafety';
+import { normalizeReviewVideos, reviewPlayerGeometry } from './reviewVideoSafety';
 export type { StageStatus, StageErrorCode } from './YouTubeStage';
 
 // Thumbnail of the video (never shown as text). hqdefault is 4:3 with letterbox bars; a 16:9 cover crop removes them.
@@ -155,9 +155,7 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
     const onKey = (e: KeyboardEvent) => { if (e.key === ' ') { e.preventDefault(); toggle(); } else if (e.key === 'ArrowLeft') skip(-10); else if (e.key === 'ArrowRight') skip(10); else if (e.key === 'Escape') { if (full) setFull(false); else closePlayer(); } };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   });
-  const maxW = full ? W : Math.min(W - 40, 1040);
-  const maxH = full ? H : H - insets.top - insets.bottom - (W >= 700 ? 250 : 300);
-  const stageW = Math.max(240, Math.min(maxW, maxH * 16 / 9)); const stageH = stageW * 9 / 16;
+  const { width: stageW, height: stageH } = reviewPlayerGeometry(W, H, insets, full);
   const showChrome = chrome || !st.playing || !!st.error;
   return (
     <View testID="review-video-player" style={[StyleSheet.absoluteFill, { backgroundColor: '#05060A' }]} accessibilityViewIsModal>
@@ -174,7 +172,7 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
         </View>
       )}
       <View style={{ flex: full ? 1 : undefined, alignItems: 'center', justifyContent: 'center', marginTop: full ? 0 : 6 }}>
-        <View style={{ width: stageW, height: stageH, borderRadius: full ? 0 : 18, overflow: 'hidden', backgroundColor: '#000' }}>
+        <View testID="review-video-player-viewport" style={{ width: stageW, height: stageH, borderRadius: full ? 0 : 18, overflow: 'hidden', backgroundColor: '#000' }}>
           {!st.error && <YouTubeStage key={attempt} ref={stage} videoId={video.videoId} onStatus={onStatus} />}
           {/* poster until playback starts, and over YouTube's end screen */}
           {(!started.current || st.ended) && !st.error && <Image source={{ uri: thumb(video.videoId) }} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={st.ended ? 12 : 0} />}

@@ -26,6 +26,22 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v: unknown, fallback: string) => typeof v === 'string' && v.trim() ? v.trim() : fallback;
 
+/** YouTube requires a 200 × 200 CSS-pixel iframe viewport. Its player letterboxes the video.
+ * https://developers.google.com/youtube/iframe_api_reference#Requirements
+ * Preserve the previous 16:9 tablet/fullscreen geometry wherever it already meets that minimum.
+ */
+export function reviewPlayerGeometry(width: number, height: number, insets: { top: number; bottom: number }, full: boolean) {
+  const screenW = Math.max(0, width), screenH = Math.max(0, height);
+  // Reduce side margins only if necessary to fit the minimum into a narrow physical screen.
+  const maxW = Math.min(screenW, Math.max(Math.min(200, screenW), full ? screenW : Math.min(screenW - 40, 1040)));
+  const availableH = full ? screenH : Math.max(0, screenH - insets.top - insets.bottom);
+  const preferredH = full ? screenH : availableH - (screenW >= 700 ? 250 : 300);
+  const stageW = Math.min(maxW, Math.max(240, Math.min(maxW, preferredH * 16 / 9)));
+  // A sub-200 physical viewport cannot satisfy the API minimum; never overflow it trying.
+  const stageH = Math.min(availableH, Math.max(200, stageW * 9 / 16));
+  return { width: stageW, height: stageH };
+}
+
 export function normalizeReviewVideos(value: unknown): ReviewVideo[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();

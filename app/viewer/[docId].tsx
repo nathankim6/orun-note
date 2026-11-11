@@ -37,7 +37,12 @@ export default function Viewer() {
   useEffect(() => { if (paramId) store.openTab(paramId); }, [paramId]);
   const doc = store.docs[docId]; const cycle = doc?.cycle ?? 1;
   const [uri, setUri] = useState<string | null>(null); const [missing, setMissing] = useState(false);
-  useEffect(() => { if (!doc) return; setUri(null); resolveUri(doc).then((u) => { if (u) setUri(u); else setMissing(true); }); }, [doc?.id]);
+  useEffect(() => {
+    let alive = true; setUri(null); setMissing(false);
+    if (!doc) return;
+    resolveUri(doc).then((u) => { if (!alive) return; if (u) setUri(u); else setMissing(true); }).catch(() => { if (alive) setMissing(true); });
+    return () => { alive = false; };
+  }, [doc?.id]);
 
   const [pageIndex, setPageIndex] = useState(doc?.lastPage ?? 0);
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
@@ -65,6 +70,16 @@ export default function Viewer() {
   const prevPage = useRef(pageIndex);
   useEffect(() => { if (doc && prevPage.current !== pageIndex) { ink.snapshot(inkKey(doc.id, cycle, String(prevPage.current))); prevPage.current = pageIndex; } }, [pageIndex]);
 
+  const [splitRatio, setSplitRatio] = useState<number>(() => Math.max(0.25, Math.min(0.75, prefs.subDocSplitRatio ?? 0.45)));
+
+  // Desktop (Windows/Mac/web): Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z or Ctrl+Y redo — not while typing in a text field.
+  const undoKeys = useRef<{ undo: () => void; redo: () => void }>({ undo: () => {}, redo: () => {} });
+  useEffect(() => {
+    if (!doc || Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const onKey = (e: KeyboardEvent) => { const t = e.target as HTMLElement | null; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; if (!(e.ctrlKey || e.metaKey)) return; const k = e.key.toLowerCase(); if (k === 'z') { e.preventDefault(); if (e.shiftKey) undoKeys.current.redo(); else undoKeys.current.undo(); } else if (k === 'y') { e.preventDefault(); undoKeys.current.redo(); } };
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+  }, [!!doc]);
+
   if (!doc) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}><T>문서를 찾을 수 없어요</T><Button title="돌아가기" style={{ marginTop: 12 }} onPress={() => router.replace('/(tabs)')} /></View>;
   if (missing) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: 24 }}><Ionicons name="document-lock-outline" size={48} color={colors.textFaint} /><T variant="h3" style={{ marginTop: 12 }}>PDF 파일을 찾을 수 없어요</T><Muted center style={{ marginTop: 6 }}>원본 파일이 삭제되었거나 (웹) 브라우저 저장소가 비워졌어요. 다시 가져와 주세요.</Muted><Button title="내 서재로" style={{ marginTop: 16 }} onPress={() => router.replace('/(tabs)')} /></View>;
 
@@ -73,7 +88,7 @@ export default function Viewer() {
   const availW = winW - (leftTab && isTablet ? leftW : 0); const padH = zoomPad ? Math.round(Math.min(250, Math.max(170, winH * 0.27))) : 0;
   const availH = winH - insets.top - insets.bottom - toolbarH - headerH - tabsH - bottomH - padH;
   // 서브교재 화면 2분할: the main document and the sub document side by side (landscape) or stacked (portrait)
-  const splitPref = !!prefs.subDocSplit; const [splitRatio, setSplitRatio] = useState<number>(() => Math.max(0.25, Math.min(0.75, prefs.subDocSplitRatio ?? 0.45)));
+  const splitPref = !!prefs.subDocSplit;
   const splitOn = !!subDoc && splitPref; const splitHoriz = availW >= availH * 0.9; const DIV = 14;
   const mainW = splitOn && splitHoriz ? Math.round((availW - DIV) * (1 - splitRatio)) : availW; const mainH = splitOn && !splitHoriz ? Math.round((availH - DIV) * (1 - splitRatio)) : availH;
   const subW = splitOn ? (splitHoriz ? availW - DIV - mainW : availW) : 0; const subH = splitOn ? (splitHoriz ? availH : availH - DIV - mainH) : 0;
@@ -89,13 +104,6 @@ export default function Viewer() {
   const clearPage = () => { const k = inkKey(doc.id, cycle, String(pageIndex)); ink.snapshot(k, '삭제 전'); ink.clear(k); toast('현재 페이지 필기를 삭제했어요 (버전 기록에서 복원 가능)'); };
   const exit = () => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex))); router.canGoBack() ? router.back() : router.replace('/(tabs)'); };
 
-  // Desktop (Windows/Mac/web): Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z or Ctrl+Y redo — not while typing in a text field.
-  const undoKeys = useRef<{ undo: () => void; redo: () => void }>({ undo: () => {}, redo: () => {} });
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const onKey = (e: KeyboardEvent) => { const t = e.target as HTMLElement | null; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; if (!(e.ctrlKey || e.metaKey)) return; const k = e.key.toLowerCase(); if (k === 'z') { e.preventDefault(); if (e.shiftKey) undoKeys.current.redo(); else undoKeys.current.undo(); } else if (k === 'y') { e.preventDefault(); undoKeys.current.redo(); } };
-    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
-  }, []);
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = true; // hand tool: the canvas ignores drags (pan fails) but still receives taps for word lookup
   undoKeys.current = { undo: () => (zoomPad ? padInk.current?.undo() : inkRefs.current[String(pageIndex)]?.undo()), redo: () => (zoomPad ? padInk.current?.redo() : inkRefs.current[String(pageIndex)]?.redo()) };
 

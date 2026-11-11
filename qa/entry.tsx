@@ -1,6 +1,7 @@
 import 'react-native-gesture-handler';
 import React, { useState } from 'react';
 import { registerRootComponent } from 'expo';
+import * as SplashScreen from 'expo-splash-screen';
 import { Pressable, Text, View, StyleSheet } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -26,6 +27,7 @@ class Boundary extends React.Component<{children: React.ReactNode}, {failed: boo
 }
 function QA() {
   const { hidden } = useContentProtection();
+  const onQaLayout = React.useCallback(() => { void SplashScreen.hideAsync().catch(() => {}); }, []);
   const [open, setOpen] = useState(false), [cycle, setCycle] = useState(0);
   const [flags, setFlags] = useState('qa-boot'), [jsError, setJSError] = useState(false);
   const [, refresh] = useState(0);
@@ -40,7 +42,7 @@ function QA() {
     }
     setFlags([...observed.current].map(v => `qa-${v}-${cycle}`).join(' ') + ` qa-state-${s.playing ? 'playing' : s.ready ? 'paused' : 'loading'}-${cycle}`);
   }, [cycle]);
-  return <SafeAreaView style={{ flex: 1 }}>
+  return <SafeAreaView onLayout={onQaLayout} style={{ flex: 1 }}>
     {open ? <ReviewVideosScreen loadVideos={loadVideos} onPlaybackStatus={status} onClose={() => { setOpen(false); marker('list_close', { cycle }); }} /> :
       <View style={{ flex: 1, padding: 24, gap: 24 }}>
         <Text>Native simulator QA. Synthetic data only.</Text>

@@ -14,6 +14,7 @@ jobs:
     env:
       NATIVE_SMOKE_QA: '1'
       CI: '1'
+      NATIVE_SMOKE_ALLOW_SYNTHETIC_SCREENSHOT: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,14 +42,14 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_tablet
+          force-avd-creation: true
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             mkdir -p qa/build qa/output
             adb install android/app/build/outputs/apk/release/app-release.apk
             adb logcat -c
-            node scripts/native-android-smoke.mjs > qa/build/android.raw 2>&1
-            node scripts/native-sanitize.mjs qa/build/android.raw qa/output/android.jsonl android
+            bash scripts/native-android-ci.sh
       - name: Sanitize Android failure output too
         if: always()
         run: node scripts/native-sanitize.mjs qa/build/android.raw qa/output/android.jsonl android
@@ -59,6 +60,14 @@ jobs:
           path: qa/output/android.jsonl
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload synthetic QA failure-only screenshot (not completion proof)
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: Synthetic-QA-failure-only-Android-screenshot
+          path: qa/output/android-synthetic-qa-failure.png
+          if-no-files-found: ignore
+          retention-days: 1
   ios:
     runs-on: macos-15
     timeout-minutes: 90

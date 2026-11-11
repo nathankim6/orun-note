@@ -7,11 +7,12 @@ const emit = (event, values = {}) => console.log('QA_JSON ' + JSON.stringify({ e
 const decode = s => s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n)).replace(/&amp;/g, '&');
 let nodes = [], lastLogcat = '', nodesReadAt = 0, currentStep = 'startup';
 const knownPids = new Set();
-let lastTelemetry = [];
+let lastTelemetry = [], lastUINodes = [], lastXMLState = 'unavailable';
 function parseXML(xml) {
   const parsed = [...xml.matchAll(/<node\b[^>]*>/g)].map(([node]) => Object.fromEntries([...node.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, decode(v)])));
   const node = parsed.find(n => n['resource-id'] === 'qa-telemetry' || n['resource-id']?.endsWith(':id/qa-telemetry'));
   try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 180) lastTelemetry = data; } catch { /* Keep last valid telemetry. */ }
+  lastUINodes = parsed; lastXMLState = 'fresh';
   return parsed;
 }
 function crashLogs(force = false) {
@@ -81,7 +82,7 @@ function collect() {
   try {
     adb('shell', 'uiautomator', 'dump', '/data/local/tmp/qa.xml');
     parseXML(adb('shell', 'cat', '/data/local/tmp/qa.xml'));
-  } catch { /* Process/UI may be gone; retain the last parsed telemetry. */ }
+  } catch { lastXMLState = lastUINodes.length ? 'cached' : 'unavailable'; /* Retain telemetry and XML summary. */ }
   for (const row of lastTelemetry) console.log('QA_JSON ' + JSON.stringify(row));
 }
 
@@ -122,6 +123,56 @@ try {
   // Failure-only symbol extraction runs before accessibility collection can fail again.
   const report = crashLogs(true);
   for (const row of report.diagnostics) console.log('QA_JSON ' + JSON.stringify(row));
-  collect(); const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
+  collect(); captureSurface(); const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
   emit('suite_result', { platform: 'android', result: 'fail', reason }); process.exitCode = 1;
+}
+
+function surfaceSummary(inputNodes, activity, window, xmlSource) {
+  // Raw XML/dumpsys stay in memory. Output is only fixed enums/bounded counts.
+  const bounded = inputNodes.slice(0, 10000);
+  const packageKind = name => name === 'com.paperly.study' ? 'app' : ['com.android.launcher3', 'com.google.android.apps.nexuslauncher', 'com.sec.android.app.launcher'].includes(name) ? 'launcher' : ['com.android.permissioncontroller', 'com.google.android.permissioncontroller'].includes(name) ? 'permission' : ['android', 'com.android.systemui', 'com.google.android.gms'].includes(name) ? 'system' : name ? 'other' : 'unknown';
+  const kinds = new Set(bounded.map(n => packageKind(n.package)).filter(k => k !== 'unknown'));
+  const uiPackage = kinds.size > 1 ? 'mixed' : [...kinds][0] ?? 'unknown';
+  const focus = window.split('\n').find(line => /mCurrentFocus=/.test(line) && !/mCurrentFocus=null/.test(line)) ?? activity.split('\n').find(line => /topResumedActivity=|mResumedActivity:/.test(line)) ?? '';
+  const focusedPackage = focus.match(/(?:\s|\{)(com\.[A-Za-z0-9_.]+|android)\//)?.[1];
+  const focusedKind = packageKind(focusedPackage);
+  let foreground = focusedKind === 'system' ? 'systemdialog' : ['app', 'launcher', 'permission'].includes(focusedKind) ? focusedKind : 'unknown';
+  const osNodes = bounded.filter(n => ['system', 'permission', 'launcher'].includes(packageKind(n.package)));
+  const osId = id => osNodes.some(n => n['resource-id'] === id);
+  const osText = expression => osNodes.some(n => expression.test(n.text ?? '') || expression.test(n['content-desc'] ?? ''));
+  let dialog = 'none';
+  if (osId('android:id/aerr_wait') || osId('android:id/anr_wait')) dialog = 'anr';
+  else if (osId('android:id/aerr_close') || osId('android:id/aerr_restart')) dialog = osText(/Google Play services|Google Play 서비스/) ? 'gms_crash' : 'app_crash';
+  else if (/mShowingLockscreen=true|mKeyguardShowing=true|isStatusBarKeyguard=true/.test(window) || osNodes.some(n => /:id\/(?:keyguard_status_view|lockscreen_clock_view)$/.test(n['resource-id'] ?? ''))) dialog = 'keyguard';
+  else if (/Waiting For Debugger|Waiting for debugger/.test(focus) || osText(/^Waiting [Ff]or [Dd]ebugger$/)) dialog = 'debugger';
+  else if (foreground === 'permission' || osNodes.some(n => /:id\/permission_(?:allow|deny)_button$/.test(n['resource-id'] ?? ''))) dialog = 'permission';
+  else if (/GestureSandboxActivity|GestureTutorialActivity|GestureNavigationTutorial/.test(focus)) dialog = 'gesture_tutorial';
+  else if (foreground === 'systemdialog') dialog = 'unknown';
+  if (['gms_crash', 'app_crash', 'anr', 'keyguard', 'debugger'].includes(dialog)) foreground = 'systemdialog';
+  const uiLabels = new Set(); let qaNodeCount = 0;
+  for (const node of bounded) {
+    const values = [node.text ?? '', node['content-desc'] ?? '', node['resource-id'] ?? ''];
+    const has = value => values.some(v => v === value || v.endsWith(':id/' + value));
+    let qa = false;
+    const add = value => { uiLabels.add(value); qa = true; };
+    if (has('open-review-videos')) add('root_button');
+    if (has('qa-boot')) add('qa_boot');
+    if (has('qa-loading')) add('qa_loading');
+    if (has('qa-telemetry')) add('telemetry');
+    if (values.some(v => /^QA Video [1-4] 재생$/.test(v) || /(?:^|:id\/)review-video-card-qa-video-[1-4]$/.test(v))) add('list');
+    if (has('review-video-playback-status') || values.some(v => /(?:^| )qa-(?:ready|playing|paused|state-(?:playing|paused|loading))-(?:[1-9]|1[0-9]|20)(?: |$)/.test(v))) add('player');
+    if (has('qa-js-error') || has('review-videos-boundary-error') || values.some(v => /(?:^| )qa-unavailable-(?:[1-9]|1[0-9]|20)(?: |$)/.test(v))) add('error');
+    if (has('run-pdf-smoke') || values.some(v => /^qa-pdf-(?:idle|running|pass|fail|inconclusive)$/.test(v))) add('pdf');
+    if (values.some(v => ['학생 로그인으로', '관리자이신가요?', '연결하고 시작'].includes(v))) uiLabels.add('auth_screen');
+    if (node.class === 'android.window.SplashScreenView' || has('android:id/splashscreen')) uiLabels.add('splash');
+    if (qa) qaNodeCount++;
+  }
+  if (/Splash Screen com\.paperly\.study\b/.test(focus)) uiLabels.add('splash');
+  return { event: 'driver_surface', foreground, dialog, xmlSource, uiPackage, nodeCount: bounded.length, appNodeCount: bounded.filter(n => n.package === 'com.paperly.study').length, qaNodeCount, uiLabels: [...uiLabels].slice(0, 12) };
+}
+function captureSurface() {
+  const query = (...args) => { try { return execFileSync('adb', args, { encoding: 'utf8', timeout: 6000, maxBuffer: 2 * 1024 * 1024 }); } catch { return ''; } };
+  const activity = query('shell', 'dumpsys', 'activity', 'activities');
+  const window = query('shell', 'dumpsys', 'window', 'windows');
+  console.log('QA_JSON ' + JSON.stringify(surfaceSummary(lastUINodes, activity, window, lastXMLState)));
 }

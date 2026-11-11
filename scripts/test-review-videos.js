@@ -33,6 +33,24 @@ const find = (tree, id) => all(tree, n => n.props?.testID === id)[0];
 const safety = load('reviewVideoSafety.ts');
 const { bridgeStatus, normalizeReviewVideos, allowPlayerNavigation } = safety;
 const validId = 'M7lc1UVf-VE'; // Public IFrame API fixture only, never production data.
+// Official minimum is the iframe viewport, not a demand to stretch 16:9 video content.
+const geometryCases = [
+  { width: 375, height: 812, top: 44, bottom: 34, full: false, expectedWidth: 335, expectedHeight: 200 },
+  { width: 390, height: 844, top: 47, bottom: 34, full: false, expectedWidth: 350, expectedHeight: 200 },
+  { width: 667, height: 375, top: 0, bottom: 21, full: false, expectedWidth: 240, expectedHeight: 200 },
+  { width: 844, height: 390, top: 0, bottom: 21, full: false, expectedWidth: 240, expectedHeight: 200 },
+  { width: 844, height: 390, top: 0, bottom: 21, full: true, expectedWidth: 390 * 16 / 9, expectedHeight: 390 },
+  { width: 1024, height: 1366, top: 24, bottom: 20, full: false, expectedWidth: 984, expectedHeight: 984 * 9 / 16 },
+  { width: 1366, height: 1024, top: 24, bottom: 20, full: false, expectedWidth: 1040, expectedHeight: 585 },
+  { width: 390, height: 844, top: 47, bottom: 34, full: true, expectedWidth: 390, expectedHeight: 390 * 9 / 16 },
+];
+for (const c of geometryCases) {
+  const actual = safety.reviewPlayerGeometry(c.width, c.height, c, c.full);
+  assert.ok(Math.abs(actual.width - c.expectedWidth) < 0.001, JSON.stringify(c)); assert.ok(Math.abs(actual.height - c.expectedHeight) < 0.001, JSON.stringify(c));
+  assert.ok(actual.width >= 200 && actual.height >= 200); assert.ok(actual.width <= c.width); assert.ok(actual.height <= c.height - (c.full ? 0 : c.top + c.bottom));
+}
+const narrow = safety.reviewPlayerGeometry(220, 500, { top: 0, bottom: 0 }, false); assert.equal(narrow.width, 200); assert.equal(narrow.height, 200);
+const impossible = safety.reviewPlayerGeometry(180, 160, { top: 0, bottom: 0 }, false); assert.equal(impossible.width, 180); assert.equal(impossible.height, 160);
 for (const message of ['null', '[]', '{}', 'oops', '{"k":"time","t":"1","d":2,"l":0}', '{"k":"time","t":-1,"d":2,"l":0}', '{"k":"state","s":999}', 'x'.repeat(4096)]) assert.equal(bridgeStatus(message), null);
 assert.equal(bridgeStatus('{"k":"time","t":1,"d":2,"l":9}').loaded, 1);
 assert.equal(bridgeStatus('{"k":"state","s":1}').playing, true);
@@ -129,6 +147,7 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   const playerElement = all(tree, n => n.props?.video)[0];
   const playback = []; const playerRunner = runner(playerElement.type, { ...playerElement.props, onPlaybackStatus: s => playback.push(s) });
   let playerTree = playerRunner.render();
+  const viewport = find(playerTree, 'review-video-player-viewport'); assert.ok(viewport.props.style.width >= 200); assert.ok(viewport.props.style.height >= 200);
   const playerStage = () => all(playerTree, n => n.type === stage)[0];
   playerStage().props.onStatus({ ready: true, duration: 60 }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).ready, true);
   playerStage().props.onStatus({ playing: true }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).playing, true);

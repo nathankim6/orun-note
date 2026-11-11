@@ -80,7 +80,7 @@ test('missing main PID snapshots last logcat and emits sanitized worker frames b
   const bin = path.join(work, 'bin'); fs.mkdirSync(bin);
   const raw = path.join(work, 'fake-logcat.raw'); fs.writeFileSync(raw, javaCrash);
   fs.writeFileSync(path.join(bin, 'adb'), '#!/bin/sh\nif [ "$1" = logcat ] && [ "$2" = -d ]; then cat "$QA_TEST_LOG"; exit 0; fi\nif [ "$1" = shell ] && [ "$2" = pidof ]; then exit 1; fi\nexit 0\n', { mode: 0o755 });
-  const result = spawnSync(process.execPath, ['scripts/native-android-smoke.mjs'], { encoding: 'utf8', timeout: 10000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, QA_TEST_LOG: raw } });
+  const result = spawnSync(process.execPath, ['scripts/native-android-smoke.mjs'], { encoding: 'utf8', timeout: 20000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, QA_TEST_LOG: raw } });
   assert.equal(result.status, 1);
   assert(result.stdout.includes('process_crash'));
   assert(result.stdout.includes('expo.modules.pdfrenderer.PdfRendererModule'));
@@ -106,7 +106,7 @@ if (args[0] === 'shell' && args[1] === 'pidof') {
 }
 if (args[0] === 'shell' && args[1] === 'cat') console.log('<hierarchy><node text="qa-js-error" content-desc="qa-js-error" bounds="[0,0][1,1]" /></hierarchy>');
 `, { mode: 0o755 });
-  const result = spawnSync(process.execPath, ['scripts/native-android-smoke.mjs'], { encoding: 'utf8', timeout: 10000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, QA_RACE_DIR: dir, QA_RACE_MODE: mode } });
+  const result = spawnSync(process.execPath, ['scripts/native-android-smoke.mjs'], { encoding: 'utf8', timeout: 20000, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, QA_RACE_DIR: dir, QA_RACE_MODE: mode } });
   const commands = fs.readFileSync(path.join(dir, 'commands'), 'utf8').trim().split('\n').map(JSON.parse);
   return { ...result, commands };
 }
@@ -213,7 +213,7 @@ test('failure collection keeps cached telemetry if XML fails and can capture XML
   const xml = '<hierarchy><node resource-id="qa-telemetry" content-desc="' + JSON.stringify(rows).replaceAll('"', '&quot;') + '" /></hierarchy>';
   for (const brokenXML of [true, false]) {
     const printed = [];
-    const context = { lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
+    const context = { lastUINodes: [], lastXMLState: 'unavailable', lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
     const run = runInNewContext(parse + '\n' + collect + '\ncollect;', context); run();
     assert.equal(printed.length, 3); assert(printed.some(s => s.includes('"errorCode":153')));
   }
@@ -258,4 +258,67 @@ test('authoritative fatal category snapshots latest telemetry before throwing', 
   const context = { nodesReadAt: 0, Date, start: Date.now(), pkg: 'com.paperly.study', knownPids: new Set(), crashLogs: () => ({ crash: true }), parseXML: xml => { assert.equal(xml, 'latest-telemetry'); captured = true; }, adb: (...a) => a[1] === 'pidof' ? '777' : a[1] === 'cat' ? 'latest-telemetry' : '', Error };
   const read = runInNewContext(body + '\nread;', context);
   assert.throws(read, /native_or_js_error/); assert(captured);
+});
+
+test('surface summary identifies foreground/dialog/QA state without leaking private labels or packages', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const source = fs.readFileSync('scripts/native-android-smoke.mjs', 'utf8');
+  const body = source.match(/function surfaceSummary\(inputNodes, activity, window, xmlSource\) \{[\s\S]*?\n\}/)?.[0]; assert(body);
+  const summarize = runInNewContext(body + '\nsurfaceSummary;', {});
+  const appNodes = [{ package:'com.paperly.study', text:canary, 'resource-id':canary }, { package:'com.paperly.study', 'content-desc':'open-review-videos' }, { package:'com.paperly.study', text:'qa-boot' }, { package:'com.paperly.study', text:'qa-state-playing-1 qa-ready-1' }];
+  const app = summarize(appNodes, '', 'mCurrentFocus=Window{deadbeef u0 com.paperly.study/.MainActivity ' + canary + '}', 'fresh');
+  assert.equal(app.foreground,'app'); assert.equal(app.uiPackage,'app'); assert.equal(app.nodeCount,4); assert.equal(app.appNodeCount,4); assert.equal(app.qaNodeCount,3);
+  assert(app.uiLabels.includes('root_button')); assert(app.uiLabels.includes('qa_boot')); assert(app.uiLabels.includes('player'));
+  assert(!JSON.stringify(app).includes(canary)); assert(!JSON.stringify(app).includes('com.paperly.study'));
+  const cases = [
+    [[{package:'android','resource-id':'android:id/aerr_close'},{package:'android',text:'Google Play services keeps stopping ' + canary}], '', 'gms_crash'],
+    [[{package:'android','resource-id':'android:id/aerr_close'}], '', 'app_crash'],
+    [[{package:'android','resource-id':'android:id/aerr_wait'}], '', 'anr'],
+    [[], 'mShowingLockscreen=true', 'keyguard'],
+    [[{package:'android',text:'Waiting for debugger'}], '', 'debugger'],
+    [[], 'mCurrentFocus=Window{x u0 com.google.android.permissioncontroller/.GrantPermissionsActivity}', 'permission'],
+    [[], 'mCurrentFocus=Window{x u0 com.google.android.apps.nexuslauncher/com.android.quickstep.interaction.GestureSandboxActivity}', 'gesture_tutorial'],
+    [[], 'mCurrentFocus=Window{x u0 com.android.systemui/.UnknownDialog}', 'unknown'],
+  ];
+  for(const [nodes,window,dialog] of cases) assert.equal(summarize(nodes,'',window,'cached').dialog,dialog);
+  assert.equal(summarize([], 'topResumedActivity=ActivityRecord{x u0 com.android.launcher3/.Launcher}', '', 'unavailable').foreground,'launcher');
+  assert.equal(summarize([], '', canary, 'unavailable').foreground,'unknown');
+});
+test('surface sanitizer exports bounded counts/fixed enums only and drops successful-suite surface events', () => {
+  const bad = {event:'driver_surface',foreground:canary,dialog:canary,uiPackage:canary,xmlSource:canary,nodeCount:10001,appNodeCount:-1,qaNodeCount:1.5,uiLabels:[canary,'qa_boot','qa_boot'],rawXML:canary,package:canary,path:canary};
+  const good = {event:'driver_surface',foreground:'permission',dialog:'permission',uiPackage:'permission',xmlSource:'fresh',nodeCount:20,appNodeCount:0,qaNodeCount:0,uiLabels:['qa_loading'],private:canary};
+  const result=sanitize([bad,good,{event:'suite_result',result:'fail',platform:'android',reason:'ui_timeout'}].map(r=>'QA_JSON '+JSON.stringify(r)).join('\n'),'surface-private');
+  assert.equal(result.status,1); assert(!result.output.includes(canary)); assert(!result.output.includes('rawXML'));
+  assert(result.output.includes('"foreground":"permission"')); assert(result.output.includes('"nodeCount":20'));
+  const parsed=result.output.trim().split('\n').map(JSON.parse).filter(r=>r.event==='driver_surface');
+  assert.equal(parsed[0].nodeCount,undefined); assert.equal(parsed[0].foreground,undefined); assert.deepEqual(parsed[0].uiLabels,['qa_boot']);
+  const passed=sanitize('QA_JSON '+JSON.stringify(good)+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','surface-success');
+  assert.equal(passed.status,0); assert(!passed.output.includes('driver_surface'));
+});
+
+test('synthetic screenshot wrapper captures only authorized failed CI emulator runs and preserves failures', () => {
+  const scenarios = [
+    {name:'approved-failure',driver:1,ci:'true',allow:'1',qemu:'1',image:true,status:1},
+    {name:'real-device-blocked',driver:1,ci:'true',allow:'1',qemu:'0',image:false,status:1},
+    {name:'flag-disabled',driver:1,ci:'true',allow:'0',qemu:'1',image:false,status:1},
+    {name:'not-actions',driver:1,ci:'false',allow:'1',qemu:'1',image:false,status:1},
+    {name:'success-no-image',driver:0,ci:'true',allow:'1',qemu:'1',image:false,status:0},
+    {name:'sanitizer-failure',driver:0,ci:'true',allow:'1',qemu:'1',image:false,status:1,sanitizerFail:true},
+  ];
+  for(const scenario of scenarios) {
+    const dir=fs.mkdtempSync(path.join(work,'screenshot-'));fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'bin'));
+    for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
+    fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
+    if(scenario.sanitizerFail)fs.writeFileSync(path.join(dir,'scripts/native-sanitize.mjs'),'process.exitCode=1;');
+    fs.writeFileSync(path.join(dir,'bin/timeout'),'#!/bin/sh\nshift\nexec "$@"\n',{mode:0o755});
+    fs.writeFileSync(path.join(dir,'bin/adb'),'#!/bin/sh\nif [ "$1" = shell ] && [ "$2" = getprop ]; then printf "%s\\n" "$QA_MOCK_QEMU"; exit 0; fi\nif [ "$1" = exec-out ] && [ "$2" = screencap ]; then printf "\\211PNG\\r\\n\\032\\nS"; exit 0; fi\nexit 1\n',{mode:0o755});
+    const result=spawnSync('bash',['scripts/native-android-ci.sh'],{cwd:dir,encoding:'utf8',timeout:20000,env:{...process.env,PATH:path.join(dir,'bin')+path.delimiter+process.env.PATH,GITHUB_ACTIONS:scenario.ci,NATIVE_SMOKE_ALLOW_SYNTHETIC_SCREENSHOT:scenario.allow,QA_MOCK_QEMU:scenario.qemu,QA_MOCK_DRIVER:String(scenario.driver)}});
+    assert.equal(result.status,scenario.status,scenario.name+': '+result.stderr);
+    assert.equal(fs.existsSync(path.join(dir,'qa/output/android-synthetic-qa-failure.png')),scenario.image,scenario.name);
+  }
+  const workflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');
+  assert(workflow.includes('force-avd-creation: true'));
+  assert(workflow.includes('name: Synthetic-QA-failure-only-Android-screenshot'));
+  assert(workflow.includes('retention-days: 1'));
+  assert(!workflow.includes('path: qa/output/*'));
 });
