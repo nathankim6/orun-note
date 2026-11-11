@@ -9,7 +9,7 @@ import { ReviewVideosScreen } from '../src/features/viewer/ReviewVideos';
 import type { StageStatus } from '../src/features/viewer/YouTubeStage';
 import { useContentProtection } from '../src/lib/security';
 import { loadVideos } from './fixtures/videos';
-import { pdfSmoke } from './pdf-smoke';
+import { pdfSmoke, pdfFailureSummary } from './pdf-smoke';
 import { playerErrorCode, jsExceptionName } from './error-codes';
 import { marker, telemetry, subscribe } from './telemetry';
 
@@ -50,7 +50,7 @@ function QA() {
           observed.current.clear(); setFlags('qa-loading'); setCycle(cycle + 1); setOpen(true); marker('list_open', { cycle: cycle + 1 });
         }}><Text>Open review videos</Text></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="run-pdf-smoke" testID="run-pdf-smoke" disabled={pdf !== 'idle'} onPress={async () => {
-          setPDF('running'); try { setPDF(await pdfSmoke()); } catch { marker('pdf_result', { result: 'fail' }); setPDF('fail'); }
+          setPDF('running'); try { setPDF(await pdfSmoke()); } catch (error) { marker('pdf_result', { result: 'fail', ...pdfFailureSummary(error) }); setPDF('fail'); }
         }}><Text>Run synthetic PDF pipeline</Text></Pressable>
       </View>}
     <View pointerEvents="none" style={styles.status}>

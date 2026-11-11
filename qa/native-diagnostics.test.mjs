@@ -451,3 +451,65 @@ test('manual platform selection defaults all, isolates concurrency and skips onl
   assert(source.includes("if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}"));assert(source.includes("if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}"));
   assert(source.includes('cancel-in-progress: false'));
 });
+
+async function mockedPdfSmoke(options={}) {
+  const {createRequire}=await import('node:module'),{runInNewContext}=await import('node:vm');const ts=createRequire(import.meta.url)('typescript');
+  const code=ts.transpileModule(fs.readFileSync('qa/pdf-smoke.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
+  const events=[],calls=[];let timings=0,clock=0;
+  const reject=(stage)=>{calls.push(stage);if(options.fail===stage)throw Error(options.message??canary);};
+  const files={cacheDirectory:'file:///private/'+canary+'/',EncodingType:{Base64:'base64'},writeAsStringAsync:async()=>reject('write_source'),deleteAsync:async()=>reject('cleanup')};
+  const renderer={
+    hasReadingRenderer:()=>options.fail!=='reading_api',
+    importFile:async()=>{reject('import');return {uri:'file:///encrypted/'+canary+'.pdfenc'};},
+    getInfo:async()=>{reject('info');return {pageCount:options.pages??2};},
+    renderPage:async(...args)=>{reject('render_detail');assert.equal(args[1],0);assert.equal(args[2],2400);if(options.fail==='await_render')return new Promise(()=>{});return 'private-render';},
+    renderReading:async(...args)=>{reject('render_reading');assert.equal(args[1],1);assert.equal(args[2],900);if(options.fail==='await_render')return new Promise(()=>{});return 'private-render';},
+    deleteFile:async()=>{calls.push('cleanup_import');if(options.cleanupAlsoFails)throw Error(canary);},
+    takeRenderTimings:async()=>{timings++;if(timings%2===1)return [];reject('timings');return options.noTimings?[]:[{lane:'detail',page:0,width:2400,totalMs:100,uri:canary},{lane:'reading',page:1,width:900,totalMs:1,uri:canary}];},
+  };
+  const context={exports:{},performance:{now:()=>++clock},Date:{now:()=>1},setTimeout:(fn,ms)=>{if(ms===25||options.fail==='await_render')queueMicrotask(fn);return 1;},clearTimeout:()=>{},require:name=>name==='expo-file-system/legacy'?files:name==='../modules/pdf-renderer'?{PdfRenderer:renderer}:name==='./fixtures/pdf.generated'?{PDF_BASE64:'U1lOVEhFVElD'}:name==='./telemetry'?{marker:(event,values)=>events.push({event,...values})}:(()=>{throw Error('unexpected test import');})()};
+  runInNewContext(code,context);
+  let summary;
+  try{await context.exports.pdfSmoke();}catch(error){summary=context.exports.pdfFailureSummary(error);events.push({event:'pdf_result',result:'fail',...summary});}
+  return {events,calls,summary,api:context.exports};
+}
+test('PDF diagnostics identify write/import/info/render/await/timings/cleanup failures without native messages', async () => {
+  const cases=[['write_source','write_source'],['import','import'],['info','info'],['render_detail','render_detail'],['render_reading','render_reading'],['await_render','await_render'],['timings','timings'],['cleanup','cleanup']];
+  for(const [fail,stage] of cases){
+    const result=await mockedPdfSmoke({fail});assert.equal(result.summary.stage,stage);assert.equal(result.summary.trial,1);
+    assert.equal(result.summary.reason,fail==='await_render'?'render_timeout':'operation_failed');
+    assert(result.events.some(r=>r.event==='pdf_stage'&&r.stage===stage&&r.trial===1));
+    assert(result.events.some(r=>r.event==='pdf_failure'&&r.stage===stage&&!r.secondary));
+    assert(!JSON.stringify(result.events).includes(canary));
+    if(['write_source','import','info'].includes(fail))assert(!result.events.some(r=>r.event==='pdf_completion'));
+  }
+});
+test('PDF maps only exact own failures and known keychain categories; unknown status stays private', async () => {
+  const entitlement=await mockedPdfSmoke({fail:'import',message:'native crypto: keychain -34018 '+canary});assert.equal(entitlement.summary.reason,'keychain_entitlement');assert.equal(entitlement.summary.stage,'import');
+  const locked=await mockedPdfSmoke({fail:'import',message:'keychain (-25308) '+canary});assert.equal(locked.summary.reason,'keychain_locked');
+  const unknown=await mockedPdfSmoke({fail:'import',message:'keychain -99999 '+canary});assert.equal(unknown.summary.reason,'operation_failed');
+  assert.equal(unknown.api.pdfFailureReason(Error('keychain -340180 '+canary)),'operation_failed');
+  assert.equal((await mockedPdfSmoke({pages:1})).summary.reason,'fixture_pages');
+  assert.equal((await mockedPdfSmoke({noTimings:true})).summary.reason,'missing_native_timings');
+  assert.equal((await mockedPdfSmoke({fail:'reading_api'})).summary.reason,'reading_api_missing');
+  const ordered=await mockedPdfSmoke();assert.equal(ordered.summary.reason,'reading_serialized');assert.equal(ordered.summary.trial,3);
+  for(const stage of ['write_source','import','info','render_detail','render_reading','await_render','timings','cleanup'])assert(ordered.events.some(r=>r.event==='pdf_stage'&&r.stage===stage));
+  assert.equal(ordered.events.filter(r=>r.event==='pdf_completion'&&r.lane==='reading').length,3);
+  assert.equal(ordered.events.filter(r=>r.event==='pdf_completion'&&r.lane==='detail').length,3);
+});
+test('PDF cleanup cannot replace the original failing stage and root preserves only safe summary', async () => {
+  const result=await mockedPdfSmoke({fail:'info',cleanupAlsoFails:true,message:'keychain -34018 '+canary});
+  assert.equal(result.summary.stage,'info');assert.equal(result.summary.reason,'keychain_entitlement');
+  assert(result.events.some(r=>r.event==='pdf_failure'&&r.stage==='cleanup'&&r.secondary===true));
+  assert(result.events.some(r=>r.event==='pdf_failure'&&r.stage==='info'&&r.secondary===false));
+  assert(!JSON.stringify(result.events).includes(canary));
+  const root=fs.readFileSync('qa/entry.tsx','utf8');assert(root.includes("catch (error) { marker('pdf_result', { result: 'fail', ...pdfFailureSummary(error) })"));
+});
+test('PDF sanitizer validates fixed stage/trial/reason fields and strips private payloads/status numbers', async () => {
+  const result=await mockedPdfSmoke({fail:'import',message:'keychain -34018 '+canary});
+  const rows=[...result.events,{event:'pdf_stage',stage:canary,trial:4},{event:'pdf_failure',stage:'import',trial:1,reason:canary,message:canary,status:-99999},{event:'pdf_failure',stage:'import',trial:1,reason:'keychain_entitlement',message:canary,uri:canary,status:-34018},{event:'suite_result',result:'pass',platform:'android'}];
+  const output=sanitize(rows.map(r=>'QA_JSON '+JSON.stringify(r)).join('\n'),'pdf-stage-private');
+  assert.equal(output.status,1);assert(output.output.includes('keychain_entitlement'));assert(output.output.includes('"stage":"import"'));
+  assert(!output.output.includes(canary));assert(!output.output.includes('-34018'));assert(!output.output.includes('-99999'));
+  assert(!output.output.includes('"trial":4'));assert(!output.output.includes('"message"'));assert(!output.output.includes('"uri"'));
+});

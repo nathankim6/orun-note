@@ -85,3 +85,11 @@ gh workflow run native-smoke.yml --ref YOUR_INTEGRATED_BRANCH -f platform=all
 ```
 
 Concurrency includes the selected platform and does not cancel in-progress work, allowing a new Android diagnostic alongside an older iOS build. Unselected platform jobs are skipped. A single-platform diagnostic is **not release evidence**: the existing exact-commit release guard still requires both `android` and `ios` jobs to have completed successfully in the verified run and rejects either skipped job. No release-gate implementation was weakened.
+
+### PDF-first failure-stage diagnostics only
+
+The parent reported that candidate-204 iOS reached boot then failed the PDF-first step before any render-completion/timing records. The failing operation and cause remain unknown. QA now records fixed `pdf_stage` events with trial1–3 before `write_source`, `import`, `info`, `render_detail`, `render_reading`, `await_render`, `timings` and `cleanup`. `pdf_failure` and the root `pdf_result` retain the original safe stage/trial/reason; a later cleanup failure is secondary and cannot replace the first failure. Async detail/reading rejection preserves its own lane-stage rather than being mislabeled as the await stage.
+
+Reason enums map exact QA-owned failures (`reading_api_missing`, `fixture_pages`, `render_timeout`, `missing_native_timings`, `reading_serialized`), or an observed native `keychain -34018` / `keychain -25308` phrase to `keychain_entitlement` / `keychain_locked`. These are bounded diagnostic categories, not an entitlement/locked-device causal conclusion. Unknown errors/status codes become `operation_failed`. Raw messages, unknown status values, paths, URIs, imported IDs and credentials are never copied into markers or rethrown QA failure objects. The sanitizer independently validates stage, trial and reason, strips private fields and rejects any attempt to pass after a PDF failure. The existing three-trial relative-order requirement and 90-second render deadline are unchanged.
+
+The parent reported the workflow as manually disabled; this diagnostic change does not re-enable it, dispatch it, alter signing or work around platform keychain/crypto behavior. Any decision to resume the workflow remains with the user. No native success or cause is claimed from local mocked tests.

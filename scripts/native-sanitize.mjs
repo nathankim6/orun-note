@@ -21,6 +21,19 @@ for (const line of text.split('\n')) {
   const at = line.indexOf('QA_JSON '); if (at < 0) continue;
   try {
     const row = JSON.parse(line.slice(at + 8));
+    if (['pdf_stage','pdf_failure','pdf_result'].includes(row.event)) {
+      const validStage=['write_source','import','info','render_detail','render_reading','await_render','timings','cleanup'].includes(row.stage);
+      const validTrial=Number.isInteger(row.trial)&&row.trial>=1&&row.trial<=3;
+      const validReason=['reading_api_missing','fixture_pages','render_timeout','missing_native_timings','reading_serialized','keychain_entitlement','keychain_locked','operation_failed'].includes(row.reason);
+      if(row.event==='pdf_stage'&&(!validStage||!validTrial))continue;
+      if(row.event==='pdf_failure'&&(!validStage||!validTrial||!validReason))continue;
+      if(row.event==='pdf_result'&&!['pass','fail','inconclusive'].includes(row.result))continue;
+      const clean={event:row.event};
+      if(validStage)clean.stage=row.stage;if(validTrial)clean.trial=row.trial;if(validReason)clean.reason=row.reason;
+      if(row.event==='pdf_failure'&&typeof row.secondary==='boolean')clean.secondary=row.secondary;
+      if(row.event==='pdf_result'){clean.result=row.result;if(Number.isInteger(row.trials)&&row.trials>=1&&row.trials<=3)clean.trials=row.trials;}
+      rows.push(clean);continue;
+    }
     if (row.event === 'emulator_readiness') {
       const clean={event:'emulator_readiness'};
       for(const key of ['bootComplete','bootAnimationStopped','systemUiAlive','xmlDumpSucceeded','xmlPresent','focusReady','displayReady'])if(typeof row[key]==='boolean')clean[key]=row[key];
@@ -55,9 +68,9 @@ for (const line of text.split('\n')) {
 const report = extractCrashDiagnostics(text, { platform });
 const crash = report.crash;
 if (crash) rows.push({ event: 'suite_result', platform, result: 'fail', reason: 'native_or_js_error' });
-const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || (r.event === 'suite_result' && r.result === 'fail'));
+const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
 if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail')) {
-  const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable') ? 'network_or_player_unavailable' : 'driver_failure';
+  const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable') ? 'network_or_player_unavailable' : rows.some(r => r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass')) ? 'pdf_failure' : 'driver_failure';
   rows.push({ event: 'suite_result', platform, result: 'fail', reason });
 }
 // Diagnostics are retained only on a failing suite. Each field is validated again
