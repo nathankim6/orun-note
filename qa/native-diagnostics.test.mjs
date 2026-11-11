@@ -110,20 +110,36 @@ if (args[0] === 'shell' && args[1] === 'cat') console.log('<hierarchy><node text
   const commands = fs.readFileSync(path.join(dir, 'commands'), 'utf8').trim().split('\n').map(JSON.parse);
   return { ...result, commands };
 }
-test('delayed initial PID is awaited after am start -W, not misclassified as a crash', () => {
-  const result = launchRaceDriver('delayed');
-  assert.equal(result.status, 1); // Deliberately injected UI JS error terminates this unit fixture.
-  assert(result.commands.some(a => JSON.stringify(a) === JSON.stringify(['shell', 'am', 'start', '-W', '-n', 'com.paperly.study/.MainActivity'])));
-  assert(!result.commands.some(a => a.includes('monkey')));
-  assert(result.commands.filter(a => a[1] === 'pidof').length >= 4);
-  assert(result.commands.some(a => a[1] === 'uiautomator'));
-  assert(result.stdout.includes('"reason":"js_error"'));
-  assert(!result.stdout.includes('process_crash'));
-  assert(!result.stdout.includes('startup_timeout'));
+test('initial PID readiness uses deterministic virtual time for delay, timeout and startup crash', async () => {
+  const {runInNewContext}=await import('node:vm');
+  const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');
+  const body=source.match(/async function waitForInitialPid\(\) \{[\s\S]*?\n\}/)?.[0];assert(body);
+  assert(body.includes('Date.now() + 15000')); // Runtime grace is not relaxed by this test.
+  const exercise=async mode=>{
+    let tick=0,probes=0,crashChecks=0;const sleeps=[],knownPids=new Set();
+    const context={Date:{now:()=>tick},pkg:'com.paperly.study',knownPids,Error,
+      adb:(...args)=>{
+        assert.deepEqual(args,['shell','pidof','com.paperly.study']);probes++;
+        if(mode==='delayed'&&probes===2)throw Error('not visible yet');
+        return mode==='delayed'&&probes>=3?'777':'';
+      },
+      crashLogs:force=>{crashChecks++;assert.equal(force,mode!=='delayed'||probes<3);return {crash:mode==='crash'};},
+      sleep:async ms=>{assert.equal(ms,200);sleeps.push(ms);tick+=ms;},
+    };
+    const wait=runInNewContext(body+'\nwaitForInitialPid;',context);
+    if(mode==='delayed')await wait();
+    else await assert.rejects(wait,mode==='crash'?/process_crash/:/startup_timeout/);
+    return {tick,probes,crashChecks,sleeps,knownPids};
+  };
+  const delayed=await exercise('delayed');assert.equal(delayed.probes,3);assert.equal(delayed.crashChecks,3);assert.equal(delayed.tick,400);assert.deepEqual(delayed.sleeps,[200,200]);assert.deepEqual([...delayed.knownPids],['777']);
+  const missing=await exercise('missing');assert.equal(missing.tick,15000);assert.equal(missing.probes,75);assert.equal(missing.crashChecks,75);assert.equal(missing.knownPids.size,0);
+  const crashed=await exercise('crash');assert.equal(crashed.tick,0);assert.equal(crashed.probes,1);assert.equal(crashed.crashChecks,1);assert.equal(crashed.sleeps.length,0);
 });
 test('PID disappearance after first observation fails immediately without startup retry', () => {
   const result = launchRaceDriver('death');
   assert.equal(result.status, 1);
+  assert(result.commands.some(a => JSON.stringify(a) === JSON.stringify(['shell', 'am', 'start', '-W', '-n', 'com.paperly.study/.MainActivity'])));
+  assert(!result.commands.some(a => a.includes('monkey')));
   assert(result.stdout.includes('"reason":"process_crash"'));
   assert(!result.stdout.includes('startup_timeout'));
   // Only failure-only telemetry capture may dump XML; it never re-enters health/PID checks.
@@ -387,4 +403,51 @@ test('both native drivers enforce a <=60s progression gate after explicit play b
   ]) {const p=source.indexOf(play),g=source.indexOf(progress,p),end=source.indexOf(pause,p);assert(p>=0&&g>p&&end>g);assert(source.includes('qa-progressing'));}
   assert(android.includes('cycle <= 20'));assert(android.includes('cycle <= 3'));assert(ios.includes('1...20'));assert(ios.includes('cycle <= 3'));
   const pdf=fs.readFileSync('qa/pdf-smoke.ts','utf8');assert(pdf.includes('trial <= 3'));
+});
+
+test('preflight uses full window focus or safe resumed-activity fallback, never explicit-null/unknown focus', async () => {
+  const {preflightFocus,classifyPreflight,preflight}=await import('../scripts/native-android-preflight.mjs');
+  const xml='<hierarchy><node package="com.android.launcher3" text="'+canary+'"/></hierarchy>';
+  const activity='topResumedActivity=ActivityRecord{abc u0 com.android.launcher3/.Launcher t12}';
+  const scoped='WINDOW MANAGER WINDOWS (dumpsys window windows)\nWindow #0 Window{abc u0 com.android.launcher3/.Launcher}';
+  assert.deepEqual(preflightFocus(scoped,activity),{source:'activity',kind:'launcher',ready:true});
+  assert.equal(classifyPreflight(xml,scoped,activity),'ready');
+  assert.equal(classifyPreflight(xml,'mCurrentFocus=null',activity),'waiting');
+  assert.equal(classifyPreflight(xml,'mCurrentFocus=Window{abc u0 com.private.'+canary+'/.Dialog}',activity),'waiting');
+  assert.equal(classifyPreflight('',scoped,activity),'waiting');
+  assert.equal(preflightFocus('mFocusedWindow=Window{abc u0 com.android.launcher3/.Launcher}').source,'display');
+  let tick=0;const calls=[],reported=[];
+  const query=(args,timeout)=>{calls.push({args,timeout});if(args[1]==='getprop')return args[2]==='sys.boot_completed'?'1':'stopped';if(args[1]==='pidof')return '123';if(args[1]==='cat')return xml;if(args[1]==='dumpsys')return args[2]==='window'?'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}':activity;if(args[1]==='wm')return args[2]==='size'?'Physical size: 1280x800':'Physical density: 160';if(args[1]==='uiautomator'){assert(timeout>6000);tick+=7000;}return '';};
+  assert.equal(await preflight(query,(...x)=>reported.push(x),async ms=>{tick+=ms;},()=>tick),true);
+  assert(calls.some(c=>JSON.stringify(c.args)===JSON.stringify(['shell','dumpsys','window'])));
+  assert(!calls.some(c=>JSON.stringify(c.args)===JSON.stringify(['shell','dumpsys','window','windows'])));
+  assert(calls.every(c=>c.timeout<=(c.args[1]==='uiautomator'?12000:6000)));
+});
+test('failed readiness exports exact missing criteria without trusting stale/no XML or private focus data', async () => {
+  const {preflight}=await import('../scripts/native-android-preflight.mjs');
+  let tick=0;const reports=[];
+  const query=args=>args[1]==='getprop'?(args[2]==='sys.boot_completed'?'1':'stopped'):args[1]==='pidof'?'123':args[1]==='dumpsys'?'mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher}':args[1]==='wm'?(args[2]==='size'?'Physical size: 1280x800':'Physical density: 160'):'';
+  assert.equal(await preflight(query,(...r)=>reports.push(r),async ms=>{tick+=ms;},()=>tick),false);
+  assert.equal(tick,60000);const [reason,detail]=reports.at(-1);assert.equal(reason,'emulator_os_not_ready');assert.equal(detail.bootComplete,true);assert.equal(detail.focusReady,true);assert.equal(detail.xmlPresent,false);assert.deepEqual(detail.missing,['xml']);
+  const input={event:'emulator_readiness',phase:'before_install',...detail,rawFocus:canary,package:canary,xml:canary};
+  const result=sanitize('QA_JSON '+JSON.stringify(input)+'\nQA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"emulator_os_not_ready"}','readiness-private');
+  assert.equal(result.status,1);assert(result.output.includes('"missing":["xml"]'));assert(!result.output.includes(canary));
+  const malicious=sanitize('QA_JSON '+JSON.stringify({event:'emulator_readiness',bootComplete:canary,focusSource:canary,focusKind:canary,missing:[canary,'focus']})+'\nQA_JSON {"event":"suite_result","result":"fail","platform":"android"}','readiness-malicious');assert(!malicious.output.includes(canary));
+  const passed=sanitize('QA_JSON '+JSON.stringify(input)+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','readiness-passed');assert(!passed.output.includes('emulator_readiness'));
+});
+test('activity fallback never bypasses app ANR or a permission dialog; failed dump cannot accept cached XML', async () => {
+  const {classifyPreflight,preflight}=await import('../scripts/native-android-preflight.mjs');const activity='mResumedActivity: ActivityRecord{x u0 com.android.launcher3/.Launcher}';
+  assert.equal(classifyPreflight('<node package="android" resource-id="android:id/aerr_wait"/>','',activity),'emulator_app_anr');
+  assert.equal(classifyPreflight('<node package="com.android.permissioncontroller"/>','',activity),'emulator_os_blocked');
+  assert.equal(classifyPreflight('<node package="com.android.systemui" resource-id="com.android.systemui:id/keyguard_status_view"/>','',activity),'emulator_os_blocked');
+  let tick=0,catCalls=0;const reports=[];
+  const query=args=>{if(args[1]==='uiautomator')throw Error(canary);if(args[1]==='cat'){catCalls++;return '<node package="com.android.launcher3"/>';}if(args[1]==='getprop')return args[2]==='sys.boot_completed'?'1':'stopped';if(args[1]==='pidof')return '123';if(args[1]==='dumpsys')return 'mCurrentFocus=Window{x u0 com.android.launcher3/.Launcher}';if(args[1]==='wm')return args[2]==='size'?'Physical size: 1280x800':'Physical density: 160';return '';};
+  assert.equal(await preflight(query,(...r)=>reports.push(r),async ms=>{tick+=ms;},()=>tick),false);assert.equal(catCalls,0);assert(reports.at(-1)[1].missing.includes('xml'));
+});
+test('manual platform selection defaults all, isolates concurrency and skips only the unselected diagnostic job', () => {
+  const source=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');
+  assert(source.includes('default: all'));assert(source.includes('options: [all, android, ios]'));
+  assert(source.includes("group: native-smoke-${{ github.ref }}-${{ inputs.platform || 'all' }}"));
+  assert(source.includes("if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}"));assert(source.includes("if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}"));
+  assert(source.includes('cancel-in-progress: false'));
 });

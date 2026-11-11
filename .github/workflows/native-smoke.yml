@@ -1,14 +1,22 @@
 name: Native simulator smoke (QA only)
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Simulator platform (single-platform runs are diagnostic only)
+        type: choice
+        required: true
+        default: all
+        options: [all, android, ios]
 permissions:
   contents: read
   actions: read
 concurrency:
-  group: native-smoke-${{ github.ref }}
+  group: native-smoke-${{ github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: false
 jobs:
   android:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
@@ -71,6 +79,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
   ios:
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}
     runs-on: macos-15
     timeout-minutes: 90
     env:

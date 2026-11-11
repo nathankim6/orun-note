@@ -4,7 +4,7 @@ const phaseFields = ['page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs',
 export function createPreparationReporter(os: string, phases: () => Promise<unknown[]>, report: (kind: 'render', message: string) => void) {
   let attempts = 0;
   return async (lane: PdfLane, t: RenderTiming) => {
-    if (os === 'web' || attempts >= 2 || t.index == null || t.width == null || (t.waitMs < 1000 && t.preparationMs < 800)) return;
+    if (os === 'web' || attempts >= 2 || t.index == null || t.width == null || t.width < 600 || (t.waitMs < 1000 && t.preparationMs < 800)) return;
     attempts++;
     let detail: Record<string, number | string>[] = [];
     try {
