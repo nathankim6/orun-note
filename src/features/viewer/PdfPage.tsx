@@ -66,7 +66,7 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
   const current = image.page === page ? image : null;
   const rendered = useRef({ reading: current?.reading, detail: current?.detail }); rendered.current = { reading: current?.reading, detail: current?.detail };
   return { onLoad: (source = current?.detail ?? current?.reading ?? null) => {
-    if (pageRef.current !== page || !source || (source !== rendered.current.reading && source !== rendered.current.detail)) return;
+    if (pageRef.current !== page || trackingRef.current !== tracking || !source || (source !== rendered.current.reading && source !== rendered.current.detail)) return;
     tracking.loads.get(source)?.(); setPresentedRequest(tracking);
   }, presented: presentedRequest === tracking, reading: current?.reading ?? null, detail: current?.detail ?? null, src: current?.detail ?? current?.reading ?? null, err: !!current?.err && !current.detail && !current.reading };
 }
