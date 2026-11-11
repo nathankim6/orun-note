@@ -30,6 +30,8 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - run: npm ci
+      - name: Test administrator recording policy
+        run: node scripts/test-content-protection.js
       - name: Test diagnostic privacy and process attribution (no device)
         run: node --test qa/native-diagnostics.test.mjs
       - name: Allow emulator KVM
@@ -95,7 +97,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Unsigned iOS Simulator build and XCTest UI smoke
+      - name: Test administrator recording policy
+        run: node scripts/test-content-protection.js
+      - name: Test CI-only simulator signing guard
+        run: node --test qa/native-ios-signing.test.mjs
+      - name: iOS Simulator build and XCTest UI smoke (QA ad-hoc)
         timeout-minutes: 80
         run: |
           scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform ios --no-install && (cd ios && pod install) && scripts/native-ios-smoke.sh'

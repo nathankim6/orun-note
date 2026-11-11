@@ -37,36 +37,83 @@ export function sanitizeDiagnostic(row) {
 }
 function appProcess(name) { return /^com\.paperly\.study(?::[A-Za-z0-9_.:-]+)?$/.test(name); }
 function androidScope(text, pids) {
-  const lines = text.split('\n').slice(-8000);
-  const known = new Set(pids.map(String));
-  // Crash headers recover app/worker PIDs even after pidof can no longer see them.
+  const lines = text.split('\n').slice(-8000), owned = new Map(), scoped = [];
+  const current = new Set(pids.map(String));
+  let pending = null, tombstone = null, uncertain = false;
+  const role = name => name === 'com.paperly.study' ? 'main' : appProcess(name) ? 'worker' : 'webview';
+  const add = (value, processRole, attribution) => scoped.push({ text: value, role: processRole, attribution });
   for (const line of lines) {
-    const process = line.match(/\bProcess: ([A-Za-z0-9_.:-]+), PID: (\d+)\b/);
-    if (process && appProcess(process[1])) known.add(process[2]);
-    // WebView sandbox launch attributed to this app, including its isolated children.
-    const launch = line.match(/\bStart proc (\d+):([^\s/]+).*\bfor\s+\{com\.paperly\.study\//);
-    if (launch) known.add(launch[1]);
-  }
-  const scoped = [];
-  let tombstoneOwner = null, tombstoneLines = 0;
-  for (const line of lines) {
-    const owner = line.match(/>>> ([A-Za-z0-9_.:-]+) <<</);
     const prefix = line.match(/^\s*\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+([^:]+):\s?(.*)$/);
-    if (owner) {
-      tombstoneOwner = appProcess(owner[1]) ? prefix?.[1] ?? 'plain' : null;
-      tombstoneLines = 0;
-      if (tombstoneOwner) scoped.push(line);
-    } else if (prefix && known.has(prefix[1])) scoped.push(prefix[2].trim() + ': ' + prefix[3]);
-    else if (tombstoneOwner && ++tombstoneLines <= 160 && (!prefix || prefix[1] === tombstoneOwner)) scoped.push(prefix?.[3] ?? line);
+    const pid = prefix?.[1], tag = prefix?.[2].trim(), body = prefix?.[3] ?? line;
+    const launch = body.match(/\bStart proc (\d+):([^\s/]+)/);
+    if (launch) {
+      owned.delete(launch[1]);
+      if (appProcess(launch[2]) || /\bfor\s+\{com\.paperly\.study\//.test(body)) owned.set(launch[1], role(launch[2]));
+    }
+    const death = body.match(/\bProcess ([^ ]+) \(pid (\d+)\) has died/);
+    if (death) owned.delete(death[2]);
+    // DEBUG/crash_dump PIDs identify the reporter, never the crashed process.
+    const reporter = tag === 'DEBUG' || /^crash_dump/.test(tag ?? '');
+    if (reporter || !prefix) {
+      if (/\*\*\* \*\*\*|^pid: \d+|^Cmdline:/.test(body)) {
+        tombstone = { reporter: pid ?? 'plain', lines: [], owner: null, count: 0 };
+      }
+      const owner = body.match(/>>> ([A-Za-z0-9_.:-]+) <<</) ?? body.match(/^Cmdline: ([A-Za-z0-9_.:-]+)/);
+      if (owner) {
+        if (!tombstone || tombstone.reporter !== (pid ?? 'plain') || tombstone.owner !== null) tombstone = { reporter: pid ?? 'plain', lines: [], owner: null, count: 0 };
+        tombstone.owner = appProcess(owner[1]) ? role(owner[1]) : 'unrelated';
+        if (tombstone.owner !== 'unrelated') for (const entry of tombstone.lines) add(entry, tombstone.owner, 'named_tombstone');
+      }
+      if (tombstone && tombstone.reporter === (pid ?? 'plain') && ++tombstone.count <= 160) {
+        if (tombstone.owner && tombstone.owner !== 'unrelated') add(body, tombstone.owner, 'named_tombstone');
+        else if (!tombstone.owner) tombstone.lines.push(body);
+      }
+      if (reporter || tombstone) continue;
+    }
+    const process = body.match(/\bProcess: ([A-Za-z0-9_.:-]+), PID: (\d+)\b/);
+    if (/FATAL EXCEPTION/.test(body)) {
+      pending = { pid, text: body, role: owned.get(pid) };
+      continue; // Defer until its Process header can reject a reused PID.
+    }
+    if (process) {
+      owned.delete(process[2]);
+      if (appProcess(process[1]) && (!pid || pid === process[2])) {
+        const processRole = role(process[1]); owned.set(process[2], processRole);
+        // Only the adjacent Java header is retrospectively attached, not history.
+        if (pending?.pid === pid) add(pending.text, processRole, 'named_process');
+      }
+      pending = null;
+    } else if (pending && pending.pid === pid) {
+      if (pending.role) add(pending.text, pending.role, 'temporal_process');
+      else if (current.has(pid)) uncertain = true;
+      pending = null;
+    }
+    if (pid && owned.has(pid)) add(tag + ': ' + body, owned.get(pid), 'temporal_process');
+    else if (pid && current.has(pid) && CRASH_PATTERN.test(body)) uncertain = true;
   }
-  return scoped.join('\n');
+  if (pending?.role) add(pending.text, pending.role, 'temporal_process');
+  else if (pending && current.has(pending.pid)) uncertain = true;
+  return { entries: scoped, uncertain };
 }
+
+// New provenance records contain only enums, booleans and bounded numeric metadata.
+export function sanitizeEvidence(row) {
+  if (!row || !['driver_evidence', 'driver_milestones', 'driver_telemetry'].includes(row.event)) return null;
+  const out = { event: row.event };
+  const enums = { origin: ['trigger', 'collection'], category: ['none', 'java', 'javascript', 'native', 'renderer', 'uncertain', 'process_loss', 'ui', 'timeout', 'driver'], role: ['main', 'worker', 'webview', 'mixed', 'unknown'], attribution: ['explicit', 'uncertain', 'none'], xmlSource: ['fresh', 'cached', 'unavailable'] };
+  for (const [key, values] of Object.entries(enums)) if (values.includes(row[key])) out[key] = row[key];
+  for (const key of ['crash', 'logReadSucceeded', 'cached', 'initialPid', 'root', 'pdfPass', 'list', 'ready', 'progress']) if (typeof row[key] === 'boolean') out[key] = row[key];
+  for (const key of ['cycle', 'record']) if (Number.isInteger(row[key]) && row[key] >= 0 && row[key] <= 10000) out[key] = row[key];
+  return out;
+}
+
 export function extractCrashDiagnostics(text, { platform, pids = [], force = false } = {}) {
   // Existing QA_JSON may contain diagnostic class names; don't treat those as raw crash evidence.
   const raw = text.split('\n').filter(line => !line.includes('QA_JSON ')).join('\n');
-  const scoped = platform === 'android' ? androidScope(raw, pids) : raw;
+  const scope = platform === 'android' ? androidScope(raw, pids) : null;
+  const scoped = scope ? scope.entries.map(row => row.text).join('\n') : raw;
   const crash = CRASH_PATTERN.test(scoped);
-  if (!crash && !force) return { crash: false, diagnostics: [] };
+  if (!crash && !force && !scope?.uncertain) return { crash: false, diagnostics: [] };
   const rows = [], seen = new Set(), counts = {};
   const add = row => {
     const clean = sanitizeDiagnostic(row); if (!clean) return;
@@ -104,5 +151,10 @@ export function extractCrashDiagnostics(text, { platform, pids = [], force = fal
       if (/libc\+\+abi:.*terminating/i.test(line)) add({ event: 'crash_ios_exception', iosException: 'CPP_TERMINATE' });
     }
   }
-  return { crash, diagnostics: rows };
+  const result = { crash, diagnostics: rows };
+  if (scope && (crash || scope.uncertain || force)) {
+    const roles = new Set(scope.entries.filter(row => CRASH_PATTERN.test(row.text)).map(row => row.role));
+    result.evidence = { category: crash ? /FATAL EXCEPTION/.test(scoped) ? 'java' : /JavascriptException|ReactNativeJS|Unhandled JS Exception/.test(scoped) ? 'javascript' : /Render(?:er)? process/i.test(scoped) ? 'renderer' : 'native' : scope.uncertain ? 'uncertain' : 'none', role: roles.size > 1 ? 'mixed' : [...roles][0] ?? 'unknown', attribution: crash ? 'explicit' : scope.uncertain ? 'uncertain' : 'none', crash };
+  }
+  return result;
 }

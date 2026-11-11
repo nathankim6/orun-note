@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ ( "${CI:-}" != "true" && "${CI:-}" != "1" ) || "${GITHUB_ACTIONS:-}" != "true" || "${NATIVE_SMOKE_QA:-}" != "1" ]]; then echo "ios_qa_signing_failed:requires_ci_qa" >&2; exit 1; fi
 mkdir -p qa/output qa/build
 command -v xcodegen >/dev/null || brew install xcodegen
 UDID=$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{const d=Object.values(JSON.parse(s).devices).flat().find(x=>x.isAvailable&&x.name.startsWith("iPad"));if(!d)process.exit(1);console.log(d.udid)})')
 xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
 xcodebuild -workspace ios/Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination "id=$UDID" -derivedDataPath qa/build/app CODE_SIGNING_ALLOWED=NO build
-xcrun simctl install "$UDID" qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
+APP=qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
+# CI simulator QA app only: ad-hoc sign with synthetic entitlements, then fail closed unless bundle/signature/entitlements agree.
+export PAPERLY_IOS_QA_SIGNING=1
+node scripts/native-ios-signing.mjs sign "$APP" qa/build
+node scripts/native-ios-signing.mjs verify "$APP"
+xcrun simctl install "$UDID" "$APP"
 (cd qa/ios && xcodegen generate)
 # Raw simulator/XCTest output and xcresult stay local. Never upload them or screenshots.
 xcrun simctl spawn "$UDID" log stream --style compact --level debug --predicate 'process == "Paperly"' > qa/build/ios-system.raw 2>&1 &

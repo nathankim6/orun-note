@@ -9,6 +9,7 @@ import { useDocsStore } from '@/store/docs';
 import { useSession } from '@/store/session';
 import { Toast, T } from '@/components/ui';
 import { useContentProtection } from '@/lib/security';
+import { captureProtectionRequired } from '@/lib/capturePolicy';
 import { Logo } from '@/components/Logo';
 import { UpdateGate } from '@/components/UpdateGate';
 import { supabase } from '@/lib/supabase';
@@ -35,9 +36,11 @@ if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getEle
 }
 
 export default function RootLayout() {
-  const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const { hidden, attempts } = useContentProtection(); const showToast = useDocsStore((s) => s.showToast);
+  const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const showToast = useDocsStore((s) => s.showToast);
   const { role, hydrated, refreshMe } = useSession(); const segments = useSegments(); const router = useRouter();
-  useEffect(() => { if (attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [attempts]);
+  const captureProtected = captureProtectionRequired(role, hydrated);
+  const { hidden, attempts, protectionPending } = useContentProtection(captureProtected);
+  useEffect(() => { if (captureProtected && attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [captureProtected, attempts]);
   useEffect(() => { if (hydrated) flushNativeCrashes(); }, [hydrated]);
   useEffect(() => { if (!hydrated) return; refreshMe(); const { data } = supabase.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' || ev === 'TOKEN_REFRESHED' || ev === 'SIGNED_OUT') refreshMe(); }); return () => data.subscription.unsubscribe(); }, [hydrated]);
   useEffect(() => { if (!hydrated) return; const inAuth = segments[0] === '(auth)'; const inCallback = segments[0] === 'auth'; if (inCallback) return; if (!role && !inAuth) router.replace('/(auth)/code'); else if (role && inAuth) router.replace('/(tabs)'); }, [hydrated, role, segments[0]]);
@@ -55,7 +58,7 @@ export default function RootLayout() {
           </Stack>
           <Toast message={toast} />
           <UpdateGate />
-          {hidden && <View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}><Logo size={48} /><T variant="caption" color={colors.textMuted} style={{ marginTop: 12 }}>콘텐츠 보호를 위해 화면을 가렸어요</T></View>}
+          {(hidden || protectionPending) && <View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}><Logo size={48} /><T variant="caption" color={colors.textMuted} style={{ marginTop: 12 }}>콘텐츠 보호를 위해 화면을 가렸어요</T></View>}
         </GlassBackground>
       </SafeAreaProvider>
     </GestureHandlerRootView>

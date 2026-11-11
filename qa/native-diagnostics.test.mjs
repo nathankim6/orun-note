@@ -117,7 +117,7 @@ test('initial PID readiness uses deterministic virtual time for delay, timeout a
   assert(body.includes('Date.now() + 15000')); // Runtime grace is not relaxed by this test.
   const exercise=async mode=>{
     let tick=0,probes=0,crashChecks=0;const sleeps=[],knownPids=new Set();
-    const context={Date:{now:()=>tick},pkg:'com.paperly.study',knownPids,Error,
+    const context={Date:{now:()=>tick},pkg:'com.paperly.study',knownPids,Error,milestones:{},fail:reason=>new Error(reason),
       adb:(...args)=>{
         assert.deepEqual(args,['shell','pidof','com.paperly.study']);probes++;
         if(mode==='delayed'&&probes===2)throw Error('not visible yet');
@@ -229,7 +229,7 @@ test('failure collection keeps cached telemetry if XML fails and can capture XML
   const xml = '<hierarchy><node resource-id="qa-telemetry" content-desc="' + JSON.stringify(rows).replaceAll('"', '&quot;') + '" /></hierarchy>';
   for (const brokenXML of [true, false]) {
     const printed = [];
-    const context = { lastUINodes: [], lastXMLState: 'unavailable', lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
+    const context = { emit:()=>{}, telemetrySource:'unavailable', freshXML:()=>{if(brokenXML)throw Error('gone');return xml;}, lastUINodes: [], lastXMLState: 'unavailable', lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
     const run = runInNewContext(parse + '\n' + collect + '\ncollect;', context); run();
     assert.equal(printed.length, 3); assert(printed.some(s => s.includes('"errorCode":153')));
   }
@@ -271,7 +271,7 @@ test('authoritative fatal category snapshots latest telemetry before throwing', 
   const source = fs.readFileSync('scripts/native-android-smoke.mjs', 'utf8');
   const body = source.match(/function read\(\) \{[\s\S]*?\n\}/)?.[0]; assert(body);
   let captured = false;
-  const context = { nodesReadAt: 0, Date, start: Date.now(), pkg: 'com.paperly.study', knownPids: new Set(), crashLogs: () => ({ crash: true }), parseXML: xml => { assert.equal(xml, 'latest-telemetry'); captured = true; }, adb: (...a) => a[1] === 'pidof' ? '777' : a[1] === 'cat' ? 'latest-telemetry' : '', Error };
+  const context = { fail:reason=>new Error(reason), freshXML:()=> 'latest-telemetry', nodesReadAt: 0, Date, start: Date.now(), pkg: 'com.paperly.study', knownPids: new Set(), crashLogs: () => ({ crash: true }), parseXML: xml => { assert.equal(xml, 'latest-telemetry'); captured = true; }, adb: (...a) => a[1] === 'pidof' ? '777' : a[1] === 'cat' ? 'latest-telemetry' : '', Error };
   const read = runInNewContext(body + '\nread;', context);
   assert.throws(read, /native_or_js_error/); assert(captured);
 });
@@ -613,4 +613,88 @@ test('bootAnimationDisabled sanitizer is boolean-only and workflow flag is scope
   const workflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');const block=workflow.match(/      - name: Real Android emulator UI smoke[\s\S]*?(?=      - name: Sanitize Android)/)?.[0];assert(block);
   assert(block.includes("NATIVE_SMOKE_BOOT_ANIMATION_DISABLED: '1'"));assert(block.includes('-no-boot-anim'));assert.equal(workflow.match(/NATIVE_SMOKE_BOOT_ANIMATION_DISABLED:/g)?.length,1);assert(!workflow.slice(workflow.indexOf('  ios:')).includes('NATIVE_SMOKE_BOOT_ANIMATION_DISABLED'));
   const preflight=fs.readFileSync('scripts/native-android-preflight.mjs','utf8');assert(preflight.includes('now()+60000'));assert(!/KEYCODE_(?:MENU|POWER)|dismiss-keyguard|wm dismiss|\['shell','root'\]/.test(preflight));
+});
+
+
+test('temporal PID reuse cannot retroactively turn unrelated Java/native history into an app crash', () => {
+  const unrelated = [line(321,'FATAL EXCEPTION: main'),line(321,'Process: com.android.unrelated, PID: 321'),line(321,'java.lang.RuntimeException: '+canary),line(999,'>>> com.android.unrelated <<<','DEBUG'),line(999,'signal 11 (SIGSEGV)','DEBUG'),line(999,'#00 pc 1234 /private/libart.so','DEBUG'),line(321,'Process: com.paperly.study, PID: 321')].join('\n');
+  const report=extractCrashDiagnostics(unrelated,{platform:'android',pids:['321']});
+  assert.equal(report.crash,false);assert.equal(report.evidence?.attribution ?? 'none','none');assert.deepEqual(report.diagnostics,[]);
+  const result=sanitize(unrelated+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','temporal');assert.equal(result.status,0);assert(!result.output.includes('crash_native_frame'));
+});
+test('independent named main, worker and explicit WebView lifetimes preserve genuine fatal gates',()=>{
+  for(const name of ['com.paperly.study','com.paperly.study:pdfdetail']) {
+    const raw=[line(321,'FATAL EXCEPTION: main'),line(321,'Process: '+name+', PID: 321'),line(321,'java.lang.RuntimeException: '+canary)].join('\n');
+    assert.equal(extractCrashDiagnostics(raw,{platform:'android'}).crash,true);
+  }
+  const start=line(1,'Start proc 555:com.google.android.webview:sandboxed_process0/u0i1 for {com.paperly.study/org.chromium.Service}','ActivityManager');
+  assert.equal(extractCrashDiagnostics(start+'\n'+line(555,'Fatal signal 11 (SIGSEGV)','libc'),{platform:'android'}).crash,true);
+  const reuse=line(1,'Start proc 555:com.android.unrelated/u0a1 for activity','ActivityManager');
+  assert.equal(extractCrashDiagnostics(start+'\n'+reuse+'\n'+line(555,'Fatal signal 11 (SIGSEGV)','libc'),{platform:'android'}).crash,false);
+});
+test('multiple tombstones sharing a reporter never share ownership or native frames',()=>{
+  const raw=[line(999,'>>> com.paperly.study:pdfdetail <<<','DEBUG'),line(999,'signal 11 (SIGSEGV)','DEBUG'),line(999,'#00 pc 1111 /private/libpdf.so','DEBUG'),line(999,'*** *** *** ***','DEBUG'),line(999,'pid: 123, tid: 123, name: unrelated','DEBUG'),line(999,'>>> com.android.unrelated <<<','DEBUG'),line(999,'signal 6 (SIGABRT)','DEBUG'),line(999,'#00 pc 2222 /private/libunrelated.so','DEBUG')].join('\n');
+  const report=extractCrashDiagnostics(raw,{platform:'android',pids:['999']});assert.equal(report.crash,true);
+  assert(report.diagnostics.some(r=>r.nativeLibrary==='libpdf.so'));assert(!report.diagnostics.some(r=>r.nativeLibrary==='libunrelated.so'));
+});
+test('fresh XML removes old file and cannot read or advance after failed recreation',async()=>{
+  const {runInNewContext}=await import('node:vm');const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');const body=source.match(/function freshXML\(\) \{[\s\S]*?\n\}/)[0];
+  for(const failure of ['rm','uiautomator','test','invalid',null]){
+    const calls=[];const context={nodesReadAt:100,lastXMLState:'fresh',lastUINodes:[{}],lastTelemetry:[{}],telemetrySource:'fresh',Error,adb:(...args)=>{calls.push(args[1]);if(args[1]===failure)throw Error(canary);return args[1]==='cat'?(failure==='invalid'?'<hierarchy/>':'<hierarchy><node text="qa-ready-1" /></hierarchy>'):'';}};
+    const read=runInNewContext(body+'\nfreshXML;',context);
+    if(failure)assert.throws(read);else assert(read().includes('qa-ready-1'));
+    assert.equal(calls[0],'rm');if(['rm','uiautomator','test'].includes(failure))assert(!calls.includes('cat'));
+    assert.equal(context.nodesReadAt,0);assert.equal(context.lastXMLState,'cached');assert.equal(context.telemetrySource,'cached');
+  }
+});
+test('exact trigger record is immutable and later snapshot cannot replace trigger diagnostics',async()=>{
+  const {runInNewContext}=await import('node:vm');const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');
+  const failBody=source.match(/function fail\(reason, report = logRecord\?\.report\) \{[\s\S]*?\n\}/)[0];
+  const crashBody=source.match(/function crashLogs\(force = false\) \{[\s\S]*?\n\}/)[0];
+  let n=0;const first=javaCrash;const second=line(777,'Process: com.paperly.study, PID: 777')+'\n'+line(777,'TypeError: '+canary,'ReactNativeJS');
+  const context={logRecord:null,trigger:null,logSequence:0,lastLogcat:'',knownPids:new Set(),Object,Math,Error,extractCrashDiagnostics,adb:()=>++n===1?first:second};
+  const run=runInNewContext(crashBody+'\n'+failBody+'\n({crashLogs,fail});',context);
+  run.crashLogs();run.fail('native_or_js_error');const trigger=context.trigger;run.crashLogs();run.fail('process_crash');
+  assert.equal(context.trigger,trigger);assert.equal(trigger.record.text,first);assert.equal(trigger.record.record,1);assert.equal(context.logRecord.record,2);assert(Object.isFrozen(trigger.report));assert(Object.isFrozen(trigger.report.diagnostics));
+  const result=sanitize('QA_JSON {"event":"driver_evidence","origin":"trigger","category":"java","attribution":"explicit","crash":true}\nQA_JSON {"event":"suite_result","result":"fail","reason":"process_crash","platform":"android"}\n'+second,'trigger-later');
+  assert(!result.output.includes('crash_js_exception'));assert(result.output.includes('process_crash'));assert(result.output.includes('"origin":"collection"'));
+});
+test('provenance and milestone export is failure-only, strict enums/booleans/bounded numbers',()=>{
+  const rows=[{event:'driver_evidence',origin:'trigger',category:'native',role:'worker',attribution:'explicit',cached:false,record:1,name:canary,pid:321,timestamp:canary,message:canary},{event:'driver_milestones',ready:true,pdfPass:false,cycle:20,root:canary,record:10001},{event:'driver_telemetry',xmlSource:'cached',cached:true,uri:canary}];
+  const input=rows.map(r=>'QA_JSON '+JSON.stringify(r)).join('\n');const failure=sanitize(input+'\nQA_JSON {"event":"suite_result","result":"fail"}','evidence-private');assert(!failure.output.includes(canary));assert(!failure.output.includes('321'));assert(!failure.output.includes('10001'));assert(failure.output.includes('"xmlSource":"cached"'));assert(failure.output.includes('"ready":true'));
+  const success=sanitize(input+'\nQA_JSON {"event":"suite_result","result":"pass"}','evidence-pass');assert.equal(success.status,0);assert(!success.output.includes('driver_evidence'));assert(!success.output.includes('driver_milestones'));
+});
+
+test('actual driver labels post-ready fatal precisely and keeps later JS evidence separate',()=>{
+  const dir=fs.mkdtempSync(path.join(work,'post-ready-')),bin=path.join(dir,'bin');fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(dir,'trigger'),javaCrash);
+  fs.writeFileSync(path.join(bin,'adb'),`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path'),a=process.argv.slice(2),dir=process.env.QA_POST_DIR;
+const count=name=>{const f=path.join(dir,name),n=(fs.existsSync(f)?Number(fs.readFileSync(f)):0)+1;fs.writeFileSync(f,String(n));return n;};
+if(a[1]==='pidof')console.log('777');
+if(a[0]==='logcat'&&a[1]==='-d'){const n=count('logs');if(n===6)console.log(fs.readFileSync(path.join(dir,'trigger'),'utf8'));if(n>6)console.log('11-01 10:00:00.000 777 900 E AndroidRuntime: Process: com.paperly.study, PID: 777\n11-01 10:00:00.001 777 900 E ReactNativeJS: TypeError: private');}
+if(a[1]==='uiautomator'){const n=count('dumps');if(n>4)process.exit(1);}
+if(a[1]==='cat'){const n=Number(fs.readFileSync(path.join(dir,'dumps'))),labels=n===1?['open-review-videos','run-pdf-smoke']:n===2?['open-review-videos','qa-pdf-pass']:n===3?['QA Video 1 재생']:['qa-ready-1'];console.log('<hierarchy>'+labels.map(text=>'<node text="'+text+'" bounds="[0,0][10,10]" />').join('')+'</hierarchy>');}
+`,{mode:0o755});
+  // Escape newlines inside the generated JS string literal.
+  const executable=path.join(bin,'adb');fs.writeFileSync(executable,fs.readFileSync(executable,'utf8').replace('PID: 777\n11-01','PID: 777\\n11-01'));
+  const result=spawnSync(process.execPath,['scripts/native-android-smoke.mjs'],{encoding:'utf8',timeout:20000,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,QA_POST_DIR:dir}});
+  assert.equal(result.status,1);assert(result.stdout.includes('"step":"ready_controls"'),result.stdout);assert(result.stdout.includes('"pdfPass":true'));assert(result.stdout.includes('"ready":true'));
+  const rows=result.stdout.split('\n').filter(s=>s.startsWith('QA_JSON ')).map(s=>JSON.parse(s.slice(8)));
+  assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='collection').category,'javascript');assert(!rows.some(r=>r.event==='crash_js_exception'));
+  assert(!result.stdout.includes(canary));assert.equal(sanitize(result.stdout,'post-ready').status,1);
+});
+
+
+test('an earlier app lifetime cannot own a later explicitly unrelated Java fatal on the reused PID',()=>{
+ const raw=[line(321,'Process: com.paperly.study, PID: 321'),line(321,'FATAL EXCEPTION: main'),line(321,'Process: com.android.unrelated, PID: 321'),line(321,'java.lang.RuntimeException: '+canary)].join('\n');
+ assert.equal(extractCrashDiagnostics(raw,{platform:'android',pids:['321']}).crash,false);
+});
+
+
+test('unowned current-PID fatal remains uncertain and the driver never silently waives it',()=>{
+ const report=extractCrashDiagnostics(line(777,'Fatal signal 11 (SIGSEGV)','libc'),{platform:'android',pids:['777']});
+ assert.equal(report.crash,false);assert.equal(report.evidence.attribution,'uncertain');assert.equal(report.evidence.category,'uncertain');
+ const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');assert(source.includes("throw fail('native_evidence_uncertain', report)"));
+ const result=sanitize('QA_JSON {"event":"suite_result","result":"fail","reason":"native_evidence_uncertain","platform":"android"}','uncertain');assert.equal(result.status,1);assert(result.output.includes('native_evidence_uncertain'));
 });
