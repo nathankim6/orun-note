@@ -36,9 +36,9 @@ function QA() {
   const observed = React.useRef(new Set<string>());
   reportJS = () => setJSError(true);
   const status = React.useCallback((s: StageStatus) => {
-    const events = [s.ready && 'ready', s.playing && 'playing', s.ready && !s.playing && observed.current.has('playing') && 'paused', !!s.error && 'unavailable'].filter(Boolean) as string[];
+    const events = [s.ready && 'ready', s.playing && 'playing', s.playing && Number.isFinite(s.time) && s.time >= 1 && Number.isFinite(s.duration) && s.duration > 1 && 'progressing', s.ready && !s.playing && observed.current.has('playing') && 'paused', !!s.error && 'unavailable'].filter(Boolean) as string[];
     for (const event of events) if (!observed.current.has(event)) {
-      observed.current.add(event); marker('player_' + event, { cycle, ...(event === 'unavailable' ? { errorCode: playerErrorCode((s as StageStatus & { errorCode?: unknown }).errorCode) } : {}) });
+      observed.current.add(event); marker(event === 'progressing' ? 'player_progress' : 'player_' + event, { cycle, ...(event === 'progressing' ? { timeSeconds: s.time, durationSeconds: s.duration } : {}), ...(event === 'unavailable' ? { errorCode: playerErrorCode((s as StageStatus & { errorCode?: unknown }).errorCode) } : {}) });
     }
     setFlags([...observed.current].map(v => `qa-${v}-${cycle}`).join(' ') + ` qa-state-${s.playing ? 'playing' : s.ready ? 'paused' : 'loading'}-${cycle}`);
   }, [cycle]);

@@ -42,12 +42,14 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_tablet
+          cores: 4
+          ram-size: 4096M
+          pre-emulator-launch-script: node scripts/native-configure-avd.mjs
           force-avd-creation: true
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader -feature -Vulkan -noaudio -no-boot-anim -camera-back none
           script: |
             mkdir -p qa/build qa/output
-            adb install android/app/build/outputs/apk/release/app-release.apk
             adb logcat -c
             bash scripts/native-android-ci.sh
       - name: Sanitize Android failure output too

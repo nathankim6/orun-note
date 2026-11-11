@@ -308,10 +308,11 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
   for(const scenario of scenarios) {
     const dir=fs.mkdtempSync(path.join(work,'screenshot-'));fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'bin'));
     for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
+    fs.writeFileSync(path.join(dir,'scripts/native-android-preflight.mjs'), 'console.log("QA_JSON "+JSON.stringify({event:"emulator_preflight",phase:process.argv[2],result:"pass",reason:"ready"}));');
     fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
     if(scenario.sanitizerFail)fs.writeFileSync(path.join(dir,'scripts/native-sanitize.mjs'),'process.exitCode=1;');
     fs.writeFileSync(path.join(dir,'bin/timeout'),'#!/bin/sh\nshift\nexec "$@"\n',{mode:0o755});
-    fs.writeFileSync(path.join(dir,'bin/adb'),'#!/bin/sh\nif [ "$1" = shell ] && [ "$2" = getprop ]; then printf "%s\\n" "$QA_MOCK_QEMU"; exit 0; fi\nif [ "$1" = exec-out ] && [ "$2" = screencap ]; then printf "\\211PNG\\r\\n\\032\\nS"; exit 0; fi\nexit 1\n',{mode:0o755});
+    fs.writeFileSync(path.join(dir,'bin/adb'),'#!/bin/sh\nif [ "$1" = install ]; then exit 0; fi\nif [ "$1" = shell ] && [ "$2" = getprop ]; then printf "%s\\n" "$QA_MOCK_QEMU"; exit 0; fi\nif [ "$1" = exec-out ] && [ "$2" = screencap ]; then printf "\\211PNG\\r\\n\\032\\nS"; exit 0; fi\nexit 1\n',{mode:0o755});
     const result=spawnSync('bash',['scripts/native-android-ci.sh'],{cwd:dir,encoding:'utf8',timeout:20000,env:{...process.env,PATH:path.join(dir,'bin')+path.delimiter+process.env.PATH,GITHUB_ACTIONS:scenario.ci,NATIVE_SMOKE_ALLOW_SYNTHETIC_SCREENSHOT:scenario.allow,QA_MOCK_QEMU:scenario.qemu,QA_MOCK_DRIVER:String(scenario.driver)}});
     assert.equal(result.status,scenario.status,scenario.name+': '+result.stderr);
     assert.equal(fs.existsSync(path.join(dir,'qa/output/android-synthetic-qa-failure.png')),scenario.image,scenario.name);
@@ -321,4 +322,69 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
   assert(workflow.includes('name: Synthetic-QA-failure-only-Android-screenshot'));
   assert(workflow.includes('retention-days: 1'));
   assert(!workflow.includes('path: qa/output/*'));
+});
+
+test('emulator configuration lowers physical pixels at DPR1 and refuses insufficient host capacity', async () => {
+  const { configureAVD } = await import('../scripts/native-configure-avd.mjs');
+  const result=configureAVD('hw.lcd.width=2560\nhw.lcd.height=1600\nhw.lcd.density=320\nuntouched=yes\n',4,8192);
+  for(const setting of ['hw.lcd.width=1280','hw.lcd.height=800','hw.lcd.density=160','hw.ramSize=4096','hw.cpu.ncore=4','untouched=yes'])assert(result.includes(setting));
+  assert.equal(result.match(/hw.lcd.width=/g).length,1);
+  assert.throws(()=>configureAVD('',2,8192),/emulator_capacity_unsupported/);
+  assert.throws(()=>configureAVD('',4,4096),/emulator_capacity_unsupported/);
+  const workflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');
+  assert(workflow.includes('cores: 4'));assert(workflow.includes('ram-size: 4096M'));assert(workflow.includes('-gpu swiftshader -feature -Vulkan'));assert(!workflow.includes('swiftshader_indirect'));
+});
+test('preflight distinguishes exact System UI ANR from app ANR without retrying or disclosing messages', async () => {
+  const { classifyPreflight, preflight }=await import('../scripts/native-android-preflight.mjs');
+  const xml=title=>'<hierarchy><node package="android" resource-id="android:id/aerr_wait"/><node package="android" text="'+title+'"/></hierarchy>';
+  for(const title of ["System UI isn't responding",'System UI isn’t responding'])assert.equal(classifyPreflight(xml(title),''),'emulator_system_ui_anr');
+  assert.equal(classifyPreflight(xml('Paperly isn’t responding'),''),'emulator_app_anr');
+  assert.equal(classifyPreflight(xml(canary),''),'emulator_app_anr');
+  const emitted=[];let snapshots=0;
+  const ok=await preflight(args=>{if(args[1]==='cat'){snapshots++;return xml('System UI isn’t responding');}return '';}, reason=>emitted.push(reason),async()=>{throw Error('must not retry ANR');});
+  assert.equal(ok,false);assert.equal(snapshots,1);assert.deepEqual(emitted,['emulator_system_ui_anr']);
+  const result=sanitize('QA_JSON {"event":"emulator_preflight","phase":"before_install","result":"fail","reason":"emulator_system_ui_anr","headline":"'+canary+'"}\nQA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"emulator_system_ui_anr"}','systemui-preflight');
+  assert.equal(result.status,1);assert(result.output.includes('emulator_system_ui_anr'));assert(!result.output.includes(canary));
+});
+test('preflight readiness is bounded and requires two stable boot/UI/display observations', async () => {
+  const {preflight}=await import('../scripts/native-android-preflight.mjs');let tick=0;const emitted=[];
+  const readyQuery=args=>args.includes('sys.boot_completed')?'1':args.includes('init.svc.bootanim')?'stopped':args[1]==='pidof'?'123':args[1]==='cat'?'<hierarchy><node package="com.android.launcher3"/></hierarchy>':args[1]==='dumpsys'?'mCurrentFocus=Window{x u0 com.android.launcher3/.Launcher}':args[1]==='wm'?(args[2]==='size'?'Physical size: 1280x800':'Physical density: 160'):'';
+  assert.equal(await preflight(readyQuery,r=>emitted.push(r),async ms=>{tick+=ms;},()=>tick),true);assert.deepEqual(emitted,['ready']);assert(tick>0);
+  tick=0;emitted.length=0;
+  assert.equal(await preflight(()=>'',r=>emitted.push(r),async ms=>{tick+=ms;},()=>tick),false);assert.equal(tick,60000);assert.deepEqual(emitted,['emulator_os_not_ready']);
+});
+test('surface enum uses System UI ANR only for the exact known OS headline', async () => {
+  const {runInNewContext}=await import('node:vm');const body=fs.readFileSync('scripts/native-android-smoke.mjs','utf8').match(/function surfaceSummary\(inputNodes, activity, window, xmlSource\) \{[\s\S]*?\n\}/)[0];const summarize=runInNewContext(body+'\nsurfaceSummary;',{});
+  const nodes=title=>[{package:'android','resource-id':'android:id/aerr_wait'},{package:'android',text:title}];
+  assert.equal(summarize(nodes('System UI isn’t responding'),'','','fresh').dialog,'system_ui_anr');
+  assert.equal(summarize(nodes('Paperly isn’t responding'),'','','fresh').dialog,'anr');
+  assert.equal(summarize(nodes('System UI isn’t responding '+canary),'','','fresh').dialog,'anr');
+});
+
+test('QA content-clock marker requires real finite progress and emits once per cycle without private data', async () => {
+  const {createRequire}=await import('node:module');const {runInNewContext}=await import('node:vm');const ts=createRequire(import.meta.url)('typescript');
+  const source=fs.readFileSync('qa/entry.tsx','utf8');
+  const callback=source.match(/const status = React\.useCallback\(([\s\S]*?)\n  \}, \[cycle\]\);/);assert(callback);
+  const body=callback[1]+'\n  }';const code=ts.transpileModule('globalThis.status = '+body+';',{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
+  const rows=[], flags=[], context={observed:{current:new Set()},cycle:1,marker:(event,values)=>rows.push({event,...values}),setFlags:value=>flags.push(value),playerErrorCode:()=>undefined};
+  runInNewContext(code,context);
+  const base={ready:true,playing:true,time:0,duration:600,error:null,message:canary,videoId:canary};
+  for(const patch of [{time:0},{time:0.9},{playing:false,time:10},{time:NaN},{time:Infinity},{time:2,duration:0},{time:2,duration:1},{time:2,duration:Infinity}])context.status({...base,...patch});
+  assert.equal(rows.filter(r=>r.event==='player_progress').length,0);
+  context.status({...base,time:1});context.status({...base,time:2});
+  assert.equal(rows.filter(r=>r.event==='player_progress').length,1);
+  const progress=rows.find(r=>r.event==='player_progress');assert.equal(progress.timeSeconds,1);assert.equal(progress.durationSeconds,600);
+  assert(flags.at(-1).includes('qa-progressing-1'));assert(!JSON.stringify(rows).includes(canary));
+  context.observed.current.clear();context.cycle=2;context.status({...base,time:3});assert.equal(rows.filter(r=>r.event==='player_progress').length,2);assert(flags.at(-1).includes('qa-progressing-2'));
+  const output=sanitize('QA_JSON '+JSON.stringify(progress)+'\nQA_JSON '+JSON.stringify({event:'player_progress',timeSeconds:canary,durationSeconds:canary,url:canary})+'\nQA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"network_or_player_timeout"}','progress-private');
+  assert(output.output.includes('"timeSeconds":1'));assert(output.output.includes('"durationSeconds":600'));assert(!output.output.includes(canary));
+});
+test('both native drivers enforce a <=60s progression gate after explicit play before final pause', () => {
+  const android=fs.readFileSync('scripts/native-android-smoke.mjs','utf8'),ios=fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8');
+  for(const [source,play,progress,pause] of [
+    [android,"currentStep = 'play'; await tap('재생');","wait(`qa-progressing-${cycle}`, 60, true)","currentStep = 'pause'; await tap('일시정지');"],
+    [ios,'currentStep = "play"; tap("재생");','wait("qa-progressing-\\(cycle)", 60, contains: true)','currentStep = "pause"; tap("일시정지");'],
+  ]) {const p=source.indexOf(play),g=source.indexOf(progress,p),end=source.indexOf(pause,p);assert(p>=0&&g>p&&end>g);assert(source.includes('qa-progressing'));}
+  assert(android.includes('cycle <= 20'));assert(android.includes('cycle <= 3'));assert(ios.includes('1...20'));assert(ios.includes('cycle <= 3'));
+  const pdf=fs.readFileSync('qa/pdf-smoke.ts','utf8');assert(pdf.includes('trial <= 3'));
 });

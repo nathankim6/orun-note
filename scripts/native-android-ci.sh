@@ -4,8 +4,22 @@ set -uo pipefail
 mkdir -p qa/build qa/output
 IMAGE=qa/output/android-synthetic-qa-failure.png
 rm -f "$IMAGE" "$IMAGE.tmp"
-node scripts/native-android-smoke.mjs > qa/build/android.raw 2>&1
+: > qa/build/android.raw
+node scripts/native-android-preflight.mjs before_install >> qa/build/android.raw 2>&1
 DRIVER_STATUS=$?
+if [[ "$DRIVER_STATUS" == 0 ]]; then
+  timeout 120s adb install android/app/build/outputs/apk/release/app-release.apk >> qa/build/android.raw 2>&1
+  DRIVER_STATUS=$?
+  if [[ "$DRIVER_STATUS" != 0 ]]; then printf 'QA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"apk_install_failed"}\n' >> qa/build/android.raw; fi
+fi
+if [[ "$DRIVER_STATUS" == 0 ]]; then
+  node scripts/native-android-preflight.mjs before_start >> qa/build/android.raw 2>&1
+  DRIVER_STATUS=$?
+fi
+if [[ "$DRIVER_STATUS" == 0 ]]; then
+  node scripts/native-android-smoke.mjs >> qa/build/android.raw 2>&1
+  DRIVER_STATUS=$?
+fi
 if [[ "$DRIVER_STATUS" != 0 && "${GITHUB_ACTIONS:-}" == true && "${NATIVE_SMOKE_ALLOW_SYNTHETIC_SCREENSHOT:-}" == 1 ]]; then
   # Fresh AVD is created by the workflow; screenshot protection remains fully on.
   if [[ "$(timeout 5s adb shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r\n')" == 1 ]]; then

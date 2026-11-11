@@ -40,7 +40,7 @@ export const PdfRenderer = {
   clearCaches: () => impl.clearCaches().catch(() => {}),
   getInfo: (uri: string) => impl.getInfo(uri),
   /** Renders one page and returns a file:// (native) or blob: (web) URI; cached on disk/memory, so repeat calls are instant.
-   *  `width` is the target pixel width. PNG up to 1600 px, JPEG above. */
+   *  `width` is the target pixel width. Native full pages use JPEG92; reading images use JPEG84. */
   hasReadingRenderer: () => typeof impl.renderReading === 'function',
   renderReading: (uri: string, index: number, width: number): Promise<string> => typeof impl.renderReading === 'function' ? impl.renderReading(uri, index, Math.min(1200, Math.round(width))) : impl.renderPage(uri, index, Math.min(1200, Math.round(width))),
   cachedReading: (uri: string, index: number, width: number): Promise<string | null> => typeof impl.cachedReading === 'function' ? impl.cachedReading(uri, index, Math.min(1200, Math.round(width))).catch(() => null) : Promise.resolve(null),

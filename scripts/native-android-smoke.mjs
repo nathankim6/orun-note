@@ -67,7 +67,7 @@ async function wait(label, seconds = 25, contains = false) {
     if (node) return node;
     await sleep(300);
   } while (Date.now() < until);
-  throw new Error(label.startsWith('qa-ready') || label.startsWith('qa-state-playing') ? 'network_or_player_timeout' : 'ui_timeout');
+  throw new Error(label.startsWith('qa-ready') || label.startsWith('qa-state-playing') || label.startsWith('qa-progressing') ? 'network_or_player_timeout' : 'ui_timeout');
 }
 async function tap(label) {
   const cached = Date.now() - nodesReadAt <= 500 ? find(label) : undefined;
@@ -91,6 +91,16 @@ try {
   adb('shell', 'am', 'start', '-W', '-n', `${pkg}/.MainActivity`);
   await waitForInitialPid();
   currentStep = 'root'; await wait('open-review-videos', 60);
+  // PDF diagnostics must remain reachable even when the external video provider rejects CI embeds.
+  currentStep = 'pdf'; await tap('run-pdf-smoke');
+  const until = Date.now() + 300000;
+  do {
+    read(); if (find('qa-pdf-pass')) break;
+    if (find('qa-pdf-fail')) throw new Error('pdf_failure');
+    if (find('qa-pdf-inconclusive')) throw new Error('pdf_inconclusive');
+    await sleep(500);
+  } while (Date.now() < until);
+  if (!find('qa-pdf-pass')) throw new Error('pdf_timeout');
   for (let cycle = 1; cycle <= 20; cycle++) {
     currentStep = 'list_open'; await tap('open-review-videos');
     currentStep = 'wait_list'; await wait('QA Video 1 재생');
@@ -102,21 +112,13 @@ try {
       read(); if (find('일시정지')) { currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true); }
       currentStep = 'play'; await tap('재생');
       await wait(`qa-state-playing-${cycle}`, 45, true);
+      currentStep = 'wait_progress'; await wait(`qa-progressing-${cycle}`, 60, true);
       read(); if (!find('일시정지')) await tap('컨트롤 표시');
       currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true);
       currentStep = 'player_close'; await tap('닫기'); await wait('QA Video 1 재생');
     }
     currentStep = 'list_close'; await tap('닫기'); await wait('open-review-videos'); emit('cycle_complete', { cycle });
   }
-  currentStep = 'pdf'; await tap('run-pdf-smoke');
-  const until = Date.now() + 300000;
-  do {
-    read(); if (find('qa-pdf-pass')) break;
-    if (find('qa-pdf-fail')) throw new Error('pdf_failure');
-    if (find('qa-pdf-inconclusive')) throw new Error('pdf_inconclusive');
-    await sleep(500);
-  } while (Date.now() < until);
-  if (!find('qa-pdf-pass')) throw new Error('pdf_timeout');
   collect(); emit('suite_result', { platform: 'android', result: 'pass', cycles: 20, playbackCycles: 3 });
 } catch (error) {
   emit('driver_failure_step', { step: currentStep });
@@ -141,14 +143,15 @@ function surfaceSummary(inputNodes, activity, window, xmlSource) {
   const osId = id => osNodes.some(n => n['resource-id'] === id);
   const osText = expression => osNodes.some(n => expression.test(n.text ?? '') || expression.test(n['content-desc'] ?? ''));
   let dialog = 'none';
-  if (osId('android:id/aerr_wait') || osId('android:id/anr_wait')) dialog = 'anr';
+  if ((osId('android:id/aerr_wait') || osId('android:id/anr_wait')) && osText(/^System UI (?:isn't|isn’t) responding$/)) dialog = 'system_ui_anr';
+  else if (osId('android:id/aerr_wait') || osId('android:id/anr_wait')) dialog = 'anr';
   else if (osId('android:id/aerr_close') || osId('android:id/aerr_restart')) dialog = osText(/Google Play services|Google Play 서비스/) ? 'gms_crash' : 'app_crash';
   else if (/mShowingLockscreen=true|mKeyguardShowing=true|isStatusBarKeyguard=true/.test(window) || osNodes.some(n => /:id\/(?:keyguard_status_view|lockscreen_clock_view)$/.test(n['resource-id'] ?? ''))) dialog = 'keyguard';
   else if (/Waiting For Debugger|Waiting for debugger/.test(focus) || osText(/^Waiting [Ff]or [Dd]ebugger$/)) dialog = 'debugger';
   else if (foreground === 'permission' || osNodes.some(n => /:id\/permission_(?:allow|deny)_button$/.test(n['resource-id'] ?? ''))) dialog = 'permission';
   else if (/GestureSandboxActivity|GestureTutorialActivity|GestureNavigationTutorial/.test(focus)) dialog = 'gesture_tutorial';
   else if (foreground === 'systemdialog') dialog = 'unknown';
-  if (['gms_crash', 'app_crash', 'anr', 'keyguard', 'debugger'].includes(dialog)) foreground = 'systemdialog';
+  if (['gms_crash', 'app_crash', 'anr', 'system_ui_anr', 'keyguard', 'debugger'].includes(dialog)) foreground = 'systemdialog';
   const uiLabels = new Set(); let qaNodeCount = 0;
   for (const node of bounded) {
     const values = [node.text ?? '', node['content-desc'] ?? '', node['resource-id'] ?? ''];
@@ -160,7 +163,7 @@ function surfaceSummary(inputNodes, activity, window, xmlSource) {
     if (has('qa-loading')) add('qa_loading');
     if (has('qa-telemetry')) add('telemetry');
     if (values.some(v => /^QA Video [1-4] 재생$/.test(v) || /(?:^|:id\/)review-video-card-qa-video-[1-4]$/.test(v))) add('list');
-    if (has('review-video-playback-status') || values.some(v => /(?:^| )qa-(?:ready|playing|paused|state-(?:playing|paused|loading))-(?:[1-9]|1[0-9]|20)(?: |$)/.test(v))) add('player');
+    if (has('review-video-playback-status') || values.some(v => /(?:^| )qa-(?:ready|playing|paused|progressing|state-(?:playing|paused|loading))-(?:[1-9]|1[0-9]|20)(?: |$)/.test(v))) add('player');
     if (has('qa-js-error') || has('review-videos-boundary-error') || values.some(v => /(?:^| )qa-unavailable-(?:[1-9]|1[0-9]|20)(?: |$)/.test(v))) add('error');
     if (has('run-pdf-smoke') || values.some(v => /^qa-pdf-(?:idle|running|pass|fail|inconclusive)$/.test(v))) add('pdf');
     if (values.some(v => ['학생 로그인으로', '관리자이신가요?', '연결하고 시작'].includes(v))) uiLabels.add('auth_screen');

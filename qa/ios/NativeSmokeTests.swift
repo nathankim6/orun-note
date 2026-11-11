@@ -33,7 +33,7 @@ final class NativeSmokeTests: XCTestCase {
       if target.exists { return target }
       Thread.sleep(forTimeInterval: 0.25)
     } while Date() < end
-    fail(label.hasPrefix("qa-ready") || label.hasPrefix("qa-state-playing") ? "network_or_player_timeout" : "ui_timeout")
+    fail(label.hasPrefix("qa-ready") || label.hasPrefix("qa-state-playing") || label.hasPrefix("qa-progressing") ? "network_or_player_timeout" : "ui_timeout")
     return element(label)
   }
   func tap(_ label: String) { let target = wait(label); if !target.isHittable { fail("not_hittable"); return }; target.tap() }
@@ -51,6 +51,18 @@ final class NativeSmokeTests: XCTestCase {
   func testNativeSmoke() {
     app.launch(); defer { collect() }
     currentStep = "root"; wait("open-review-videos", 60)
+    // Collect native PDF timing evidence before external media can stop the suite.
+    currentStep = "pdf"; tap("run-pdf-smoke")
+    var pdfPassed = false
+    let end = Date().addingTimeInterval(300)
+    repeat {
+      healthy()
+      if element("qa-pdf-pass").exists { pdfPassed = true; break }
+      if element("qa-pdf-fail").exists { fail("pdf_failure"); return }
+      if element("qa-pdf-inconclusive").exists { fail("pdf_inconclusive"); return }
+      Thread.sleep(forTimeInterval: 0.5)
+    } while Date() < end
+    if !pdfPassed { fail("pdf_timeout"); return }
     for cycle in 1...20 {
       currentStep = "list_open"; tap("open-review-videos"); currentStep = "wait_list"; wait("QA Video 1 재생")
       if cycle <= 3 {
@@ -58,21 +70,13 @@ final class NativeSmokeTests: XCTestCase {
         if element("컨트롤 표시").exists && !element("일시정지").exists { tap("컨트롤 표시") }
         if element("일시정지").exists { currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
         currentStep = "play"; tap("재생"); wait("qa-state-playing-\(cycle)", 45, contains: true)
+        currentStep = "wait_progress"; wait("qa-progressing-\(cycle)", 60, contains: true)
         if !element("일시정지").exists { tap("컨트롤 표시") }
         currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true)
         currentStep = "player_close"; tap("닫기"); wait("QA Video 1 재생")
       }
       currentStep = "list_close"; tap("닫기"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])
     }
-    currentStep = "pdf"; tap("run-pdf-smoke")
-    let end = Date().addingTimeInterval(300)
-    repeat {
-      healthy()
-      if element("qa-pdf-pass").exists { collect(); emit("suite_result", ["platform": "ios", "result": "pass", "cycles": 20, "playbackCycles": 3]); return }
-      if element("qa-pdf-fail").exists { fail("pdf_failure"); return }
-      if element("qa-pdf-inconclusive").exists { XCTFail("pdf_inconclusive"); return }
-      Thread.sleep(forTimeInterval: 0.5)
-    } while Date() < end
-    XCTFail("pdf_timeout")
+    collect(); emit("suite_result", ["platform": "ios", "result": "pass", "cycles": 20, "playbackCycles": 3])
   }
 }

@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import { DIAGNOSTIC_EVENTS, sanitizeDiagnostic, extractCrashDiagnostics } from './native-diagnostics.mjs';
 const [input, output, platform] = process.argv.slice(2);
 const text = fs.existsSync(input) ? fs.readFileSync(input, 'utf8') : '';
-const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step']);
-const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
-const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
+const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_progress', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step', 'emulator_preflight']);
+const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'ready', 'emulator_system_ui_anr', 'emulator_app_anr', 'emulator_app_crash', 'emulator_os_blocked', 'emulator_os_not_ready', 'emulator_display_mismatch', 'emulator_capacity_unsupported', 'emulator_configuration_failed', 'apk_install_failed', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
+const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'wait_progress', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
 const numeric = new Set(['cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'trials']);
 const rows = [], diagnostics = [], surfaces = [];
 function sanitizeSurface(row) {
   const clean = { event: 'driver_surface' };
-  const enums = { foreground: ['app','launcher','permission','systemdialog','unknown'], dialog: ['none','gms_crash','app_crash','anr','keyguard','debugger','permission','gesture_tutorial','unknown'], xmlSource: ['fresh','cached','unavailable'], uiPackage: ['app','launcher','permission','system','mixed','other','unknown'] };
+  const enums = { foreground: ['app','launcher','permission','systemdialog','unknown'], dialog: ['none','gms_crash','app_crash','anr','system_ui_anr','keyguard','debugger','permission','gesture_tutorial','unknown'], xmlSource: ['fresh','cached','unavailable'], uiPackage: ['app','launcher','permission','system','mixed','other','unknown'] };
   for (const [key, values] of Object.entries(enums)) if (values.includes(row[key])) clean[key] = row[key];
   for (const key of ['nodeCount','appNodeCount','qaNodeCount']) if (Number.isInteger(row[key]) && row[key] >= 0 && row[key] <= 10000) clean[key] = row[key];
   const labels = new Set(['root_button','qa_boot','qa_loading','telemetry','list','player','error','pdf','auth_screen','splash']);
@@ -36,6 +36,8 @@ for (const line of text.split('\n')) {
       if (row.event === 'driver_failure_step' && k === 'step' && failureSteps.has(v)) clean.step = v;
       if (row.event === 'player_unavailable' && k === 'errorCode' && ((typeof v === 'number' && [2, 5, 100, 101, 150, 152, 153].includes(v)) || (typeof v === 'string' && ['load', 'http', 'process', 'timeout', 'network'].includes(v)))) clean.errorCode = v;
       if (row.event === 'js_error' && k === 'jsException' && ['Error', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError', 'EvalError', 'AggregateError', 'InternalError'].includes(v)) clean.jsException = v;
+      if (row.event === 'emulator_preflight' && k === 'phase' && ['before_install','before_start'].includes(v)) clean.phase = v;
+      if (row.event === 'player_progress' && ['timeSeconds','durationSeconds'].includes(k) && typeof v === 'number' && Number.isFinite(v) && v <= 864000 && (k === 'timeSeconds' ? v >= 1 : v > 1)) clean[k] = v;
       if (k === 'fatal' && typeof v === 'boolean') clean[k] = v;
     }
     rows.push(clean);

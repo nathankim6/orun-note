@@ -6,23 +6,31 @@ import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
 import { RenderPriority, type RenderLease } from './renderScheduler';
 import { createPdfWork, readingPixels, detailPixels } from './pdfWork';
-import { createPreparationReporter } from './pdfDiagnostics';
+import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnostics';
+import { PdfImageLayers } from './PdfImageLayers';
 import { PageQualityContext } from './pageQuality';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
+const imageLoads = createImageLoadReporter(Platform.OS, reportError);
 export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
 type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
   const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
   const readKey = `${page}|read|${readPx}`, fullKey = `${page}|detail|${fullPx}`;
-  const [presentedPage, setPresentedPage] = useState(''); const pageRef = useRef(page); pageRef.current = page;
+  const [presentedRequest, setPresentedRequest] = useState<object | null>(null); const pageRef = useRef(page); pageRef.current = page;
+  const trackingRef = useRef<{ page: string; session: ReturnType<typeof imageLoads.begin>; loads: Map<string, () => void> } | null>(null);
+  if (trackingRef.current?.page !== page) trackingRef.current = { page, session: imageLoads.begin(index), loads: new Map() };
+  const tracking = trackingRef.current;
+  const sourceReady = (source: string, sharp: boolean) => {
+    if (!tracking.loads.has(source)) tracking.loads.set(source, tracking.session.ready(sharp ? 'detail' : 'reading', sharp ? fullPx : readPx));
+  };
   const [image, setImage] = useState<PageImage>({ page: '', reading: null, detail: null, detailWidth: 0, err: false });
   useEffect(() => {
     if (!uri || uri === 'blank:') return;
     let alive = true; let lease: RenderLease | undefined;
     setImage(old => old.page === page ? { ...old, err: false } : { page, reading: null, detail: null, detailWidth: 0, err: false });
     const show = (src: string, sharp: boolean) => {
-      if (alive) setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false }));
+      if (alive && pageRef.current === page) { sourceReady(src, sharp); setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false })); }
     };
     const start = async () => {
       const sharp = work.detail.value(fullKey), ready = work.reading.value(readKey);
@@ -42,9 +50,9 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
     return () => { alive = false; lease?.release(); };
   }, [uri, index, readPx, fullPx]);
   useEffect(() => {
-    if (!uri || uri === 'blank:' || !detailAllowed || presentedPage !== page) return;
+    if (!uri || uri === 'blank:' || !detailAllowed || presentedRequest !== tracking) return;
     let alive = true; let lease: RenderLease | undefined;
-    const show = (src: string) => { if (alive) setImage(old => ({ ...old, page, detail: src, detailWidth: fullPx, err: false })); };
+    const show = (src: string) => { if (alive && pageRef.current === page) { sourceReady(src, true); setImage(old => ({ ...old, page, detail: src, detailWidth: fullPx, err: false })); } };
     void (async () => {
       const ready = work.detail.value(fullKey); if (ready) { show(ready); return; }
       const cached = await PdfRenderer.cachedPage(uri, index, fullPx); if (!alive) return;
@@ -54,9 +62,13 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
       show(await lease.promise);
     })().catch(() => {}); // a refinement failure must not hide the usable reading page
     return () => { alive = false; lease?.release(); };
-  }, [uri, index, fullPx, detailAllowed, presentedPage]);
+  }, [uri, index, fullPx, detailAllowed, presentedRequest]);
   const current = image.page === page ? image : null;
-  return { onLoad: () => { if (pageRef.current === page) setPresentedPage(page); }, src: current?.detail ?? current?.reading ?? null, err: !!current?.err && !current.detail && !current.reading };
+  const rendered = useRef({ reading: current?.reading, detail: current?.detail }); rendered.current = { reading: current?.reading, detail: current?.detail };
+  return { onLoad: (source = current?.detail ?? current?.reading ?? null) => {
+    if (pageRef.current !== page || !source || (source !== rendered.current.reading && source !== rendered.current.detail)) return;
+    tracking.loads.get(source)?.(); setPresentedRequest(tracking);
+  }, presented: presentedRequest === tracking, reading: current?.reading ?? null, detail: current?.detail ?? null, src: current?.detail ?? current?.reading ?? null, err: !!current?.err && !current.detail && !current.reading };
 }
 /** Neighbours get reading images only, never speculative 2400px detail rasters. */
 export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
@@ -104,9 +116,9 @@ export function PdfPage(props: { uri: string | null; index: number; width: numbe
 }
 function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile }) {
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
-  const { src, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed);
+  const { src, reading, detail, presented, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed);
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {src ? <><Image key={`${uri}|${index}|${src}`} onLoad={onLoad} source={{ uri: src }} style={{ width, height }} resizeMode="stretch" fadeDuration={0} />{uri ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
+    {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
 export function clearImageCache() { work.reading.clear(); work.detail.clear(); }

@@ -1,9 +1,13 @@
-import React, { useState } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useMemo } from 'react';
+import { View, Text, Pressable, StyleSheet, PixelRatio } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useTheme } from '@/theme';
 import { PdfPage } from './PdfPage';
+import { PageQualityContext } from './pageQuality';
+import { createIdleQualityGate } from './idleQuality';
+import { penSession } from './penSession';
+import { zoomPadTile, zoomPadQualityKey } from './zoomPadQuality';
 import { InkCanvas, InkOpts } from './InkCanvas';
 import { ToolConfig } from './ink';
 import { ImageBox, Stroke, TextBox } from '@/data/types';
@@ -26,6 +30,17 @@ export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, regi
   const { colors } = useTheme(); const [padW, setPadW] = useState(0);
   const innerH = height - 16; const k = padW > 0 ? padW / region.w : 1; const regionH = innerH / k;
   const margin = pageW * 0.05;
+  // Reading image shows immediately; full/tile detail unlocks only after 800 ms idle, and never while the pen is writing.
+  const qualityKey = zoomPadQualityKey({ uri, sourceIndex, region, padW, height, pageW, pageH });
+  const [quality, setQuality] = useState({ key: '', ready: false });
+  // Reject a stale ready=true synchronously, before child effects can submit a changed tile.
+  const detailReady = quality.key === qualityKey && quality.ready;
+  useEffect(() => {
+    const gate = createIdleQualityGate({ onReady: ready => setQuality({ key: qualityKey, ready }), isBusy: () => { const ps = penSession.value; return ps.writing && Date.now() - ps.since < 20000; } });
+    gate.activity(); return () => gate.dispose();
+  }, [qualityKey]);
+  const dpr = Math.min(3, PixelRatio.get());
+  const tile = useMemo(() => zoomPadTile({ pageW, pageH, k, padW, padH: innerH, region, dpr }), [pageW, pageH, k, padW, innerH, region.x, region.y, region.w, dpr]);
   const move = (dx: number, dy: number) => setRegion({ ...region, x: Math.max(0, Math.min(pageW - region.w, region.x + dx)), y: Math.max(0, Math.min(pageH - regionH, region.y + dy)) });
   const nextLine = () => setRegion({ ...region, x: margin, y: Math.min(pageH - regionH, region.y + regionH * 0.92) });
   const resize = (f: number) => { const w = Math.max(pageW * 0.15, Math.min(pageW * 0.9, region.w * f)); setRegion({ ...region, w, x: Math.min(region.x, pageW - w) }); };
@@ -40,7 +55,9 @@ export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, regi
       <View style={styles.pad} onLayout={(e) => setPadW(e.nativeEvent.layout.width)}>
         {padW > 0 && (
           <View style={{ position: 'absolute', left: -region.x * k, top: -region.y * k, width: pageW * k, height: pageH * k }}>
-            <PdfPage uri={uri} index={sourceIndex} width={pageW * k} height={pageH * k} template={template} />
+            <PageQualityContext.Provider value={detailReady}>
+              <PdfPage uri={uri} index={sourceIndex} width={pageW * k} height={pageH * k} template={template} tile={tile} />
+            </PageQualityContext.Provider>
             <InkCanvas width={pageW * k} height={pageH * k} s={k} strokes={strokes} textBoxes={textBoxes} images={images} onImages={onImages} textFont={textFont} opts={opts}
               cfg={cfg} enabled fingerDraw={false} lineSnap onStrokes={handleStrokes} onTextBoxes={onTextBoxes} historyRef={historyRef} onHistory={onHistory} />
           </View>
