@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { sanitizeProbeRows, makeIdentity, entitlements, signingFlags } from '../scripts/native-ios-keychain-diagnostic.mjs';
+import { sanitizeProbeRows, makeIdentity, entitlements, signingFlags, executeProbeCommand, coldEnumeration } from '../scripts/native-ios-keychain-diagnostic.mjs';
 const canary='PRIVATE_KEY_DATA_ACCOUNT_TOKEN_PATH_CANARY';
 test('probe output is fixed enums/numbers and unknown status never exposes OSStatus or key bytes',()=>{
   const rows=sanitizeProbeRows([
@@ -39,13 +39,13 @@ test('baseline has no explicit app entitlement while second variant signs exactl
   assert.deepEqual(signingFlags(entitlements(makeIdentity('a'.repeat(32)).entitled)),{applicationIdentifier:1,keychainAccessGroups:1});
   const source=fs.readFileSync('scripts/native-ios-keychain-diagnostic.mjs','utf8');
   assert(source.includes("'-Xlinker','-adhoc_codesign'"));assert(source.includes("if(current==='entitled'){stage='sign'"));
-  assert(source.includes("command('codesign',['--force','--sign','-'"));assert(source.includes("baseline_entitlements_unexpected"));assert(source.includes('entitlements_missing'));
+  assert(source.includes("command('sign_probe','codesign',['--force','--sign','-'"));assert(source.includes("baseline_entitlements_unexpected"));assert(source.includes('entitlements_missing'));
   assert(source.includes("'-apple-ios16.0-simulator'"));assert(!source.includes("'iphoneos'"));
 });
 test('driver creates/deletes only its own CI simulator, never accesses host keychain, and reports startup failures safely',()=>{
   const source=fs.readFileSync('scripts/native-ios-keychain-diagnostic.mjs','utf8');
   assert(source.includes("process.env.GITHUB_ACTIONS!=='true'||process.env.IOS_SYNTHETIC_KEYCHAIN_DIAGNOSTIC!=='1'"));
-  assert(source.indexOf("status:'environment_not_ci'")<source.indexOf("command('xcrun',['--sdk'"));
+  assert(source.indexOf("status:'environment_not_ci'")<source.indexOf("command('sdk_path','xcrun',['--sdk'"));
   assert(source.includes("['simctl','create','SyntheticKeychain-'+seed"));assert(source.includes("['simctl','delete',simulator]"));assert(source.includes("['simctl','shutdown',simulator]"));
   assert(!source.includes("command('security'"));assert(!source.includes("'erase','all'"));assert(!source.includes("'delete','all'"));
   assert(source.includes("stage='install'"));assert(source.includes("stage='launch'"));assert(source.includes("'install_failed','launch_failed'"));
@@ -58,4 +58,20 @@ test('workflow is manual macOS15/Xcode26.2 no-RN experiment and cannot satisfy n
   assert(source.includes('path: qa/output/ios-keychain-diagnostic.jsonl'));assert(source.includes('retention-days: 3'));assert(!/path:.*(?:\*|\.app|\.ipa|\.png|\.raw)/.test(source));
   const {validateNativeQa}=createRequire(import.meta.url)('../scripts/verify-native-qa.js');
   assert.throws(()=>validateNativeQa({status:'completed',conclusion:'success',head_sha:'exact',path:'.github/workflows/ios-keychain-diagnostic.yml',repository:{full_name:'own/repo'},head_repository:{full_name:'own/repo'},event:'workflow_dispatch'},{sha:'exact',repository:'own/repo',jobs:[{name:'android',status:'completed',conclusion:'success'},{name:'ios',status:'completed',conclusion:'success'}]}),/Wrong native smoke workflow/);
+});
+
+test('iOS per-command evidence is emitted before failure with no args/output/paths or unknown messages',()=>{
+  const rows=[];let tick=100;
+  assert.throws(()=>executeProbeCommand({label:'list_runtimes',variant:'shared',stage:'list_runtimes',bin:'xcrun',args:[canary],budget:15000,deadline:100000,now:()=>tick,emit:r=>rows.push(r),query:()=>{tick+=15000;return {status:null,error:{code:'ETIMEDOUT',message:canary},stdout:Buffer.from(canary),stderr:Buffer.from(canary)};}}),error=>error.status==='timeout');
+  assert.equal(rows.length,1);assert.equal(rows[0].command,'list_runtimes');assert.equal(rows[0].status,'timeout');assert.equal(rows[0].elapsedMs,15000);assert.equal(rows[0].budgetMs,15000);assert.equal(rows[0].stdoutBytes,Buffer.byteLength(canary));assert(!JSON.stringify(rows).includes(canary));
+  const output=executeProbeCommand({label:'sdk_path',variant:'shared',stage:'sdk_path',bin:'xcrun',args:[],deadline:10000,now:()=>0,emit:r=>rows.push(r),query:()=>({status:0,stdout:Buffer.from('/private/'+canary),stderr:Buffer.alloc(0)})});
+  assert.equal(output,'/private/'+canary);assert(!JSON.stringify(rows).includes(canary));
+  executeProbeCommand({label:'list_device_types',variant:'shared',stage:'list_device_types',bin:'xcrun',args:[],deadline:10000,now:()=>0,emit:r=>rows.push(r),query:()=>({status:0,stdout:Buffer.alloc(0)})});
+  assert.throws(()=>executeProbeCommand({label:canary,variant:'shared',stage:'sdk_path',bin:'xcrun',args:[],deadline:10000,emit:()=>{},query:()=>{throw Error('must not run');}}),/command_identity_invalid/);
+});
+test('CoreSimulator enumeration gets one 60s cold attempt only after a recorded timeout, never nonzero retry',()=>{
+  const calls=[];const output=coldEnumeration((label,budget)=>{calls.push({label,budget});if(calls.length===1)throw Object.assign(Error('safe'),{status:'timeout'});return 'synthetic';},'list_runtimes');
+  assert.equal(output,'synthetic');assert.deepEqual(calls,[{label:'list_runtimes',budget:15000},{label:'list_runtimes_cold',budget:60000}]);
+  let nonzeroCalls=0;assert.throws(()=>coldEnumeration(()=>{nonzeroCalls++;throw Object.assign(Error('safe'),{status:'nonzero'});},'list_device_types'));assert.equal(nonzeroCalls,1);
+  let timeouts=0;assert.throws(()=>coldEnumeration(()=>{timeouts++;throw Object.assign(Error('safe'),{status:'timeout'});},'list_runtimes'));assert.equal(timeouts,2);
 });

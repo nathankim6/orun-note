@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { COMMANDS, commandStatus, commandObservation, runEmulatorDiagnostic } from '../scripts/native-emulator-diagnostic.mjs';
+import { COMMANDS, commandStatus, commandObservation, runEmulatorDiagnostic, uiaReason } from '../scripts/native-emulator-diagnostic.mjs';
 const canary='PRIVATE_STUDENT_ACCOUNT_TOKEN_URI_CANARY';
 const ok=stdout=>({status:0,stdout:Buffer.from(stdout),stderr:Buffer.alloc(0)});
 function sample(args) {
-  if(args[1]==='getprop')return ok(args[2]==='sys.boot_completed'?'1':'stopped');
+  if(args[1]==='getprop')return ok(args[2]==='sys.boot_completed'?'1':args[2]==='ro.kernel.qemu'?'1':'stopped');
   if(args[1]==='pidof')return ok('98765');
+  if(args[1]==='dumpsys'&&args[2]==='power')return ok('mWakefulness=Awake\nmInteractive=true');
   if(args[1]==='dumpsys')return ok('mCurrentFocus=Window{abc u0 com.android.launcher3/.Launcher '+canary+'}');
   if(args[1]==='wm')return ok(args[2]==='size'?'Physical size: 1280x800':'Physical density: 160');
   if(args[1]==='uiautomator')return ok('UI hierarchy dumped to: /private/'+canary);
@@ -15,12 +16,12 @@ function sample(args) {
 }
 test('records boot/window/display before one cold dump and emits no native validation result',()=>{
   let clock=0;const rows=[],calls=[];
-  const result=runEmulatorDiagnostic({apiLevel:36,now:()=>clock,write:r=>rows.push(r),query:(args,budget)=>{calls.push({args,budget});clock+=10;return sample(args);}});
-  assert.deepEqual(COMMANDS.map(x=>x.command),['boot','bootanim','system_ui_pid','window','wm_size','wm_density','uia_dump','uia_xml']);
-  const evidence=rows.filter(r=>r.event==='emulator_diagnostic_command');assert.equal(evidence.length,8);
-  assert.deepEqual(evidence.map(r=>r.command),COMMANDS.map(x=>x.command));assert.equal(result.ok,8);
+  const result=runEmulatorDiagnostic({apiLevel:36,allowWake:true,now:()=>clock,write:r=>rows.push(r),query:(args,budget)=>{calls.push({args,budget});clock+=10;return sample(args);}});
+  assert.deepEqual(COMMANDS.map(x=>x.command),['boot','bootanim','system_ui_pid','window','wm_size','wm_density','power','uia_dump','uia_xml','emulator_identity','wake','power_after_wake','uia_dump_after_wake','uia_xml_after_wake']);
+  const evidence=rows.filter(r=>r.event==='emulator_diagnostic_command');assert.equal(evidence.length,14);
+  assert.deepEqual(evidence.map(r=>r.command),COMMANDS.map(x=>x.command));assert.equal(result.ok,14);
   assert(calls.some(c=>JSON.stringify(c.args)===JSON.stringify(['shell','dumpsys','window'])));
-  assert.equal(calls[6].budget,30000);assert(evidence.slice(0,6).every(r=>r.status==='ok'));
+  assert.equal(calls[7].budget,30000);assert(evidence.slice(0,6).every(r=>r.status==='ok'));
   assert.equal(evidence[0].boot,'complete');assert.equal(evidence[1].bootanim,'stopped');assert.equal(evidence[2].systemUiAlive,true);
   assert.equal(evidence[3].focus,'launcher');assert.equal(evidence[4].width,1280);assert.equal(evidence[5].density,160);
   assert(rows.filter(r=>r.notNativeValidation===1).length===2);assert(!rows.some(r=>r.event==='suite_result'||r.result==='pass'));
@@ -40,12 +41,12 @@ test('deadline does not replace earlier valid evidence or run later commands',()
   let tick=0,queries=0;const rows=[];
   runEmulatorDiagnostic({apiLevel:36,now:()=>tick,write:r=>rows.push(r),query:()=>{queries++;tick=120000;return ok('1');}});
   assert.equal(queries,1);const evidence=rows.filter(r=>r.event==='emulator_diagnostic_command');assert.equal(evidence[0].boot,'complete');assert.equal(evidence[0].status,'ok');
-  assert(evidence.slice(1).every(r=>r.status==='deadline'&&r.budgetMs===0));assert.equal(rows.at(-1).deadline,7);assert.equal(rows.at(-1).notNativeValidation,1);
+  assert(evidence.slice(1).every(r=>r.status==='deadline'&&r.budgetMs===0));assert.equal(rows.at(-1).deadline,COMMANDS.length-1);assert.equal(rows.at(-1).notNativeValidation,1);
 });
 test('all command budgets remain inside the shared 120s collection deadline',()=>{
   let tick=0;const rows=[];
-  runEmulatorDiagnostic({apiLevel:36,now:()=>tick,write:r=>rows.push(r),query:(args,budget)=>{assert(budget<=120000-tick);tick+=budget;return sample(args);}});
-  assert.equal(tick,90000);assert.equal(rows.at(-1).elapsedMs,90000);assert.equal(rows.at(-1).ok,8);
+  runEmulatorDiagnostic({apiLevel:36,allowWake:true,now:()=>tick,write:r=>rows.push(r),query:(args,budget)=>{assert(budget<=120000-tick);tick+=budget;return sample(args);}});
+  assert.equal(tick,120000);assert.equal(rows.at(-1).elapsedMs,120000);assert.equal(rows.at(-1).ok,COMMANDS.length-1);assert.equal(rows.at(-1).deadline,1);
 });
 test('boot animation, focus and display observations use fixed enums/numeric fields only',()=>{
   for(const state of ['stopped','running',''])assert.equal(commandObservation('bootanim',state).bootanim,state||'empty');
@@ -83,5 +84,35 @@ test('CLI captures both adb streams in memory and never prints raw errors',()=>{
   const source=fs.readFileSync('scripts/native-emulator-diagnostic.mjs','utf8');
   assert(source.includes("stdio:['ignore','pipe','pipe']"));assert(source.includes('maxBuffer:2*1024*1024'));assert(!source.includes('console.error'));
   const rows=[];runEmulatorDiagnostic({write:r=>rows.push(r),now:()=>0,query:()=>{throw Error(canary);}});
-  assert(rows.filter(r=>r.event==='emulator_diagnostic_command').every(r=>r.status==='nonzero'));assert(!JSON.stringify(rows).includes(canary));
+  assert(rows.filter(r=>r.event==='emulator_diagnostic_command').every(r=>['nonzero','guarded'].includes(r.status)));assert(!JSON.stringify(rows).includes(canary));
+});
+
+test('UIA reason uses strict known stderr/stdout categories without emitting any line',()=>{
+  for(const [stdout,stderr,reason] of [
+    ['','ERROR: null root node returned by UiTestAutomationBridge.','null_root'],
+    ['','ERROR: could not get idle state.','no_idle'],
+    ['','java.lang.SecurityException: Permission Denial: '+canary,'permission'],
+    ['UI hierchary dumped to: /private/'+canary,'','xml_written'],
+    ['','UI hierarchy dumped to: /private/'+canary,'xml_written'],
+    ['',canary,'other'],
+  ])assert.equal(uiaReason(stdout,stderr),reason);
+  assert.deepEqual(commandObservation('power','mWakefulness=Asleep\nmInteractive=false\n'+canary),{wakefulness:'asleep',interactive:'no'});
+  assert.deepEqual(commandObservation('power',canary),{wakefulness:'unknown',interactive:'unknown'});
+});
+test('wakeup is CI-emulator-only and preserves before/after UIA outcomes without dismissing anything',()=>{
+  const rows=[],calls=[];
+  runEmulatorDiagnostic({apiLevel:36,allowWake:true,now:()=>0,write:r=>rows.push(r),query:args=>{
+    calls.push(args);
+    if(args[1]==='uiautomator'&&args.at(-1).endsWith('native-emulator-diagnostic.xml'))return {status:0,stdout:Buffer.alloc(0),stderr:Buffer.from('ERROR: null root node returned by UiTestAutomationBridge.')};
+    return sample(args);
+  }});
+  assert.equal(rows.find(r=>r.command==='uia_dump').uiaReason,'null_root');assert.equal(rows.find(r=>r.command==='uia_dump_after_wake').uiaReason,'xml_written');
+  assert(calls.some(args=>JSON.stringify(args)===JSON.stringify(['shell','input','keyevent','KEYCODE_WAKEUP'])));
+  assert(calls.findIndex(a=>a[1]==='dumpsys'&&a[2]==='power')<calls.findIndex(a=>a[1]==='uiautomator'));
+  assert.equal(calls.filter(a=>a[1]==='uiautomator').length,2);assert(!JSON.stringify(rows).includes(canary));
+  for(const config of [{allowWake:false,apiLevel:36,qemu:'1'},{allowWake:true,apiLevel:36,qemu:'0'},{allowWake:true,apiLevel:0,qemu:'1'}]) {
+    const attempted=[],evidence=[];runEmulatorDiagnostic({...config,write:r=>evidence.push(r),now:()=>0,query:args=>{attempted.push(args);return args[1]==='getprop'&&args[2]==='ro.kernel.qemu'?ok(config.qemu):sample(args);}});
+    assert(!attempted.some(a=>a[1]==='input'));assert.equal(evidence.find(r=>r.command==='wake').status,'guarded');
+  }
+  const source=fs.readFileSync('scripts/native-emulator-diagnostic.mjs','utf8');assert(source.includes("allowWake:process.env.GITHUB_ACTIONS==='true'"));assert(!/KEYCODE_(?:MENU|POWER)|dismiss-keyguard|wm dismiss/.test(source));
 });
