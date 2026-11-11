@@ -43,7 +43,7 @@ for (const line of text.split('\n')) {
     }
     if (row.event === 'emulator_readiness') {
       const clean={event:'emulator_readiness'};
-      for(const key of ['bootComplete','bootAnimationStopped','systemUiAlive','xmlDumpSucceeded','xmlPresent','focusReady','displayReady'])if(typeof row[key]==='boolean')clean[key]=row[key];
+      for(const key of ['bootComplete','bootAnimationStopped','bootAnimationDisabled','systemUiAlive','xmlDumpSucceeded','xmlPresent','focusReady','displayReady'])if(typeof row[key]==='boolean')clean[key]=row[key];
       if(['before_install','before_start'].includes(row.phase))clean.phase=row.phase;
       if(['window','display','activity','none'].includes(row.focusSource))clean.focusSource=row.focusSource;
       if(['app','launcher','blocked','unknown','missing'].includes(row.focusKind))clean.focusKind=row.focusKind;
@@ -65,6 +65,7 @@ for (const line of text.split('\n')) {
       if (row.event === 'driver_failure_step' && k === 'step' && failureSteps.has(v)) clean.step = v;
       if (row.event === 'player_unavailable' && k === 'errorCode' && ((typeof v === 'number' && [2, 5, 100, 101, 150, 152, 153].includes(v)) || (typeof v === 'string' && ['load', 'http', 'process', 'timeout', 'network'].includes(v)))) clean.errorCode = v;
       if (row.event === 'js_error' && k === 'jsException' && ['Error', 'TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError', 'EvalError', 'AggregateError', 'InternalError'].includes(v)) clean.jsException = v;
+      if (row.event === 'emulator_preflight' && k === 'bootAnimationDisabled' && typeof v === 'boolean') clean.bootAnimationDisabled=v;
       if (row.event === 'emulator_preflight' && k === 'phase' && ['before_install','before_start'].includes(v)) clean.phase = v;
       if (row.event === 'player_progress' && ['timeSeconds','durationSeconds'].includes(k) && typeof v === 'number' && Number.isFinite(v) && v <= 864000 && (k === 'timeSeconds' ? v >= 1 : v > 1)) clean[k] = v;
       if (k === 'fatal' && typeof v === 'boolean') clean[k] = v;

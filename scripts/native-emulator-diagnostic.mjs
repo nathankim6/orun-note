@@ -10,8 +10,14 @@ export const COMMANDS = [
   {command:'window',args:['shell','dumpsys','window'],budget:12000},
   {command:'wm_size',args:['shell','wm','size'],budget:8000},
   {command:'wm_density',args:['shell','wm','density'],budget:8000},
+  {command:'power',args:['shell','dumpsys','power'],budget:8000},
   {command:'uia_dump',args:['shell','uiautomator','dump','/data/local/tmp/native-emulator-diagnostic.xml'],budget:30000},
   {command:'uia_xml',args:['shell','cat','/data/local/tmp/native-emulator-diagnostic.xml'],budget:8000},
+  {command:'emulator_identity',args:['shell','getprop','ro.kernel.qemu'],budget:4000},
+  {command:'wake',args:['shell','input','keyevent','KEYCODE_WAKEUP'],budget:4000,wakeOnly:true},
+  {command:'power_after_wake',args:['shell','dumpsys','power'],budget:4000,wakeOnly:true},
+  {command:'uia_dump_after_wake',args:['shell','uiautomator','dump','/data/local/tmp/native-emulator-diagnostic-after-wake.xml'],budget:30000,wakeOnly:true},
+  {command:'uia_xml_after_wake',args:['shell','cat','/data/local/tmp/native-emulator-diagnostic-after-wake.xml'],budget:8000,wakeOnly:true},
 ];
 const safeText = value => Buffer.isBuffer(value)?value.toString('utf8'):typeof value==='string'?value:'';
 const bytes = value => Math.min(4194304,Buffer.isBuffer(value)?value.length:typeof value==='string'?Buffer.byteLength(value):0);
@@ -19,6 +25,14 @@ export function commandStatus(result) {
   if(result?.error?.code==='ETIMEDOUT')return 'timeout';
   if(result?.error?.code==='ENOBUFS')return 'buffer';
   return result?.status===0&&!result?.error?'ok':'nonzero';
+}
+export function uiaReason(stdout,stderr) {
+  const text=safeText(stderr)+'\n'+safeText(stdout);
+  if(/^(?:ERROR:\s*)?null root node returned by UiTestAutomationBridge\.?\s*$/im.test(text))return 'null_root';
+  if(/^(?:ERROR:\s*)?could not get idle state\.?\s*$/im.test(text))return 'no_idle';
+  if(/^(?:(?:java\.lang\.)?SecurityException:\s*)?(?:Permission Denial|Permission denied)\b/im.test(text))return 'permission';
+  if(/^UI hier(?:archy|chary) dumped to:/im.test(text))return 'xml_written';
+  return 'other';
 }
 function focusSummary(text) {
   const current=text.split('\n').find(line=>line.includes('mCurrentFocus='));
@@ -47,6 +61,8 @@ export function commandObservation(command, text, fresh=true) {
   const value=text.trim();
   if(command==='boot')return {boot:value==='1'?'complete':value==='0'?'incomplete':!value?'empty':'other'};
   if(command==='bootanim')return {bootanim:['stopped','running'].includes(value)?value:!value?'empty':'other'};
+  if(command==='power'||command==='power_after_wake'){const wake=text.match(/\bmWakefulness=(Awake|Asleep|Dreaming|Dozing)\b/)?.[1];const interactive=text.match(/\bmInteractive=(true|false)\b/)?.[1];return {wakefulness:wake?.toLowerCase()??'unknown',interactive:interactive==='true'?'yes':interactive==='false'?'no':'unknown'};}
+  if(command==='emulator_identity')return {emulator:value==='1'};
   if(command==='system_ui_pid')return {systemUiAlive:/^\d+(?:\s+\d+)*$/.test(value)};
   if(command==='window')return focusSummary(text);
   if(command==='wm_size') {
@@ -57,22 +73,24 @@ export function commandObservation(command, text, fresh=true) {
     const match=[...text.matchAll(/^(?:Physical|Override) density: (\d{1,4})\s*$/gm)].at(-1);
     return match&&+match[1]>=40&&+match[1]<=1000?{densityState:'known',density:+match[1]}:{densityState:'unknown'};
   }
-  if(command==='uia_xml')return xmlSummary(text,fresh);
+  if(command==='uia_xml'||command==='uia_xml_after_wake')return xmlSummary(text,fresh);
   return {};
 }
-export function runEmulatorDiagnostic({query,write,now=()=>performance.now(),apiLevel=0}) {
+export function runEmulatorDiagnostic({query,write,now=()=>performance.now(),apiLevel=0,allowWake=false}) {
   const api=[35,36].includes(apiLevel)?apiLevel:0,start=now(),deadline=start+120000;
-  const counts={ok:0,timeout:0,nonzero:0,buffer:0,deadline:0};let fresh=false;
+  const counts={ok:0,timeout:0,nonzero:0,buffer:0,deadline:0,guarded:0};let fresh=false,emulator=false;
   write({event:'emulator_diagnostic_start',apiLevel:api,notNativeValidation:1});
   for(const spec of COMMANDS) {
     const remaining=deadline-now();
     if(remaining<=0){counts.deadline++;write({event:'emulator_diagnostic_command',command:spec.command,status:'deadline',budgetMs:0,elapsedMs:0,stdoutBytes:0,stderrBytes:0});continue;}
+    if(spec.wakeOnly&&!(allowWake===true&&emulator&&api!==0)){counts.guarded++;write({event:'emulator_diagnostic_command',command:spec.command,status:'guarded',guard:'not_ci_emulator',budgetMs:0,elapsedMs:0,stdoutBytes:0,stderrBytes:0});continue;}
     const budgetMs=Math.max(1,Math.floor(Math.min(spec.budget,remaining))),before=now();let result;
     try{result=query(spec.args,budgetMs);}catch{result={status:null,error:{code:'unknown'}};}
     const status=commandStatus(result),elapsedMs=Math.min(120000,Math.max(0,now()-before));counts[status]++;
     const row={event:'emulator_diagnostic_command',command:spec.command,status,budgetMs,elapsedMs,stdoutBytes:bytes(result?.stdout),stderrBytes:bytes(result?.stderr)};
     if(Number.isInteger(result?.status)&&result.status>=0&&result.status<=255)row.exitCode=result.status;
-    if(spec.command==='uia_dump')fresh=status==='ok';
+    if(spec.command==='emulator_identity')emulator=status==='ok'&&safeText(result.stdout).trim()==='1';
+    if(spec.command==='uia_dump'||spec.command==='uia_dump_after_wake'){row.uiaReason=uiaReason(result?.stdout,result?.stderr);fresh=status==='ok'&&row.uiaReason==='xml_written';}
     if(status==='ok')Object.assign(row,commandObservation(spec.command,safeText(result.stdout),fresh));
     write(row); // Preserve every earlier observation; no last-snapshot replacement.
   }
@@ -80,5 +98,5 @@ export function runEmulatorDiagnostic({query,write,now=()=>performance.now(),api
   return counts; // Diagnostic completion is not OS readiness or app validation.
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
-  runEmulatorDiagnostic({apiLevel:Number(process.env.EMULATOR_DIAGNOSTIC_API_LEVEL),write:row=>console.log(JSON.stringify(row)),query:(args,timeout)=>spawnSync('adb',args,{timeout,maxBuffer:2*1024*1024,stdio:['ignore','pipe','pipe'],killSignal:'SIGKILL'})});
+  runEmulatorDiagnostic({apiLevel:Number(process.env.EMULATOR_DIAGNOSTIC_API_LEVEL),allowWake:process.env.GITHUB_ACTIONS==='true',write:row=>console.log(JSON.stringify(row)),query:(args,timeout)=>spawnSync('adb',args,{timeout,maxBuffer:2*1024*1024,stdio:['ignore','pipe','pipe'],killSignal:'SIGKILL'})});
 }

@@ -43,6 +43,9 @@ jobs:
           scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform android --no-install && cd android && ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=x86_64'
           git diff --exit-code -- index.ts
       - name: Real Android emulator UI smoke
+        # Explicit expected mode, scoped to this launch with -no-boot-anim below.
+        env:
+          NATIVE_SMOKE_BOOT_ANIMATION_DISABLED: '1'
         timeout-minutes: 18
         uses: reactivecircus/android-emulator-runner@v2
         with:

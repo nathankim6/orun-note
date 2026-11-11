@@ -552,3 +552,65 @@ test('PDF raster sanitizer retains only bounded numeric status/dimensions and re
   const result=sanitize(rows.map(row=>'QA_JSON '+JSON.stringify(row)).join('\n'),'raster-private');assert.equal(result.status,1);assert(!result.output.includes(canary));assert(!result.output.includes('"uri"'));assert(!result.output.includes('"message"'));assert(!result.output.includes('"trial":4'));
   const parsed=result.output.trim().split('\n').map(JSON.parse).filter(r=>r.event==='pdf_raster');assert.equal(parsed.length,3);assert.equal(parsed[0].height,1165);assert.equal(parsed[2].width,undefined);assert.equal(parsed[2].height,undefined);
 });
+
+async function bootAnimationModeScenario(options={}) {
+  const {preflight}=await import('../scripts/native-android-preflight.mjs');let tick=0,probe=0;const reports=[],commands=[];
+  const normal='<hierarchy><node package="com.android.launcher3"/></hierarchy>';
+  const query=(args,budget)=>{
+    commands.push({args,budget});
+    if(args[1]==='getprop') {
+      if(args[2]==='ro.kernel.qemu'){if(options.qemuThrows)throw Error(canary);return options.qemu??'1';}
+      if(args[2]==='sys.boot_completed')return options.boot??'1';
+      if(options.animationThrows)throw Error(canary);return options.animation??'';
+    }
+    if(args[1]==='pidof')return options.pid??'123';
+    if(args[1]==='uiautomator'){probe++;if(options.dumpAlwaysFails||options.dumpFailAt===probe)throw Error(canary);return '';}
+    if(args[1]==='cat')return options.xml??normal;
+    if(args[1]==='dumpsys')return options.focus??'mCurrentFocus=Window{x u0 com.android.launcher3/.Launcher}';
+    if(args[1]==='wm')return args[2]==='size'?(options.size??'Physical size: 1280x800'):'Physical density: 160';
+    return '';
+  };
+  const result=await preflight(query,(reason,criteria)=>reports.push({reason,criteria}),async ms=>{tick+=ms;},()=>tick,options.mode);
+  return {result,tick,probe,reports,commands};
+}
+test('empty boot-animation reply is DISABLED only for explicit configured CI-emulator mode',async()=>{
+  const {preflightMode}=await import('../scripts/native-android-preflight.mjs');
+  const mode=preflightMode({GITHUB_ACTIONS:'true',NATIVE_SMOKE_BOOT_ANIMATION_DISABLED:'1'});
+  assert.deepEqual(mode,{githubActions:true,configuredNoBootAnimation:true});
+  const accepted=await bootAnimationModeScenario({mode});assert.equal(accepted.result,true);assert.equal(accepted.probe,2);assert.equal(accepted.tick,500);
+  assert.equal(accepted.reports.at(-1).criteria.bootAnimationDisabled,true);assert.equal(accepted.reports.at(-1).criteria.bootAnimationStopped,false);
+  assert.equal(accepted.commands.filter(c=>c.args[1]==='input').length,1);assert(accepted.commands.some(c=>JSON.stringify(c.args)===JSON.stringify(['shell','input','keyevent','KEYCODE_WAKEUP'])));
+  const stopped=await bootAnimationModeScenario({animation:'stopped'});assert.equal(stopped.result,true);assert.equal(stopped.reports.at(-1).criteria.bootAnimationDisabled,false);assert.equal(stopped.reports.at(-1).criteria.bootAnimationStopped,true);assert(!stopped.commands.some(c=>c.args[1]==='input'));
+  assert.deepEqual(preflightMode({GITHUB_ACTIONS:'1',NATIVE_SMOKE_BOOT_ANIMATION_DISABLED:'true',private:canary}),{githubActions:false,configuredNoBootAnimation:false});
+});
+test('default/unconfigured/non-CI/non-qemu/running/failed properties never turn empty animation into ready',async()=>{
+  const enabled={githubActions:true,configuredNoBootAnimation:true};
+  const cases=[{}, {mode:{}}, {mode:{githubActions:true}}, {mode:{configuredNoBootAnimation:true}}, {mode:{githubActions:'true',configuredNoBootAnimation:true}}, {mode:enabled,qemu:'0'}, {mode:enabled,qemu:''}, {mode:enabled,qemuThrows:true}, {mode:enabled,animation:'running'}, {mode:enabled,animation:'other'}, {mode:enabled,animationThrows:true}];
+  for(const options of cases){const result=await bootAnimationModeScenario(options);assert.equal(result.result,false);assert.equal(result.tick,60000);const last=result.reports.at(-1);assert.equal(last.reason,'emulator_os_not_ready');assert.equal(last.criteria.bootAnimationDisabled,false);assert(last.criteria.missing.includes('bootanim'));if(options.mode?.githubActions!==true||options.qemu==='0'||options.qemu===''||options.qemuThrows)assert(!result.commands.some(c=>c.args[1]==='input'));assert(!JSON.stringify(result.reports).includes(canary));}
+});
+test('disabled-animation mode keeps two fresh XML observations and cannot mask ANR/dialog/boot/PID/focus/display failure',async()=>{
+  const mode={githubActions:true,configuredNoBootAnimation:true};
+  const recovered=await bootAnimationModeScenario({mode,dumpFailAt:2});assert.equal(recovered.result,true);assert.equal(recovered.probe,4); // Fresh1, failed2 resets, then fresh3+4.
+  assert.equal(recovered.commands.filter(c=>c.args[1]==='rm').length,4);assert.equal(recovered.commands.filter(c=>c.args[1]==='cat').length,3);
+  const stale=await bootAnimationModeScenario({mode,dumpAlwaysFails:true});assert.equal(stale.result,false);assert(!stale.commands.some(c=>c.args[1]==='cat'));assert(stale.reports.at(-1).criteria.missing.includes('xml'));
+  for(const [xml,reason] of [
+    ['<node package="android" resource-id="android:id/aerr_wait"/><node package="android" text="System UI isn’t responding"/>','emulator_system_ui_anr'],
+    ['<node package="android" resource-id="android:id/aerr_wait"/>','emulator_app_anr'],
+    ['<node package="com.android.permissioncontroller"/>','emulator_os_blocked'],
+    ['<node package="com.android.systemui" resource-id="com.android.systemui:id/keyguard_status_view"/>','emulator_os_blocked'],
+  ]){const r=await bootAnimationModeScenario({mode,xml});assert.equal(r.result,false);assert.equal(r.probe,1);assert.equal(r.reports[0].reason,reason);assert.equal(r.tick,0);}
+  for(const options of [{boot:'0'},{pid:''},{focus:'mCurrentFocus=null'},{xml:'<hierarchy></hierarchy>'}]){const r=await bootAnimationModeScenario({mode,...options});assert.equal(r.result,false);assert.equal(r.tick,60000);}
+  const display=await bootAnimationModeScenario({mode,size:'Physical size: 1280x800\nOverride size: 1600x2560'});assert.equal(display.result,false);assert.equal(display.reports[0].reason,'emulator_display_mismatch');
+});
+test('bootAnimationDisabled sanitizer is boolean-only and workflow flag is scoped to actual no-boot-anim launch',()=>{
+  const rows=[{event:'emulator_preflight',phase:'before_install',result:'pass',reason:'ready',bootAnimationDisabled:true,property:canary},
+    {event:'emulator_readiness',bootAnimationDisabled:false,bootAnimationStopped:false,missing:['bootanim'],private:canary},
+    {event:'emulator_preflight',result:'fail',bootAnimationDisabled:canary},
+    {event:'emulator_readiness',bootAnimationDisabled:1},
+    {event:'suite_result',platform:'android',result:'fail',reason:'emulator_os_not_ready'}];
+  const result=sanitize(rows.map(row=>'QA_JSON '+JSON.stringify(row)).join('\n'),'boot-mode-private');assert.equal(result.status,1);assert(!result.output.includes(canary));
+  const parsed=result.output.trim().split('\n').map(JSON.parse);assert.equal(parsed.find(r=>r.event==='emulator_preflight').bootAnimationDisabled,true);assert.equal(parsed.find(r=>r.event==='emulator_readiness').bootAnimationDisabled,false);assert(!parsed.some(r=>r.bootAnimationDisabled===1));
+  const workflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');const block=workflow.match(/      - name: Real Android emulator UI smoke[\s\S]*?(?=      - name: Sanitize Android)/)?.[0];assert(block);
+  assert(block.includes("NATIVE_SMOKE_BOOT_ANIMATION_DISABLED: '1'"));assert(block.includes('-no-boot-anim'));assert.equal(workflow.match(/NATIVE_SMOKE_BOOT_ANIMATION_DISABLED:/g)?.length,1);assert(!workflow.slice(workflow.indexOf('  ios:')).includes('NATIVE_SMOKE_BOOT_ANIMATION_DISABLED'));
+  const preflight=fs.readFileSync('scripts/native-android-preflight.mjs','utf8');assert(preflight.includes('now()+60000'));assert(!/KEYCODE_(?:MENU|POWER)|dismiss-keyguard|wm dismiss|\['shell','root'\]/.test(preflight));
+});

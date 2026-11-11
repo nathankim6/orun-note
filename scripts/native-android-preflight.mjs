@@ -23,11 +23,19 @@ export function classifyPreflight(xml, window, activity = '') {
   if (focus.ready && nodes.length) return 'ready';
   return 'waiting';
 }
-export async function preflight(query, emit, pause = ms=>new Promise(r=>setTimeout(r,ms)), now=Date.now) {
+export function preflightMode(env) {
+  return {githubActions:env.GITHUB_ACTIONS==='true',configuredNoBootAnimation:env.NATIVE_SMOKE_BOOT_ANIMATION_DISABLED==='1'};
+}
+export async function preflight(query, emit, pause = ms=>new Promise(r=>setTimeout(r,ms)), now=Date.now, mode={}) {
   const deadline=now()+60000; let stable=0, last={};
   const fail=reason=>{emit(reason,last);return false;};
+  const get=(args,budget=6000)=>{const remaining=deadline-now();if(remaining<=0)return {ok:false,value:''};try{return {ok:true,value:query(args,Math.max(1,Math.min(budget,remaining))).trim()};}catch{return {ok:false,value:''};}};
+  const qemu=mode.githubActions===true?get(['shell','getprop','ro.kernel.qemu']):{ok:false,value:''};
+  const ciEmulator=mode.githubActions===true&&qemu.ok&&qemu.value==='1';
+  // Normal wake only: no power toggle, unlock, dismissal or security setting.
+  // Included in the existing 60s budget; not evidence that sleep caused null-root.
+  if(ciEmulator)get(['shell','input','keyevent','KEYCODE_WAKEUP']);
   while(now()<deadline) {
-    const get=(args,budget=6000)=>{const remaining=deadline-now();if(remaining<=0)return {ok:false,value:''};try{return {ok:true,value:query(args,Math.max(1,Math.min(budget,remaining))).trim()};}catch{return {ok:false,value:''};}};
     const boot=get(['shell','getprop','sys.boot_completed']), animation=get(['shell','getprop','init.svc.bootanim']), pid=get(['shell','pidof','com.android.systemui']);
     // Never accept a stale XML file if a cold UIAutomator dump times out/fails.
     const removed=get(['shell','rm','-f','/data/local/tmp/qa-preflight.xml']);
@@ -41,13 +49,13 @@ export async function preflight(query, emit, pause = ms=>new Promise(r=>setTimeo
     // The last effective override wins; a matching physical size must not hide a bad override.
     const sizeMatch=[...size.value.matchAll(/(?:Override|Physical) size: (\d+x\d+)/g)].at(-1)?.[1];
     const densityMatch=[...density.value.matchAll(/(?:Override|Physical) density: (\d+)/g)].at(-1)?.[1];
-    last={bootComplete:boot.value==='1',bootAnimationStopped:animation.value==='stopped',systemUiAlive:/^\d+(?:\s+\d+)*$/.test(pid.value),xmlDumpSucceeded:removed.ok&&dump.ok,xmlPresent:xml.ok&&/<node\b/.test(xml.value),focusReady:focus.ready,displayReady:sizeMatch==='1280x800'&&densityMatch==='160',focusSource:focus.source,focusKind:focus.kind};
-    const criteria={boot:last.bootComplete,bootanim:last.bootAnimationStopped,pid:last.systemUiAlive,xml:last.xmlDumpSucceeded&&last.xmlPresent,focus:last.focusReady,display:last.displayReady};
+    last={bootComplete:boot.value==='1',bootAnimationStopped:animation.ok&&animation.value==='stopped',bootAnimationDisabled:ciEmulator&&mode.configuredNoBootAnimation===true&&animation.ok&&animation.value==='',systemUiAlive:/^\d+(?:\s+\d+)*$/.test(pid.value),xmlDumpSucceeded:removed.ok&&dump.ok,xmlPresent:xml.ok&&/<node\b/.test(xml.value),focusReady:focus.ready,displayReady:sizeMatch==='1280x800'&&densityMatch==='160',focusSource:focus.source,focusKind:focus.kind};
+    const criteria={boot:last.bootComplete,bootanim:last.bootAnimationStopped||last.bootAnimationDisabled,pid:last.systemUiAlive,xml:last.xmlDumpSucceeded&&last.xmlPresent,focus:last.focusReady,display:last.displayReady};
     last.missing=Object.entries(criteria).filter(([,ok])=>!ok).map(([key])=>key);
     if(state.startsWith('emulator_'))return fail(state); // Never retry/dismiss observed ANR/dialog.
-    if(last.bootComplete&&last.bootAnimationStopped&&last.systemUiAlive&&last.xmlDumpSucceeded&&last.xmlPresent&&state==='ready') {
+    if(last.bootComplete&&(last.bootAnimationStopped||last.bootAnimationDisabled)&&last.systemUiAlive&&last.xmlDumpSucceeded&&last.xmlPresent&&state==='ready') {
       if(!last.displayReady)return fail('emulator_display_mismatch');
-      if(++stable>=2){emit('ready');return true;}
+      if(++stable>=2){emit('ready',last);return true;}
     } else stable=0;
     if(now()<deadline)await pause(Math.min(500,deadline-now()));
   }
@@ -56,10 +64,10 @@ export async function preflight(query, emit, pause = ms=>new Promise(r=>setTimeo
 if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const phase=process.argv[2]==='before_install'?'before_install':'before_start';
   const ok=await preflight((args,timeout)=>execFileSync('adb',args,{encoding:'utf8',timeout,maxBuffer:2*1024*1024}),(reason,criteria)=>{
-    console.log('QA_JSON '+JSON.stringify({event:'emulator_preflight',phase,result:reason==='ready'?'pass':'fail',reason}));
+    console.log('QA_JSON '+JSON.stringify({event:'emulator_preflight',phase,result:reason==='ready'?'pass':'fail',reason,...(typeof criteria?.bootAnimationDisabled==='boolean'?{bootAnimationDisabled:criteria.bootAnimationDisabled}:{})}));
     if(reason!=='ready'){
       console.log('QA_JSON '+JSON.stringify({event:'emulator_readiness',phase,...criteria}));
       console.log('QA_JSON '+JSON.stringify({event:'suite_result',platform:'android',result:'fail',reason}));
     }
-  }); if(!ok)process.exitCode=1;
+  },undefined,undefined,preflightMode(process.env)); if(!ok)process.exitCode=1;
 }
