@@ -153,8 +153,10 @@ try {
   evidence('trigger', trigger.record, trigger.report);
   // Collection cannot replace the exact trigger's snapshot or attach later frames.
   for (const row of trigger.report?.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify(row));
+  collect(); captureSurface();
+  // Keep the trigger immutable; gather supplementary crash dump only after existing UI collection.
   const later = crashLogs(); evidence('collection', logRecord, later);
-  collect(); captureSurface(); const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
+  const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
   emit('suite_result', { platform: 'android', result: 'fail', reason }); process.exitCode = 1;
 }
 

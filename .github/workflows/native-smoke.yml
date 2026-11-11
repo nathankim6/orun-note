@@ -1,4 +1,4 @@
-name: Native simulator smoke (QA only)
+name: Android API comparison (diagnostic only; cannot release)
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +17,11 @@ concurrency:
 jobs:
   android:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
+    name: android-diagnostic-api${{ matrix.api }}
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [35, 36]
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
@@ -51,7 +56,7 @@ jobs:
         timeout-minutes: 18
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 36
+          api-level: ${{ matrix.api }}
           arch: x86_64
           target: google_apis
           profile: pixel_tablet
@@ -71,7 +76,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-smoke-android-sanitized-logs
+          name: diagnostic-api${{ matrix.api }}-android-sanitized-logs
           path: qa/output/android.jsonl
           if-no-files-found: warn
           retention-days: 7
@@ -79,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: Synthetic-QA-failure-only-Android-screenshot
+          name: Synthetic-QA-failure-only-Android-api${{ matrix.api }}-screenshot
           path: qa/output/android-synthetic-qa-failure.png
           if-no-files-found: ignore
           retention-days: 1

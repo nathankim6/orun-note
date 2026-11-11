@@ -335,7 +335,7 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
   }
   const workflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8');
   assert(workflow.includes('force-avd-creation: true'));
-  assert(workflow.includes('name: Synthetic-QA-failure-only-Android-screenshot'));
+  assert(workflow.includes('name: Synthetic-QA-failure-only-Android-api${{ matrix.api }}-screenshot'));
   assert(workflow.includes('retention-days: 1'));
   assert(!workflow.includes('path: qa/output/*'));
 });
@@ -698,3 +698,10 @@ test('unowned current-PID fatal remains uncertain and the driver never silently 
  const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');assert(source.includes("throw fail('native_evidence_uncertain', report)"));
  const result=sanitize('QA_JSON {"event":"suite_result","result":"fail","reason":"native_evidence_uncertain","platform":"android"}','uncertain');assert.equal(result.status,1);assert(result.output.includes('native_evidence_uncertain'));
 });
+
+test('uncertain candidate category/signal is not ownership or a proven crash',()=>{
+ const r=extractCrashDiagnostics('01-01 00:00:01.000 42 42 F libc: Fatal signal 6 (SIGABRT) private-canary',{platform:'android',pids:['42']});
+ assert.equal(r.crash,false);assert.equal(r.evidence.attribution,'uncertain');assert.equal(r.evidence.candidateCategory,'native');assert.equal(r.evidence.candidateSignal,6);assert(!JSON.stringify(r).includes('private-canary'));
+});
+
+test('candidate metadata remains strict and cannot disclose unknown signal/message',async()=>{const {sanitizeEvidence}=await import('../scripts/native-diagnostics.mjs');const r=sanitizeEvidence({event:'driver_evidence',candidateCategory:'native',candidateSignal:6,nativeCause:'jni',message:'private-canary'});assert.equal(r.candidateCategory,'native');assert.equal(r.candidateSignal,6);assert.equal(r.nativeCause,'jni');assert(!JSON.stringify(r).includes('private-canary'));const u=sanitizeEvidence({event:'driver_evidence',candidateCategory:'private-canary',candidateSignal:12345,nativeCause:'private-canary'});assert(!JSON.stringify(u).includes('private-canary'));assert(!('candidateSignal'in u));});
