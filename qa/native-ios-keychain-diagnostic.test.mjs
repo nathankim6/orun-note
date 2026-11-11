@@ -49,7 +49,7 @@ test('driver creates/deletes only its own CI simulator, never accesses host keyc
   assert(source.includes("['simctl','create','SyntheticKeychain-'+seed"));assert(source.includes("['simctl','delete',simulator]"));assert(source.includes("['simctl','shutdown',simulator]"));
   assert(!source.includes("command('security'"));assert(!source.includes("'erase','all'"));assert(!source.includes("'delete','all'"));
   assert(source.includes("stage='install'"));assert(source.includes("stage='launch'"));assert(source.includes("'install_failed','launch_failed'"));
-  assert(source.includes("stdio:['ignore','pipe','pipe']"));assert(!source.includes('console.error'));assert(source.includes('Date.now()+300000'));
+  assert(source.includes("stdio:['ignore','pipe','pipe']"));assert(!source.includes('console.error'));assert(source.includes('Date.now()+480000'));
 });
 test('workflow is manual macOS15/Xcode26.2 no-RN experiment and cannot satisfy native release gate',()=>{
   const source=fs.readFileSync('.github/workflows/ios-keychain-diagnostic.yml','utf8');
@@ -118,4 +118,32 @@ test('fresh simulator type comes only from first available iPad on selected26.2 
   const source=fs.readFileSync('scripts/native-ios-keychain-diagnostic.mjs','utf8');
   assert(source.includes("command('list_available_devices','xcrun',['simctl','list','devices','available','-j'])"));assert(source.includes("source:'available_same_runtime_device',candidateCount"));assert(!source.includes('.at(-1)'));
   assert(source.includes("['simctl','create','SyntheticKeychain-'+seed,type.identifier,runtime.identifier]"));assert(!source.includes('simulator=preferred.udid'));
+});
+
+
+test('cold probe OS startup has finite180s boot and480s global budgets, without extra retries',()=>{
+  const source=fs.readFileSync('scripts/native-ios-keychain-diagnostic.mjs','utf8');
+  assert(source.includes('const deadline=Date.now()+480000;'));
+  assert(source.includes("command('sim_bootstatus','xcrun',['simctl','bootstatus',simulator,'-b'],180000)"));
+  assert.equal((source.match(/command\('sim_bootstatus'/g)||[]).length,1);
+  assert(source.includes("command(label,'xcrun',args,10000,true)"));
+  const options={label:'sim_bootstatus',variant:'shared',stage:'boot',bin:'xcrun',args:[canary],budget:180000,deadline:480000,now:()=>0};
+  const rows=[],calls=[];
+  executeProbeCommand({...options,emit:row=>rows.push(row),query:(_bin,_args,config)=>{calls.push(config);return {status:0,stdout:Buffer.alloc(0),stderr:Buffer.alloc(0)};}});
+  assert.equal(calls[0].timeout,180000);assert.equal(rows[0].budgetMs,180000);assert(Number.isFinite(rows[0].budgetMs));
+  executeProbeCommand({...options,deadline:45000,emit:()=>{},query:(_bin,_args,config)=>{assert.equal(config.timeout,45000);return {status:0};}});
+  let queryCalls=0;
+  for(const budget of [Infinity,-Infinity,NaN,0,-1,1.5,480001,'180000'])assert.throws(()=>executeProbeCommand({...options,budget,emit:()=>{},query:()=>{queryCalls++;}}),/command_budget_invalid/);
+  for(const deadline of [Infinity,-Infinity,NaN,undefined])assert.throws(()=>executeProbeCommand({...options,deadline,emit:()=>{},query:()=>{queryCalls++;}}),/command_budget_invalid/);
+  assert.throws(()=>executeProbeCommand({...options,deadline:0,emit:row=>{assert.equal(row.status,'deadline');assert.equal(row.budgetMs,0);},query:()=>{queryCalls++;}}),error=>error.status==='deadline');assert.equal(queryCalls,0);
+  executeProbeCommand({...options,label:'shutdown_probe',stage:'cleanup',cleanup:true,budget:10000,deadline:0,now:()=>480001,emit:()=>{},query:(_bin,_args,config)=>{assert.equal(config.timeout,10000);return {status:0};}});
+  executeProbeCommand({...options,label:'delete_probe',stage:'cleanup',cleanup:true,budget:180000,deadline:0,now:()=>480001,emit:()=>{},query:(_bin,_args,config)=>{assert.equal(config.timeout,15000);return {status:0};}});
+});
+test('only diagnostic workflow probe step changes to10min; job remains12min and native gates stay separate',()=>{
+  const diagnostic=fs.readFileSync('.github/workflows/ios-keychain-diagnostic.yml','utf8');
+  assert.match(diagnostic,/synthetic-keychain-experiment:\s+ runs-on: macos-15\s+timeout-minutes: 12/);
+  assert.match(diagnostic,/name: Compare linker-ad-hoc baseline with explicit synthetic entitlements\s+timeout-minutes: 10\s+run: node scripts\/native-ios-keychain-diagnostic\.mjs/);
+  const nativeWorkflow=fs.readFileSync('.github/workflows/native-smoke.yml','utf8'),nativeScript=fs.readFileSync('scripts/native-ios-smoke.sh','utf8');
+  assert(!nativeWorkflow.includes('IOS_SYNTHETIC_KEYCHAIN_DIAGNOSTIC'));assert(!nativeScript.includes('native-ios-keychain-diagnostic'));
+  assert(!nativeScript.includes('180000'));assert(!nativeScript.includes('480000'));assert(!nativeWorkflow.includes('keychain-probe'));
 });

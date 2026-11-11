@@ -22,7 +22,7 @@ jobs:
       - name: Test synthetic probe isolation and output privacy
         run: node --test qa/native-ios-keychain-diagnostic.test.mjs
       - name: Compare linker-ad-hoc baseline with explicit synthetic entitlements
-        timeout-minutes: 7
+        timeout-minutes: 10
         run: node scripts/native-ios-keychain-diagnostic.mjs
       - name: Upload enum/numeric diagnostic evidence only
         if: always()

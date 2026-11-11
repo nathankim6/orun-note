@@ -78,7 +78,9 @@ const COMMAND_STAGES=new Set(['sdk_path','list_runtimes','list_runtimes_cold','l
 class ProbeCommandFailure extends Error { constructor(message,status){super(message);this.status=status;} }
 export function executeProbeCommand({label,variant,stage,bin,args,budget=15000,deadline,cleanup=false,emit,query=spawnSync,now=Date.now}) {
   if(!COMMAND_LABELS.has(label)||!COMMAND_STAGES.has(stage)||!['shared','baseline','entitled'].includes(variant))throw Error('command_identity_invalid');
-  const remaining=cleanup?15000:deadline-now(),before=now();
+  if(!Number.isFinite(budget)||!Number.isInteger(budget)||budget<=0||budget>480000||!Number.isFinite(deadline))throw Error('command_budget_invalid');
+  const before=now();if(!Number.isFinite(before))throw Error('command_budget_invalid');
+  const remaining=cleanup?15000:deadline-before;
   const base={event:'keychain_probe_command',command:label,variant,stage,notNativeValidation:1};
   if(remaining<=0){emit({...base,status:'deadline',budgetMs:0,elapsedMs:0,stdoutBytes:0,stderrBytes:0});throw new ProbeCommandFailure('deadline','deadline');}
   const budgetMs=Math.max(1,Math.min(budget,remaining));let result;
@@ -100,7 +102,8 @@ export async function diagnostic() {
   const output='qa/output/ios-keychain-diagnostic.jsonl';fs.mkdirSync('qa/output',{recursive:true});fs.writeFileSync(output,'');
   const emit=row=>{const text=JSON.stringify({...row,notNativeValidation:1});fs.appendFileSync(output,text+'\n');console.log(text);};
   if(process.env.GITHUB_ACTIONS!=='true'||process.env.IOS_SYNTHETIC_KEYCHAIN_DIAGNOSTIC!=='1') {emit({event:'keychain_probe_driver',variant:'shared',stage:'guard',status:'environment_not_ci'});return false;}
-  const deadline=Date.now()+300000;let simulator,work,stage='sdk',variant='shared';
+  // Fresh CoreSimulator cold OS boot only; not native-app/PDF/playback validation deadlines.
+  const deadline=Date.now()+480000;let simulator,work,stage='sdk',variant='shared';
   const command=(label,bin,args,budget=15000,cleanup=false)=>executeProbeCommand({label,bin,args,budget,cleanup,deadline,emit,variant,stage:cleanup?'cleanup':stage});
   const cleanupCommand=(label,args)=>{try{command(label,'xcrun',args,10000,true);}catch{emit({event:'keychain_probe_driver',variant,stage:'cleanup',status:'cleanup_failed'});}};
 
@@ -115,7 +118,7 @@ export async function diagnostic() {
     const seed=randomUUID().replaceAll('-',''),ids=makeIdentity(seed);
     stage='create';simulator=command('sim_create','xcrun',['simctl','create','SyntheticKeychain-'+seed,type.identifier,runtime.identifier]);
     if(!/^[0-9A-Fa-f-]{36}$/.test(simulator)){simulator=undefined;throw Error('create_failed');}
-    stage='boot';command('sim_boot','xcrun',['simctl','boot',simulator]);command('sim_bootstatus','xcrun',['simctl','bootstatus',simulator,'-b'],60000);
+    stage='boot';command('sim_boot','xcrun',['simctl','boot',simulator]);command('sim_bootstatus','xcrun',['simctl','bootstatus',simulator,'-b'],180000);
     stage='compile';const binary=path.join(work,'KeychainProbe');
     command('compile_probe','xcrun',['--sdk','iphonesimulator','swiftc','-parse-as-library','-O','-sdk',sdk,'-target',(process.arch==='arm64'?'arm64':'x86_64')+'-apple-ios16.0-simulator','-framework','UIKit','-framework','Security','-Xlinker','-adhoc_codesign','scripts/native-ios-keychain-probe.swift','-o',binary],90000);
     for(const current of ['baseline','entitled']) {
