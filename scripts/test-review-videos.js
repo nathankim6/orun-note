@@ -37,19 +37,66 @@ for (const message of ['null', '[]', '{}', 'oops', '{"k":"time","t":"1","d":2,"l
 assert.equal(bridgeStatus('{"k":"time","t":1,"d":2,"l":9}').loaded, 1);
 assert.equal(bridgeStatus('{"k":"state","s":1}').playing, true);
 assert.equal(bridgeStatus('{"k":"error","c":100}').ready, false);
+for (const code of [2, 5, 100, 101, 150, 152, 153, 'network', 'load', 'http', 'process', 'timeout']) {
+  const status = bridgeStatus(JSON.stringify({ k: 'error', c: code, url: 'https://private.invalid', id: validId, message: 'private diagnostic' }));
+  assert.equal(status.errorCode, code); assert.equal(status.ready, false); assert.equal(status.playing, false); assert.equal(typeof status.error, 'string');
+  assert.equal(JSON.stringify(status).includes('private'), false); assert.equal(JSON.stringify(status).includes(validId), false);
+}
+for (const code of [999, -1009, NaN, Infinity, {}, null, undefined, '153', 'https://private.invalid', 'arbitrary native message']) assert.equal(safety.sanitizeStageErrorCode(code), 'load');
+for (const c of [null, {}, [], true, '153', 'https://private.invalid']) assert.equal(bridgeStatus(JSON.stringify({ k: 'error', c })), null);
+assert.equal(bridgeStatus('{"k":"error","c":999}').errorCode, 'load');
+assert.equal(bridgeStatus('{"k":"ready","d":60}').errorCode, null);
+assert.equal(safety.EMPTY_STATUS.errorCode, null);
+assert.equal(safety.nativeLoadErrorCode({ nativeEvent: { code: -2 } }), 'network');
+assert.equal(safety.nativeLoadErrorCode({ nativeEvent: { code: -1009, domain: 'NSURLErrorDomain' } }), 'network');
+assert.equal(safety.nativeLoadErrorCode({ nativeEvent: { code: -1009, domain: 'unrecognized' } }), 'load');
+assert.equal(safety.nativeLoadErrorCode(null), 'load');
 const normalized = normalizeReviewVideos([null, { videoId: '<script>' }, { id: 'a', videoId: validId, title: null, passages: [null, {}, { title: ' A ', id: 'p' }, { title: 'duplicate', id: 'p' }] }, { id: 'a', videoId: validId }, { id: 'b', videoId: validId, passages: null }]);
 assert.equal(normalized.length, 2); assert.equal(normalized[0].passages.length, 1); assert.equal(normalized[0].passages[0].title, 'A'); assert.equal(normalized[1].passages.length, 0);
-for (const url of ['https://youtube.com/watch?v=' + validId, 'youtube://watch', 'intent://x', 'javascript:alert(1)', 'https://evil.test', safety.PLAYER_BASE + 'evil']) assert.equal(allowPlayerNavigation({ url }), false);
+const identityDoc = 'https://developers.google.com/youtube/terms/required-minimum-functionality#embedded-player-api-client-identity';
+const app = JSON.parse(fs.readFileSync('app.json', 'utf8')).expo;
+assert.equal(safety.PLAYER_ORIGIN, 'https://' + app.ios.bundleIdentifier); assert.equal(safety.PLAYER_ORIGIN, 'https://' + app.android.package);
+assert.equal(safety.PLAYER_BASE, safety.PLAYER_ORIGIN + '/');
+assert.ok(fs.readFileSync(base + 'reviewVideoSafety.ts', 'utf8').includes(identityDoc));
+for (const url of ['https://youtube.com/watch?v=' + validId, 'youtube://watch', 'intent://x', 'javascript:alert(1)', 'https://evil.test', safety.PLAYER_BASE + 'evil', safety.PLAYER_BASE + '?x=1', safety.PLAYER_BASE + '#x', 'https://nathankim6.github.io/orun-note/', 'https://nathankim6.github.io/orun-note/review-player-v1.html#' + validId]) assert.equal(allowPlayerNavigation({ url }), false);
 assert.equal(allowPlayerNavigation({ url: safety.PLAYER_BASE }), true);
+assert.equal(allowPlayerNavigation({ url: 'about:blank' }), true);
 assert.equal(allowPlayerNavigation({ url: 'https://www.youtube-nocookie.com/embed/' + validId, isTopFrame: false }), true);
+assert.equal(allowPlayerNavigation({ url: 'https://www.youtube-nocookie.com/embed/' + validId, isTopFrame: true }), false);
 assert.equal(allowPlayerNavigation({ url: 'https://evil.test', isTopFrame: false }), false);
+assert.equal(allowPlayerNavigation(null), false);
 const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', Image: 'Image', TextInput: 'TextInput', ActivityIndicator: 'Spinner', StyleSheet: { absoluteFill: {}, create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 900, height: 1100 }), BackHandler: { addEventListener: (_name, callback) => { native.back = callback; return { remove() { if (native.back === callback) native.back = null; } }; } } };
 const stageModule = load('YouTubeStage.tsx', { react: React, 'react-native': native, 'react-native-webview': { WebView: 'WebView' }, './reviewVideoSafety': safety });
 const stage = stageModule.YouTubeStage;
+for (const [event, payload, expected] of [
+  ['onError', { nativeEvent: { code: -2, description: 'private diagnostic', url: 'https://private.invalid' } }, 'network'],
+  ['onError', { nativeEvent: { code: -1009, domain: 'NSURLErrorDomain' } }, 'network'],
+  ['onError', { nativeEvent: { code: 999, description: 'private diagnostic' } }, 'load'],
+  ['onHttpError', { nativeEvent: { statusCode: 403, url: 'https://private.invalid' } }, 'http'],
+  ['onRenderProcessGone', { nativeEvent: { didCrash: true } }, 'process'],
+  ['onContentProcessDidTerminate', {}, 'process'],
+  ['onMessage', { nativeEvent: { data: '{"k":"error","c":153}' } }, 153],
+]) {
+  const observed = []; const errorRunner = runner(stage, { videoId: validId, onStatus: status => observed.push(status) });
+  const stageTree = errorRunner.render(); const stageWeb = all(stageTree, n => n.type === 'WebView')[0];
+  stageWeb.props[event](payload); assert.equal(observed.length, 1); assert.equal(observed[0].errorCode, expected); assert.equal(JSON.stringify(observed).includes('private'), false);
+  assert.equal(all(errorRunner.render(), n => n.type === 'WebView').length, 0); errorRunner.unmount();
+}
+// Execute the real inline script against a minimal documented IFrame API double.
+const html = stageModule.playerHtml(validId, safety.PLAYER_ORIGIN);
+const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)[1]; new vm.Script(inlineScript);
+const inlineMessages = []; let playerOptions;
+const inlineContext = { window: { ReactNativeWebView: { postMessage: value => inlineMessages.push(JSON.parse(value)) }, addEventListener() {} }, document: { addEventListener() {} }, YT: { Player: function (_id, options) { playerOptions = options; this.getDuration = () => 60; this.getIframe = () => ({ setAttribute() {} }); } }, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 2, clearInterval() {} };
+vm.runInNewContext(inlineScript + ';onYouTubeIframeAPIReady();', inlineContext);
+assert.equal(playerOptions.playerVars.origin, safety.PLAYER_ORIGIN);
+playerOptions.events.onError({ data: 153 }); assert.equal(inlineMessages.at(-1).c, 153);
+playerOptions.events.onReady(); assert.equal(inlineMessages.at(-1).k, 'ready');
+inlineContext.player.getIframe = () => null; playerOptions.events.onReady(); assert.equal(inlineMessages.at(-1).c, 'load');
 let statuses = [], latest = [];
 const props = { videoId: validId, onStatus: s => statuses.push(s) };
 const handle = { current: null }; const r = runner(stage, props, handle);
 let tree = r.render(); let web = all(tree, n => n.type === 'WebView')[0]; const source = web.props.source, message = web.props.onMessage;
+assert.equal(source.uri, undefined); assert.equal(typeof source.html, 'string'); assert.equal(source.baseUrl, safety.PLAYER_BASE);
 assert.equal(tree.props.accessibilityElementsHidden, true); assert.equal(tree.props.importantForAccessibility, 'no-hide-descendants');
 assert.equal(web.props.allowsPictureInPictureMediaPlayback, false); assert.equal(web.props.allowsAirPlayForMediaPlayback, false);
 let injected = []; web.props.ref.current = { injectJavaScript: js => injected.push(js) };
@@ -59,7 +106,7 @@ tree = r.render({ ...props, onStatus: s => latest.push(s) }); web = all(tree, n 
 assert.equal(web.props.source, source); assert.equal(web.props.onMessage, message);
 message({ nativeEvent: { data: '{"k":"state","s":1}' } }); assert.equal(latest[0].playing, true);
 handle.current.seek(NaN); assert.equal(injected.length, 1);
-web.props.onContentProcessDidTerminate(); assert.equal(latest.at(-1).ready, false);
+web.props.onContentProcessDidTerminate(); assert.equal(latest.at(-1).ready, false); assert.equal(latest.at(-1).errorCode, 'process');
 assert.equal(all(r.render(), n => n.type === 'WebView').length, 0); handle.current.play(); assert.equal(injected.length, 1);
 message({ nativeEvent: { data: '{"k":"ready","d":60}' } }); assert.equal(latest.at(-1).ready, false);
 r.unmount();
@@ -85,8 +132,8 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   const playerStage = () => all(playerTree, n => n.type === stage)[0];
   playerStage().props.onStatus({ ready: true, duration: 60 }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).ready, true);
   playerStage().props.onStatus({ playing: true }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).playing, true);
-  playerStage().props.onStatus({ ready: false, playing: false, error: 'recoverable' }); playerTree = playerRunner.render(); assert.equal(playerStage(), undefined);
-  find(playerTree, 'review-video-player-retry').props.onPress(); playerTree = playerRunner.render(); assert.ok(playerStage()); assert.equal(playback.at(-1).error, null);
+  playerStage().props.onStatus({ ready: false, playing: false, error: 'recoverable', errorCode: 153 }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).errorCode, 153); assert.equal(playerStage(), undefined);
+  find(playerTree, 'review-video-player-retry').props.onPress(); playerTree = playerRunner.render(); assert.ok(playerStage()); assert.equal(playback.at(-1).error, null); assert.equal(playback.at(-1).errorCode, null);
   let pauses = 0; playerStage().props.ref.current = { pause() { pauses++; } };
   const closePlayerControl = all(playerTree, n => n.props?.testID === 'review-video-player-close')[0]; closePlayerControl.props.onPress(); assert.equal(pauses, 1);
   closePlayerControl.props.onPress(); assert.equal(pauses, 1); playerRunner.unmount();
@@ -103,6 +150,8 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   const webSource = fs.readFileSync(base + 'YouTubeStage.web.tsx', 'utf8');
   assert.match(webSource, /'aria-hidden': true, inert: true/); assert.match(webSource, /f\.setAttribute\('aria-hidden', 'true'\)/); assert.match(webSource, /f\.setAttribute\('inert', ''\)/);
   const nativeSource = fs.readFileSync(base + 'YouTubeStage.tsx', 'utf8');
+  assert.match(nativeSource, /html: playerHtml\(videoId, PLAYER_ORIGIN\), baseUrl: PLAYER_BASE/);
+  assert.doesNotMatch(nativeSource, /playerSourceUri|review-player-v1|uri:/);
   assert.match(nativeSource, /allowsPictureInPictureMediaPlayback=\{false\}/); assert.match(nativeSource, /allowsAirPlayForMediaPlayback=\{false\}/); assert.match(nativeSource, /accessibilityElementsHidden importantForAccessibility="no-hide-descendants"/);
   console.log('PASS review videos: normalization, malformed bridge, navigation, stable source/callbacks, process failure/unmount, dead refs, screen open/close/back/cancellation/retry. JS mocks only.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

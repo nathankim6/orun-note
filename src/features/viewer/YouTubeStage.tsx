@@ -1,11 +1,13 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { WebView as RNWebView } from 'react-native-webview';
+import type { WebViewMessageEvent } from 'react-native-webview';
 
-const WebView: any = RNWebView;
+// The library defaults its generic to undefined, which makes props an impossible intersection.
+const WebView = RNWebView<{}>;
 
-import { StageStatus, StageHandle, stageError, bridgeStatus, validVideoId, allowPlayerNavigation, PLAYER_ORIGIN, PLAYER_BASE } from './reviewVideoSafety';
-export { StageStatus, StageHandle, EMPTY_STATUS, stageError } from './reviewVideoSafety';
+import { StageStatus, StageHandle, StageErrorCode, stageFailure, nativeLoadErrorCode, bridgeStatus, validVideoId, allowPlayerNavigation, PLAYER_ORIGIN, PLAYER_BASE } from './reviewVideoSafety';
+export { StageStatus, StageHandle, StageErrorCode, EMPTY_STATUS, stageError } from './reviewVideoSafety';
 
 const blockWindow = () => {};
 
@@ -21,13 +23,13 @@ export function playerHtml(videoId: string, origin: string) {
 var player=null,ready=false,tick=null,timeout=null;
 function post(m){try{window.ReactNativeWebView.postMessage(JSON.stringify(m))}catch(e){}}
 function onYouTubeIframeAPIReady(){
-  player=new YT.Player('p',{host:'https://www.youtube-nocookie.com',videoId:${JSON.stringify(videoId)},width:'100%',height:'100%',playerVars:${vars},
+  try{player=new YT.Player('p',{host:'https://www.youtube-nocookie.com',videoId:${JSON.stringify(videoId)},width:'100%',height:'100%',playerVars:${vars},
     events:{
-      onReady:function(){var frame=player.getIframe();frame.setAttribute("aria-hidden","true");frame.setAttribute("tabindex","-1");frame.setAttribute("inert","");ready=true;clearTimeout(timeout);post({k:'ready',d:player.getDuration()});
-        clearInterval(tick);tick=setInterval(function(){try{post({k:'time',t:player.getCurrentTime(),d:player.getDuration(),l:player.getVideoLoadedFraction()})}catch(e){}},250)},
+      onReady:function(){try{var frame=player.getIframe();frame.setAttribute("aria-hidden","true");frame.setAttribute("tabindex","-1");frame.setAttribute("inert","");ready=true;clearTimeout(timeout);post({k:'ready',d:player.getDuration()});
+        clearInterval(tick);tick=setInterval(function(){try{post({k:'time',t:player.getCurrentTime(),d:player.getDuration(),l:player.getVideoLoadedFraction()})}catch(e){}},250)}catch(e){post({k:'error',c:'load'})}},
       onStateChange:function(e){post({k:'state',s:e.data})},
       onAutoplayBlocked:function(){post({k:'state',s:2})},
-      onError:function(e){post({k:'error',c:e.data})}}});
+      onError:function(e){post({k:'error',c:e.data})}}});}catch(e){post({k:'error',c:'load'})}
 }
 window.cmd=function(c){if(!player||!ready)return;
   if(c.t==='play')player.playVideo();else if(c.t==='pause')player.pauseVideo();else if(c.t==='seek')player.seekTo(c.v,true);};
@@ -35,23 +37,23 @@ document.addEventListener('contextmenu',function(e){e.preventDefault()});
 window.addEventListener('pagehide',function(){ready=false;clearInterval(tick);clearTimeout(timeout);try{if(player)player.destroy()}catch(e){}player=null;});
 timeout=setTimeout(function(){if(!ready)post({k:'error',c:'timeout'})},30000);
 </script>
-<script src="https://www.youtube.com/iframe_api"></script>
+<script src="https://www.youtube.com/iframe_api" onerror="post({k:'error',c:'network'})"></script>
 </body></html>`;
 }
 
 /** No native presentation boundary, external navigation, or automatic process reload. */
 export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus: (s: Partial<StageStatus>) => void }>(function YouTubeStage({ videoId, onStatus }, ref) {
-  const web = useRef<any>(null);
+  const web = useRef<RNWebView<{}> | null>(null);
   const latest = useRef(onStatus); latest.current = onStatus;
   const alive = useRef(true); const ready = useRef(false); const failed = useRef(false);
   const [failure, setFailure] = useState(false);
   // Crucial: polling status rerenders must not replace the WebView source object.
   const source = useMemo(() => ({ html: playerHtml(videoId, PLAYER_ORIGIN), baseUrl: PLAYER_BASE }), [videoId]);
-  const fail = useCallback((error?: unknown) => {
+  const fail = useCallback((code: StageErrorCode = 'load') => {
     if (!alive.current || failed.current) return;
     failed.current = true; ready.current = false; web.current = null;
     setFailure(true);
-    latest.current({ ready: false, playing: false, buffering: false, error: typeof error === 'string' ? error : stageError('gone') });
+    latest.current(stageFailure(code));
   }, []);
   useEffect(() => {
     alive.current = true;
@@ -63,14 +65,17 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
     try { web.current.injectJavaScript(`window.cmd && window.cmd(${JSON.stringify(command)}); true;`); } catch { fail(); }
   }, [fail]);
   useImperativeHandle(ref, () => ({ play: () => send({ t: 'play' }), pause: () => send({ t: 'pause' }), seek: (v: number) => { if (Number.isFinite(v)) send({ t: 'seek', v: Math.max(0, v) }); } }), [send]);
-  const onMessage = useCallback((event: any) => {
+  const onMessage = useCallback((event: WebViewMessageEvent) => {
     if (!alive.current || failed.current) return;
     const status = bridgeStatus(event?.nativeEvent?.data);
     if (!status) return;
-    if (status.error) { fail(status.error); return; }
+    if (status.error) { fail(status.errorCode ?? 'load'); return; }
     if (status.ready) ready.current = true;
     latest.current(status);
   }, [fail]);
+  const onLoadError = useCallback((event: Parameters<typeof nativeLoadErrorCode>[0]) => fail(nativeLoadErrorCode(event)), [fail]);
+  const onHttpError = useCallback(() => fail('http'), [fail]);
+  const onProcessError = useCallback(() => fail('process'), [fail]);
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none" testID="review-video-stage" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {!failure && validVideoId(videoId) && <WebView ref={web} source={source} originWhitelist={['*']} onMessage={onMessage}
@@ -79,7 +84,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
         scrollEnabled={false} bounces={false} overScrollMode="never" automaticallyAdjustContentInsets={false} contentInsetAdjustmentBehavior="never"
         mixedContentMode="never" textInteractionEnabled={false} dataDetectorTypes="none"
         onShouldStartLoadWithRequest={allowPlayerNavigation} onOpenWindow={blockWindow}
-        onError={fail} onHttpError={fail} onContentProcessDidTerminate={fail} onRenderProcessGone={fail}
+        onError={onLoadError} onHttpError={onHttpError} onContentProcessDidTerminate={onProcessError} onRenderProcessGone={onProcessError}
         style={{ flex: 1, backgroundColor: '#000' }} containerStyle={{ backgroundColor: '#000' }} />}
     </View>
   );

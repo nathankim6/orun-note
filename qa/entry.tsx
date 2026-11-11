@@ -9,18 +9,19 @@ import type { StageStatus } from '../src/features/viewer/YouTubeStage';
 import { useContentProtection } from '../src/lib/security';
 import { loadVideos } from './fixtures/videos';
 import { pdfSmoke } from './pdf-smoke';
+import { playerErrorCode, jsExceptionName } from './error-codes';
 import { marker, telemetry, subscribe } from './telemetry';
 
 let reportJS = () => {};
 const errorUtils = (globalThis as any).ErrorUtils;
 const previous = errorUtils?.getGlobalHandler?.();
 errorUtils?.setGlobalHandler?.((error: unknown, fatal: boolean) => {
-  marker('js_error', { fatal: !!fatal }); reportJS(); previous?.(error, fatal);
+  marker('js_error', { fatal: !!fatal, jsException: jsExceptionName((error as { name?: unknown })?.name) }); reportJS(); previous?.(error, fatal);
 });
 class Boundary extends React.Component<{children: React.ReactNode}, {failed: boolean}> {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch() { marker('js_error', { fatal: true }); }
+  componentDidCatch(error: Error) { marker('js_error', { fatal: true, jsException: jsExceptionName(error.name) }); }
   render() { return this.state.failed ? <Text>qa-js-error</Text> : this.props.children; }
 }
 function QA() {
@@ -35,7 +36,7 @@ function QA() {
   const status = React.useCallback((s: StageStatus) => {
     const events = [s.ready && 'ready', s.playing && 'playing', s.ready && !s.playing && observed.current.has('playing') && 'paused', !!s.error && 'unavailable'].filter(Boolean) as string[];
     for (const event of events) if (!observed.current.has(event)) {
-      observed.current.add(event); marker('player_' + event, { cycle });
+      observed.current.add(event); marker('player_' + event, { cycle, ...(event === 'unavailable' ? { errorCode: playerErrorCode((s as StageStatus & { errorCode?: unknown }).errorCode) } : {}) });
     }
     setFlags([...observed.current].map(v => `qa-${v}-${cycle}`).join(' ') + ` qa-state-${s.playing ? 'playing' : s.ready ? 'paused' : 'loading'}-${cycle}`);
   }, [cycle]);

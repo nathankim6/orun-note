@@ -126,9 +126,9 @@ test('PID disappearance after first observation fails immediately without startu
   assert.equal(result.status, 1);
   assert(result.stdout.includes('"reason":"process_crash"'));
   assert(!result.stdout.includes('startup_timeout'));
-  assert(!result.commands.some(a => a[1] === 'uiautomator'));
-  // Initial readiness, first health check, then failure-only collect. No PID retry loop after readiness.
-  assert.equal(result.commands.filter(a => a[1] === 'pidof').length, 3);
+  // Only failure-only telemetry capture may dump XML; it never re-enters health/PID checks.
+  assert.equal(result.commands.filter(a => a[1] === 'uiautomator').length, 1);
+  assert.equal(result.commands.filter(a => a[1] === 'pidof').length, 2);
   assert(result.commands.some(a => a[0] === 'logcat' && a[1] === '-d'));
 });
 
@@ -159,4 +159,103 @@ test('failure step accepts only explicit safe enums and strips arbitrary labels'
   assert.equal(result.status, 1);
   assert(result.output.includes('"step":"player_close"'));
   assert(!result.output.includes(canary)); assert(!result.output.includes('"label"'));
+});
+
+test('JS exception enums and allowlisted bundle frames survive without raw messages/functions/URLs', () => {
+  const raw = [
+    line(777, 'Process: com.paperly.study, PID: 777'),
+    line(777, 'TypeError: ' + canary + ' https://private.test/' + canary, 'ReactNativeJS'),
+    line(777, 'renderWithHooks@1:123456', 'ReactNativeJS'),
+    line(777, canary + '@1:123457', 'ReactNativeJS'),
+    line(777, '    at onMessage (address at index.android.bundle:1:456789)', 'ReactNativeJS'),
+    line(777, '    at onMessage (https://private.test/' + canary + ':1:999)', 'ReactNativeJS'),
+  ].join('\n');
+  const report = extractCrashDiagnostics(raw, { platform: 'android' });
+  assert(report.crash);
+  assert(report.diagnostics.some(r => r.jsException === 'TypeError'));
+  assert(report.diagnostics.some(r => r.frameFunction === 'renderWithHooks' && r.bundleColumn === 123456));
+  assert(report.diagnostics.some(r => r.frameFunction === 'other' && r.bundleColumn === 123457));
+  assert(report.diagnostics.some(r => r.frameFunction === 'onMessage' && r.bundleColumn === 456789));
+  assert(!report.diagnostics.some(r => r.bundleColumn === 999));
+  assert(!JSON.stringify(report).includes(canary));
+  const result = sanitize(raw, 'js-stack');
+  assert.equal(result.status, 1); assert(result.output.includes('TypeError')); assert(result.output.includes('renderWithHooks'));
+  assert(!/PRIVATE|https|private\.test/.test(result.output));
+  assert.equal(sanitizeDiagnostic({ event: 'crash_js_frame', frameFunction: canary, bundleLine: 1, bundleColumn: 2 }), null);
+  assert.equal(sanitizeDiagnostic({ event: 'crash_js_frame', frameFunction: 'onMessage', bundleLine: 1, bundleColumn: 10000001 }), null);
+});
+test('QA player transport/YouTube error helper and final sanitizer reject private/arbitrary codes', async () => {
+  const { createRequire } = await import('node:module');
+  const { runInNewContext } = await import('node:vm');
+  const ts = createRequire(import.meta.url)('typescript');
+  const compiled = ts.transpileModule(fs.readFileSync('qa/error-codes.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const context = { exports: {} }; runInNewContext(compiled, context);
+  for (const code of [2, 5, 100, 101, 150, 152, 153, 'load', 'http', 'process', 'timeout', 'network']) assert.equal(context.exports.playerErrorCode(code), code);
+  for (const code of [canary, '153', 999, { message: canary }, 'https://private.test']) assert.equal(context.exports.playerErrorCode(code), undefined);
+  assert.equal(context.exports.jsExceptionName('ReferenceError'), 'ReferenceError');
+  assert.equal(context.exports.jsExceptionName(canary), undefined);
+  const result = sanitize([
+    { event: 'player_unavailable', cycle: 1, errorCode: 153, message: canary },
+    { event: 'player_unavailable', cycle: 2, errorCode: 'http', url: canary },
+    { event: 'player_unavailable', cycle: 3, errorCode: canary },
+    { event: 'js_error', jsException: 'ReferenceError', message: canary },
+  ].map(r => 'QA_JSON ' + JSON.stringify(r)).join('\n'), 'error-codes');
+  assert.equal(result.status, 1); assert(result.output.includes('"errorCode":153')); assert(result.output.includes('"errorCode":"http"'));
+  assert(result.output.includes('ReferenceError')); assert(!result.output.includes(canary));
+});
+test('failure collection keeps cached telemetry if XML fails and can capture XML without healthy recheck', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const source = fs.readFileSync('scripts/native-android-smoke.mjs', 'utf8');
+  const parse = source.match(/function parseXML\(xml\) \{[\s\S]*?\n\}/)?.[0];
+  const collect = source.match(/function collect\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert(parse && collect);
+  const rows = [{ event: 'boot' }, { event: 'list_open', cycle: 1 }, { event: 'player_unavailable', cycle: 1, errorCode: 153 }];
+  const xml = '<hierarchy><node resource-id="qa-telemetry" content-desc="' + JSON.stringify(rows).replaceAll('"', '&quot;') + '" /></hierarchy>';
+  for (const brokenXML of [true, false]) {
+    const printed = [];
+    const context = { lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
+    const run = runInNewContext(parse + '\n' + collect + '\ncollect;', context); run();
+    assert.equal(printed.length, 3); assert(printed.some(s => s.includes('"errorCode":153')));
+  }
+});
+test('iOS failure helper emits safe reason/step before failing; sanitizer retains them', () => {
+  const swift = fs.readFileSync('qa/ios/NativeSmokeTests.swift', 'utf8');
+  const fail = swift.match(/  func fail\(_ reason: String\) \{[\s\S]*?\n  \}/)?.[0];
+  assert(fail && fail.indexOf('emit("suite_result"') < fail.indexOf('    XCTFail(reason)'));
+  assert(swift.includes('fail("network_or_player_unavailable")'));
+  assert(!swift.includes('XCTFail("network_or_player_unavailable")'));
+  const input = path.join(work, 'ios-reason.raw'), output = path.join(work, 'ios-reason.jsonl');
+  fs.writeFileSync(input, 'QA_JSON {"event":"driver_failure_step","step":"wait_ready"}\nQA_JSON {"event":"suite_result","platform":"ios","result":"fail","reason":"network_or_player_unavailable"}\n');
+  const result = spawnSync(process.execPath, ['scripts/native-sanitize.mjs', input, output, 'ios']);
+  const text = fs.readFileSync(output, 'utf8'); assert.equal(result.status, 1);
+  assert(text.includes('"reason":"network_or_player_unavailable"')); assert(text.includes('"step":"wait_ready"'));
+});
+test('legacy iOS player-unavailable telemetry gets a specific fallback reason without a fake pass', () => {
+  const result = sanitize('QA_JSON {"event":"boot"}\nQA_JSON {"event":"player_unavailable","cycle":1,"errorCode":153}', 'legacy-unavailable');
+  assert.equal(result.status, 1); assert(result.output.includes('"reason":"network_or_player_unavailable"'));
+  assert(!result.output.includes('"reason":"driver_failure"'));
+});
+
+test('caught generic console Error is not app-fatal, but specific JS errors and renderer death remain gated', () => {
+  const base = line(777, 'Process: com.paperly.study, PID: 777') + '\n';
+  const generic = base + line(777, 'Error: caught WebView failure ' + canary, 'ReactNativeJS');
+  assert.equal(extractCrashDiagnostics(generic, { platform: 'android' }).crash, false);
+  assert(extractCrashDiagnostics(generic, { platform: 'android', force: true }).diagnostics.some(r => r.jsException === 'Error'));
+  for (const type of ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError', 'EvalError', 'AggregateError', 'InternalError']) {
+    assert.equal(extractCrashDiagnostics(base + line(777, type + ': ' + canary, 'ReactNativeJS'), { platform: 'android' }).crash, true);
+  }
+  assert.equal(extractCrashDiagnostics(base + line(777, 'Renderer process 555 crash detected', 'chromium'), { platform: 'android' }).crash, true);
+  assert.equal(extractCrashDiagnostics(base + line(777, 'com.facebook.react.common.JavascriptException: Error: ' + canary), { platform: 'android' }).crash, true);
+  const result = sanitize(generic + '\nQA_JSON {"event":"player_unavailable","cycle":1,"errorCode":"network"}', 'caught-network');
+  assert.equal(result.status, 1); assert(result.output.includes('network_or_player_unavailable'));
+  assert(result.output.includes('"errorCode":"network"')); assert(!result.output.includes('native_or_js_error')); assert(!result.output.includes(canary));
+});
+test('authoritative fatal category snapshots latest telemetry before throwing', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const source = fs.readFileSync('scripts/native-android-smoke.mjs', 'utf8');
+  const body = source.match(/function read\(\) \{[\s\S]*?\n\}/)?.[0]; assert(body);
+  let captured = false;
+  const context = { nodesReadAt: 0, Date, start: Date.now(), pkg: 'com.paperly.study', knownPids: new Set(), crashLogs: () => ({ crash: true }), parseXML: xml => { assert.equal(xml, 'latest-telemetry'); captured = true; }, adb: (...a) => a[1] === 'pidof' ? '777' : a[1] === 'cat' ? 'latest-telemetry' : '', Error };
+  const read = runInNewContext(body + '\nread;', context);
+  assert.throws(read, /native_or_js_error/); assert(captured);
 });

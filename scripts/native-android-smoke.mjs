@@ -7,6 +7,13 @@ const emit = (event, values = {}) => console.log('QA_JSON ' + JSON.stringify({ e
 const decode = s => s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n)).replace(/&amp;/g, '&');
 let nodes = [], lastLogcat = '', nodesReadAt = 0, currentStep = 'startup';
 const knownPids = new Set();
+let lastTelemetry = [];
+function parseXML(xml) {
+  const parsed = [...xml.matchAll(/<node\b[^>]*>/g)].map(([node]) => Object.fromEntries([...node.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, decode(v)])));
+  const node = parsed.find(n => n['resource-id'] === 'qa-telemetry' || n['resource-id']?.endsWith(':id/qa-telemetry'));
+  try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 180) lastTelemetry = data; } catch { /* Keep last valid telemetry. */ }
+  return parsed;
+}
 function crashLogs(force = false) {
   try { lastLogcat = adb('logcat', '-d', '-v', 'threadtime', '-t', '8000'); } catch { /* Preserve last successful read. */ }
   return extractCrashDiagnostics(lastLogcat, { platform: 'android', pids: [...knownPids], force });
@@ -35,11 +42,16 @@ function read() {
   for (const pid of live.split(/\s+/).filter(Boolean)) knownPids.add(pid);
   const report = crashLogs(!live);
   if (!live) throw new Error('process_crash');
-  if (report.crash) throw new Error('native_or_js_error');
+  if (report.crash) {
+    // The fatal category is authoritative, but preserve the latest callback code
+    // and boot/list events before throwing. No health recursion or test bypass.
+    try { adb('shell', 'uiautomator', 'dump', '/data/local/tmp/qa.xml'); parseXML(adb('shell', 'cat', '/data/local/tmp/qa.xml')); } catch { /* Retain previous telemetry if UI died. */ }
+    throw new Error('native_or_js_error');
+  }
   adb('shell', 'uiautomator', 'dump', '/data/local/tmp/qa.xml');
   const xml = adb('shell', 'cat', '/data/local/tmp/qa.xml');
+  nodes = parseXML(xml); // Cache telemetry before UI-error checks can throw.
   if (xml.includes('review-videos-boundary-error')) throw new Error('js_error');
-  nodes = [...xml.matchAll(/<node\b[^>]*>/g)].map(([node]) => Object.fromEntries([...node.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, decode(v)])));
   if (nodes.some(n => [n.text, n['content-desc']].some(s => s?.includes('qa-js-error')))) throw new Error('js_error');
   nodesReadAt = Date.now(); // Timestamp after dump, parsing and UI error checks.
   return nodes;
@@ -54,7 +66,7 @@ async function wait(label, seconds = 25, contains = false) {
     if (node) return node;
     await sleep(300);
   } while (Date.now() < until);
-  throw new Error(label.startsWith('qa-ready') || label.startsWith('qa-playing') ? 'network_or_player_timeout' : 'ui_timeout');
+  throw new Error(label.startsWith('qa-ready') || label.startsWith('qa-state-playing') ? 'network_or_player_timeout' : 'ui_timeout');
 }
 async function tap(label) {
   const cached = Date.now() - nodesReadAt <= 500 ? find(label) : undefined;
@@ -64,12 +76,15 @@ async function tap(label) {
   adb('shell', 'input', 'tap', String(Math.round((+b[1] + +b[3]) / 2)), String(Math.round((+b[2] + +b[4]) / 2)));
 }
 function collect() {
+  // A failure is already authoritative. Do not call read()/healthy() again: that
+  // would discard telemetry whenever the same fatal log is still in logcat.
   try {
-    read(); const node = find('qa-telemetry');
-    const data = node && JSON.parse(node['content-desc']);
-    if (Array.isArray(data)) for (const row of data) console.log('QA_JSON ' + JSON.stringify(row));
-  } catch { /* Driver failure below remains authoritative. */ }
+    adb('shell', 'uiautomator', 'dump', '/data/local/tmp/qa.xml');
+    parseXML(adb('shell', 'cat', '/data/local/tmp/qa.xml'));
+  } catch { /* Process/UI may be gone; retain the last parsed telemetry. */ }
+  for (const row of lastTelemetry) console.log('QA_JSON ' + JSON.stringify(row));
 }
+
 try {
   adb('logcat', '-c'); adb('shell', 'am', 'force-stop', pkg);
   adb('shell', 'am', 'start', '-W', '-n', `${pkg}/.MainActivity`);

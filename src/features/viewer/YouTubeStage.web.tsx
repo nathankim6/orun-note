@@ -1,6 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { StageHandle, StageStatus, stageError, bridgeStatus, validVideoId } from './reviewVideoSafety';
-export { StageHandle, StageStatus, EMPTY_STATUS, stageError } from './reviewVideoSafety';
+import { StageHandle, StageStatus, stageFailure, bridgeStatus, validVideoId } from './reviewVideoSafety';
+export { StageHandle, StageStatus, StageErrorCode, EMPTY_STATUS, stageError } from './reviewVideoSafety';
 
 type YTApi = { Player: new (el: HTMLElement, o: any) => any };
 let loading: Promise<YTApi> | null = null;
@@ -37,7 +37,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
     const fail = (code: unknown) => {
       if (disposed || failed) return;
       failed = true; clearTimeout(guard); destroy();
-      cb.current({ ready: false, playing: false, buffering: false, error: stageError(code) });
+      cb.current(stageFailure(code));
     };
     const emit = (message: object) => {
       if (disposed || failed) return;
@@ -58,7 +58,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
               ready.current = true; clearTimeout(guard);
               const f = event.target.getIframe?.(); if (f) { f.setAttribute('tabindex', '-1'); f.setAttribute('aria-hidden', 'true'); f.setAttribute('inert', ''); f.setAttribute('allow', 'autoplay; encrypted-media'); f.style.pointerEvents = 'none'; }
               emit({ k: 'ready', d: event.target.getDuration() || 0 });
-              tick = setInterval(() => { if (disposed || failed || !player.current) return; try { const p = player.current; emit({ k: 'time', t: p.getCurrentTime(), d: p.getDuration(), l: p.getVideoLoadedFraction() }); } catch { fail('gone'); } }, 250);
+              tick = setInterval(() => { if (disposed || failed || !player.current) return; try { const p = player.current; emit({ k: 'time', t: p.getCurrentTime(), d: p.getDuration(), l: p.getVideoLoadedFraction() }); } catch { fail('process'); } }, 250);
             } catch { fail('load'); }
           },
           onStateChange: (e: any) => emit({ k: 'state', s: e.data }),
@@ -66,7 +66,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
           onError: (e: any) => fail(e.data),
         },
       });
-    }).catch(() => fail('timeout'));
+    }).catch(() => fail('network'));
     return () => { disposed = true; clearTimeout(guard); destroy(); };
   }, [videoId]);
   return React.createElement('div', {

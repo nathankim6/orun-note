@@ -9,7 +9,7 @@ import { api, ReviewVideo } from '@/lib/api';
 import { useSession } from '@/store/session';
 import { YouTubeStage, StageHandle, StageStatus, EMPTY_STATUS } from './YouTubeStage';
 import { normalizeReviewVideos } from './reviewVideoSafety';
-export type { StageStatus } from './YouTubeStage';
+export type { StageStatus, StageErrorCode } from './YouTubeStage';
 
 // Thumbnail of the video (never shown as text). hqdefault is 4:3 with letterbox bars; a 16:9 cover crop removes them.
 const thumb = (id: string) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
