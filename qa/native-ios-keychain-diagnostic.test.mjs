@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { sanitizeProbeRows, makeIdentity, entitlements, signingFlags, executeProbeCommand, coldEnumeration } from '../scripts/native-ios-keychain-diagnostic.mjs';
+import { sanitizeProbeRows, makeIdentity, entitlements, signingFlags, executeProbeCommand, coldEnumeration, REQUIRED_RUNTIME, selectCompatibleSimulator, selectPreconfiguredSimulator, classifyCreateError } from '../scripts/native-ios-keychain-diagnostic.mjs';
 const canary='PRIVATE_KEY_DATA_ACCOUNT_TOKEN_PATH_CANARY';
 test('probe output is fixed enums/numbers and unknown status never exposes OSStatus or key bytes',()=>{
   const rows=sanitizeProbeRows([
@@ -74,4 +74,48 @@ test('CoreSimulator enumeration gets one 60s cold attempt only after a recorded 
   assert.equal(output,'synthetic');assert.deepEqual(calls,[{label:'list_runtimes',budget:15000},{label:'list_runtimes_cold',budget:60000}]);
   let nonzeroCalls=0;assert.throws(()=>coldEnumeration(()=>{nonzeroCalls++;throw Object.assign(Error('safe'),{status:'nonzero'});},'list_device_types'));assert.equal(nonzeroCalls,1);
   let timeouts=0;assert.throws(()=>coldEnumeration(()=>{timeouts++;throw Object.assign(Error('safe'),{status:'timeout'});},'list_runtimes'));assert.equal(timeouts,2);
+});
+
+
+test('simulator selection pins exact iOS26.2 and configured iPad, never last/old iPad',()=>{
+  const preferred='com.apple.CoreSimulator.SimDeviceType.iPad-Synthetic-Preferred';
+  const old='com.apple.CoreSimulator.SimDeviceType.iPad-Synthetic-Old';
+  const runtime={identifier:REQUIRED_RUNTIME,version:'26.2',isAvailable:true,supportedDeviceTypes:[{identifier:preferred}]};
+  const type={identifier:preferred,name:'iPad Synthetic Preferred',productFamily:'iPad',minRuntimeVersionString:'18.0.0',maxRuntimeVersion:4294967295};
+  const obsolete={identifier:old,name:'iPad Synthetic Old',productFamily:'iPad',maxRuntimeVersionString:'18.0.0'};
+  const selected=selectCompatibleSimulator({runtimes:[runtime]},{devicetypes:[type,obsolete]},preferred);
+  assert.equal(selected.type.identifier,preferred);assert.equal(selected.runtime.identifier,REQUIRED_RUNTIME);
+  assert.throws(()=>selectCompatibleSimulator({runtimes:[runtime]},{devicetypes:[obsolete]},preferred),/compatible_device_unavailable/);
+  assert.throws(()=>selectCompatibleSimulator({runtimes:[runtime]},{devicetypes:[obsolete]},old),/compatible_device_unavailable/);
+  for(const candidate of [{...runtime,isAvailable:false},{...runtime,isAvailable:'true'},{...runtime,version:'26.1'},{...runtime,identifier:'untrusted.iOS-26-2'}])assert.throws(()=>selectCompatibleSimulator({runtimes:[candidate]},{devicetypes:[type]},preferred),/runtime_unavailable/);
+  for(const candidate of [{...type,minRuntimeVersionString:'27.0.0'},{...type,maxRuntimeVersion:18*65536},{...type,minRuntimeVersion:NaN},{...type,productFamily:'iPhone'},{...type,name:'iPhone Synthetic'}])assert.throws(()=>selectCompatibleSimulator({runtimes:[runtime]},{devicetypes:[candidate]},preferred),/compatible_device_unavailable/);
+  assert.throws(()=>selectCompatibleSimulator({runtimes:[{...runtime,supportedDeviceTypes:[old]}]},{devicetypes:[type]},preferred),/compatible_device_unavailable/);
+  assert.throws(()=>selectCompatibleSimulator({runtimes:[runtime]},{devicetypes:[type]},canary),/compatible_device_unavailable/);
+});
+test('creation failures expose only strict category and enum/numeric command evidence',()=>{
+  const examples=[['Device type is not supported by this runtime','incompatible_device_runtime'],['Invalid device type','device_type_unavailable'],['Invalid runtime','runtime_unavailable'],['CoreSimulatorService connection unavailable','simulator_service_unavailable'],['Permission denied','permission_denied'],[canary,'unknown']];
+  for(const [message,category]of examples){
+    assert.equal(classifyCreateError({stdout:Buffer.from(canary),stderr:Buffer.from(message)}),category);
+    const rows=[];assert.throws(()=>executeProbeCommand({label:'sim_create',variant:'shared',stage:'create',bin:'xcrun',args:[canary],deadline:10000,now:()=>0,emit:row=>rows.push(row),query:()=>({status:147,stdout:Buffer.from(canary),stderr:Buffer.from(message)})}),error=>error.status==='nonzero');
+    assert.equal(rows[0].createError,category);assert.equal(rows[0].exitCode,147);assert(!JSON.stringify(rows).includes(canary));assert(!JSON.stringify(rows).includes(message));
+  }
+});
+
+
+test('fresh simulator type comes only from first available iPad on selected26.2 runtime',()=>{
+  const preferred='com.apple.CoreSimulator.SimDeviceType.iPad-Synthetic-Preferred';
+  const old='com.apple.CoreSimulator.SimDeviceType.iPad-Synthetic-Old';
+  const runtime={identifier:REQUIRED_RUNTIME,version:'26.2',isAvailable:true};
+  const types={devicetypes:[{identifier:preferred,name:'iPad Synthetic Preferred',productFamily:'iPad',minRuntimeVersionString:'18.0.0'},{identifier:old,name:'iPad Synthetic Old',maxRuntimeVersionString:'18.0.0'}]};
+  const available={isAvailable:true,name:'iPad Synthetic Preferred',deviceTypeIdentifier:preferred,udid:canary};
+  const devices={devices:{'com.apple.CoreSimulator.SimRuntime.iOS-18-0':[{isAvailable:true,name:'iPad Synthetic Old',deviceTypeIdentifier:old}], [REQUIRED_RUNTIME]:[{isAvailable:false,name:'iPad Unavailable',deviceTypeIdentifier:old},{isAvailable:true,name:'iPhone Synthetic',deviceTypeIdentifier:old},available]}};
+  const result=selectPreconfiguredSimulator({runtimes:[runtime]},types,devices);assert.equal(result.type.identifier,preferred);assert.equal(result.candidateCount,1);
+  assert.equal(result.runtime.identifier,REQUIRED_RUNTIME);assert(!JSON.stringify({candidateCount:result.candidateCount}).includes(canary));
+  for(const sameRuntime of [undefined,[],[{...available,deviceTypeIdentifier:undefined}],[{...available,deviceTypeIdentifier:canary}],[{...available,isAvailable:false}],[{...available,name:'iPhone Synthetic'}]])assert.throws(()=>selectPreconfiguredSimulator({runtimes:[runtime]},types,{devices:{...devices.devices,[REQUIRED_RUNTIME]:sameRuntime}}),/compatible_device_unavailable/);
+  assert.throws(()=>selectPreconfiguredSimulator({runtimes:[runtime]},types,{devices:{...devices.devices,[REQUIRED_RUNTIME]:[{...available,deviceTypeIdentifier:undefined},available]}}),/compatible_device_unavailable/); // no fallback past invalid first preferred candidate
+  assert.throws(()=>selectPreconfiguredSimulator({runtimes:[runtime]},{devicetypes:[types.devicetypes[1]]},devices),/compatible_device_unavailable/);
+  assert.throws(()=>selectPreconfiguredSimulator({runtimes:[{...runtime,isAvailable:false}]},types,devices),/runtime_unavailable/);
+  const source=fs.readFileSync('scripts/native-ios-keychain-diagnostic.mjs','utf8');
+  assert(source.includes("command('list_available_devices','xcrun',['simctl','list','devices','available','-j'])"));assert(source.includes("source:'available_same_runtime_device',candidateCount"));assert(!source.includes('.at(-1)'));
+  assert(source.includes("['simctl','create','SyntheticKeychain-'+seed,type.identifier,runtime.identifier]"));assert(!source.includes('simulator=preferred.udid'));
 });

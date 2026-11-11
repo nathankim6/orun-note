@@ -30,8 +30,51 @@ export function entitlements(bundle) {
 export function signingFlags(text) {
   return {applicationIdentifier: /<key>application-identifier<\/key>/.test(text)?1:0,keychainAccessGroups:/<key>keychain-access-groups<\/key>/.test(text)?1:0};
 }
-const COMMAND_LABELS=new Set(['sdk_path','list_runtimes','list_runtimes_cold','list_device_types','list_device_types_cold','sim_create','sim_boot','sim_bootstatus','compile_probe','sign_probe','inspect_signature','install_probe','launch_probe','app_container','terminate_probe','uninstall_probe','shutdown_probe','delete_probe']);
-const COMMAND_STAGES=new Set(['sdk_path','list_runtimes','list_runtimes_cold','list_device_types','list_device_types_cold','create','boot','compile','sign','inspect','install','launch','result','cleanup']);
+export const REQUIRED_RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-26-2';
+function runtimeVersion(value) {
+  if(typeof value==='number'&&Number.isInteger(value)&&value>=0)return value;
+  if(typeof value!=='string'||!/^\d+\.\d+(?:\.\d+)?$/.test(value))return null;
+  const [major,minor,patch=0]=value.split('.').map(Number);
+  return minor<=255&&patch<=255?major*65536+minor*256+patch:null;
+}
+/** Never choose an arbitrary available/last iPad; only the explicitly configured type/runtime pair. */
+export function selectCompatibleSimulator(runtimeList,typeList,preferredType) {
+  const runtime=Array.isArray(runtimeList?.runtimes)?runtimeList.runtimes.find(row=>row?.identifier===REQUIRED_RUNTIME&&row.isAvailable===true&&runtimeVersion(row.version)===runtimeVersion('26.2')):null;
+  if(!runtime)throw Error('runtime_unavailable');
+  if(typeof preferredType!=='string'||!preferredType.startsWith('com.apple.CoreSimulator.SimDeviceType.iPad'))throw Error('compatible_device_unavailable');
+  const type=Array.isArray(typeList?.devicetypes)?typeList.devicetypes.find(row=>row?.identifier===preferredType&&typeof row.name==='string'&&row.name.startsWith('iPad')&&(row.productFamily===undefined||row.productFamily==='iPad')):null;
+  if(!type)throw Error('compatible_device_unavailable');
+  const version=runtimeVersion(runtime.version);
+  for(const [numeric,text,bound]of[['minRuntimeVersion','minRuntimeVersionString','min'],['maxRuntimeVersion','maxRuntimeVersionString','max']]) {
+    const raw=type[numeric]??type[text];
+    if(raw!==undefined){const limit=runtimeVersion(raw);if(limit===null||(bound==='min'?version<limit:version>limit))throw Error('compatible_device_unavailable');}
+  }
+  if(Array.isArray(runtime.supportedDeviceTypes)&&!runtime.supportedDeviceTypes.some(row=>row===preferredType||row?.identifier===preferredType))throw Error('compatible_device_unavailable');
+  return {runtime,type};
+}
+/** Mirror native smoke's available-iPad preference, constrained to the exact requested runtime. */
+export function selectPreconfiguredSimulator(runtimeList,typeList,deviceList) {
+  const runtime=Array.isArray(runtimeList?.runtimes)?runtimeList.runtimes.find(row=>row?.identifier===REQUIRED_RUNTIME&&row.isAvailable===true&&runtimeVersion(row.version)===runtimeVersion('26.2')):null;
+  if(!runtime)throw Error('runtime_unavailable');
+  const sameRuntime=deviceList?.devices?.[runtime.identifier];
+  const candidates=Array.isArray(sameRuntime)?sameRuntime.filter(row=>row?.isAvailable===true&&typeof row.name==='string'&&row.name.startsWith('iPad')):[];
+  const preferred=candidates[0];
+  if(!preferred||typeof preferred.deviceTypeIdentifier!=='string')throw Error('compatible_device_unavailable');
+  const selected=selectCompatibleSimulator(runtimeList,typeList,preferred.deviceTypeIdentifier);
+  return {...selected,candidateCount:Math.min(10000,candidates.length)};
+}
+export function classifyCreateError(result) {
+  const safeText=value=>Buffer.isBuffer(value)?value.toString('utf8'):typeof value==='string'?value:'';
+  const text=(safeText(result?.stdout)+'\n'+safeText(result?.stderr)).toLowerCase();
+  if(/device type.*not supported|not supported.*runtime|incompatible.*runtime|runtime.*incompatible/.test(text))return 'incompatible_device_runtime';
+  if(/invalid device type|device type.*not found|unable to find device type/.test(text))return 'device_type_unavailable';
+  if(/invalid runtime|runtime.*not found|unable to find runtime/.test(text))return 'runtime_unavailable';
+  if(/coresimulatorservice.*(?:unavailable|invalid|connection)|failed to connect to.*coresimulator/.test(text))return 'simulator_service_unavailable';
+  if(/permission denied|operation not permitted/.test(text))return 'permission_denied';
+  return 'unknown';
+}
+const COMMAND_LABELS=new Set(['sdk_path','list_runtimes','list_runtimes_cold','list_device_types','list_device_types_cold','list_available_devices','sim_create','sim_boot','sim_bootstatus','compile_probe','sign_probe','inspect_signature','install_probe','launch_probe','app_container','terminate_probe','uninstall_probe','shutdown_probe','delete_probe']);
+const COMMAND_STAGES=new Set(['sdk_path','list_runtimes','list_runtimes_cold','list_device_types','list_device_types_cold','list_available_devices','select_device','create','boot','compile','sign','inspect','install','launch','result','cleanup']);
 class ProbeCommandFailure extends Error { constructor(message,status){super(message);this.status=status;} }
 export function executeProbeCommand({label,variant,stage,bin,args,budget=15000,deadline,cleanup=false,emit,query=spawnSync,now=Date.now}) {
   if(!COMMAND_LABELS.has(label)||!COMMAND_STAGES.has(stage)||!['shared','baseline','entitled'].includes(variant))throw Error('command_identity_invalid');
@@ -44,6 +87,7 @@ export function executeProbeCommand({label,variant,stage,bin,args,budget=15000,d
   const count=value=>Math.min(4194304,Buffer.isBuffer(value)?value.length:typeof value==='string'?Buffer.byteLength(value):0);
   const row={...base,status,budgetMs,elapsedMs:Math.min(300000,Math.max(0,now()-before)),stdoutBytes:count(result?.stdout),stderrBytes:count(result?.stderr)};
   if(Number.isInteger(result?.status)&&result.status>=0&&result.status<=255)row.exitCode=result.status;
+  if(label==='sim_create'&&status==='nonzero')row.createError=classifyCreateError(result);
   emit(row); // Immutable metadata BEFORE throwing; never arguments, paths or child output.
   if(status!=='ok')throw new ProbeCommandFailure(stage+'_failed',status);
   return Buffer.isBuffer(result.stdout)?result.stdout.toString('utf8').trim():typeof result.stdout==='string'?result.stdout.trim():'';
@@ -63,9 +107,11 @@ export async function diagnostic() {
   try {
     work=fs.mkdtempSync(path.join(os.tmpdir(),'synthetic-keychain-ci-'));
     stage='sdk_path';const sdk=command('sdk_path','xcrun',['--sdk','iphonesimulator','--show-sdk-path']);
-    const runtime=JSON.parse(coldEnumeration((label,budget)=>{stage=label;return command(label,'xcrun',['simctl','list','runtimes','-j'],budget);},'list_runtimes')).runtimes.find(r=>r.isAvailable&&r.identifier.endsWith('iOS-26-2'));
-    const type=JSON.parse(coldEnumeration((label,budget)=>{stage=label;return command(label,'xcrun',['simctl','list','devicetypes','-j'],budget);},'list_device_types')).devicetypes.filter(d=>d.name.startsWith('iPad')).at(-1);
-    if(!runtime||!type)throw Error('simulator_unavailable');
+    const runtimeList=JSON.parse(coldEnumeration((label,budget)=>{stage=label;return command(label,'xcrun',['simctl','list','runtimes','-j'],budget);},'list_runtimes'));
+    const typeList=JSON.parse(coldEnumeration((label,budget)=>{stage=label;return command(label,'xcrun',['simctl','list','devicetypes','-j'],budget);},'list_device_types'));
+    stage='list_available_devices';const deviceList=JSON.parse(command('list_available_devices','xcrun',['simctl','list','devices','available','-j']));
+    stage='select_device';const {runtime,type,candidateCount}=selectPreconfiguredSimulator(runtimeList,typeList,deviceList);
+    emit({event:'keychain_probe_simulator_selection',variant:'shared',stage:'select_device',status:'selected',source:'available_same_runtime_device',candidateCount});
     const seed=randomUUID().replaceAll('-',''),ids=makeIdentity(seed);
     stage='create';simulator=command('sim_create','xcrun',['simctl','create','SyntheticKeychain-'+seed,type.identifier,runtime.identifier]);
     if(!/^[0-9A-Fa-f-]{36}$/.test(simulator)){simulator=undefined;throw Error('create_failed');}
@@ -100,7 +146,7 @@ export async function diagnostic() {
     }
     emit({event:'keychain_probe_complete',status:'diagnostic_complete'});return true;
   } catch(error) {
-    const known=new Set(['deadline','sdk_failed','sdk_path_failed','list_runtimes_failed','list_runtimes_cold_failed','list_device_types_failed','list_device_types_cold_failed','create_failed','boot_failed','compile_failed','simulator_unavailable']);
+    const known=new Set(['deadline','sdk_failed','sdk_path_failed','list_runtimes_failed','list_runtimes_cold_failed','list_device_types_failed','list_device_types_cold_failed','list_available_devices_failed','runtime_unavailable','compatible_device_unavailable','create_failed','boot_failed','compile_failed','simulator_unavailable']);
     emit({event:'keychain_probe_driver',variant,stage,status:known.has(error?.message)?error.message:'operation_failed'});return false;
   } finally {
     variant='shared';if(simulator){cleanupCommand('shutdown_probe',['simctl','shutdown',simulator]);cleanupCommand('delete_probe',['simctl','delete',simulator]);}
