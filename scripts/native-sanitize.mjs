@@ -21,10 +21,17 @@ for (const line of text.split('\n')) {
   const at = line.indexOf('QA_JSON '); if (at < 0) continue;
   try {
     const row = JSON.parse(line.slice(at + 8));
+    if(row.event==='pdf_raster') {
+      if(!Number.isInteger(row.trial)||row.trial<1||row.trial>3||![0,1].includes(row.raster)||![0,1].includes(row.status))continue;
+      const clean={event:'pdf_raster',trial:row.trial,raster:row.raster,status:row.status};
+      for(const key of ['width','height','expectedWidth','expectedHeight'])if(typeof row[key]==='number'&&Number.isFinite(row[key])&&row[key]>=0&&row[key]<=100000)clean[key]=row[key];
+      if([0,1].includes(row.tolerancePx))clean.tolerancePx=row.tolerancePx;
+      rows.push(clean);continue;
+    }
     if (['pdf_stage','pdf_failure','pdf_result'].includes(row.event)) {
-      const validStage=['write_source','import','info','render_detail','render_reading','await_render','timings','cleanup'].includes(row.stage);
+      const validStage=['write_source','import','info','render_detail','render_reading','await_render','region','image_load','timings','cleanup'].includes(row.stage);
       const validTrial=Number.isInteger(row.trial)&&row.trial>=1&&row.trial<=3;
-      const validReason=['reading_api_missing','fixture_pages','render_timeout','missing_native_timings','reading_serialized','keychain_entitlement','keychain_locked','operation_failed'].includes(row.reason);
+      const validReason=['reading_api_missing','fixture_pages','render_timeout','missing_native_timings','reading_serialized','fixture_dimensions','image_load_failed','raster_dimensions','open_failed', 'page_invalid', 'native_unavailable', 'keychain_failed', 'crypto_failed', 'keychain_entitlement','keychain_locked','operation_failed'].includes(row.reason);
       if(row.event==='pdf_stage'&&(!validStage||!validTrial))continue;
       if(row.event==='pdf_failure'&&(!validStage||!validTrial||!validReason))continue;
       if(row.event==='pdf_result'&&!['pass','fail','inconclusive'].includes(row.result))continue;
@@ -68,7 +75,7 @@ for (const line of text.split('\n')) {
 const report = extractCrashDiagnostics(text, { platform });
 const crash = report.crash;
 if (crash) rows.push({ event: 'suite_result', platform, result: 'fail', reason: 'native_or_js_error' });
-const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
+const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || r.event === 'pdf_failure' || (r.event === 'pdf_raster' && r.status === 0) || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
 if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail')) {
   const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable') ? 'network_or_player_unavailable' : rows.some(r => r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass')) ? 'pdf_failure' : 'driver_failure';
   rows.push({ event: 'suite_result', platform, result: 'fail', reason });

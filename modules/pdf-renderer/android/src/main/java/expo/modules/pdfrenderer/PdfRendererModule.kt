@@ -578,7 +578,7 @@ class PdfRendererModule : Module() {
       synchronized(TIMING_LOCK) { renderTimings.toList().also { renderTimings.clear() } }
     }
 
-    /** Host cache hit is immediate. Full JPEG92 and tile JPEG90 execute only in :pdfdetail. */
+    /** Host cache hit is immediate. Full JPEG92 and tile JPEG92 execute only in :pdfdetail. */
     AsyncFunction("renderPage") Coroutine { uri: String, index: Int, width: Int ->
       withContext(Dispatchers.IO) {
         require(width in 1..PdfDetailProtocol.MAX_FULL_WIDTH && index >= 0) { "bad page parameters" }
@@ -590,7 +590,7 @@ class PdfRendererModule : Module() {
     AsyncFunction("renderRegion") Coroutine { uri: String, index: Int, pageWidthPx: Int, x: Int, y: Int, w: Int, h: Int ->
       withContext(Dispatchers.IO) {
         require(pageWidthPx in 1..PdfDetailProtocol.MAX_PAGE_WIDTH && index >= 0) { "bad tile parameters" }
-        val out = File(pagesDir(), "${keyOf(uri)}-$index-$pageWidthPx-r${x}_${y}_${w}_$h.jpg")
+        val out = File(pagesDir(), "${keyOf(uri)}-$index-${pageWidthPx}-r92-${x}_${y}_${w}_$h.jpg")
         if (out.exists() && out.length() > 0L) "file://${out.absolutePath}"
         else renderDetail(uri, index, pageWidthPx, out, true, x, y, w, h)
       }

@@ -1,6 +1,7 @@
 const fs=require('fs'),vm=require('vm'),ts=require('typescript'),assert=require('node:assert/strict');
 const load=(f,req)=>{const m={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:m,exports:m.exports,require:req||require,setTimeout,clearTimeout});return m.exports};
-const Q=load('src/features/viewer/zoomPadQuality.ts');
+const geometry=load('src/features/viewer/pdfTileGeometry.ts');
+const Q=load('src/features/viewer/zoomPadQuality.ts',n=>n==='./pdfTileGeometry'?geometry:require(n));
 const idle=load('src/features/viewer/idleQuality.ts',n=>n==='./pdfWork'?{PDF_DETAIL_IDLE_MS:800}:require(n));
 const ok=t=>{assert(t.pxW<=16384&&t.w<=4096&&t.h<=4096&&t.w*t.h<=12e6);assert(t.x>=0&&t.y>=0&&t.x+t.w<=t.pxW+1e-9);assert(Math.abs(t.nx-t.x/t.pxW)<1e-12)};
 // geometry: normal case matches DocumentView sampling

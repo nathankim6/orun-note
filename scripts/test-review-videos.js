@@ -1,11 +1,11 @@
 // JS-only component/hook mocks: no claim of native renderer or YouTube playback coverage.
 const fs = require('fs'), vm = require('vm'), ts = require('typescript'), assert = require('node:assert/strict');
 const base = 'src/features/viewer/';
-function load(file, deps = {}) {
+function load(file, deps = {}, globals = {}) {
   const exports = {};
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(base + file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React },
-  }).outputText, { exports, require: name => { if (name in deps) return deps[name]; throw Error('Unexpected dependency: ' + name); }, URL, console, setTimeout, clearTimeout, setInterval, clearInterval });
+  }).outputText, { exports, require: name => { if (name in deps) return deps[name]; throw Error('Unexpected dependency: ' + name); }, URL, console, setTimeout, clearTimeout, setInterval, clearInterval, ...globals });
   return exports;
 }
 let current;
@@ -31,8 +31,56 @@ function runner(fn, props, ref = { current: null }) {
 function all(tree, predicate) { if (!tree || typeof tree !== 'object') return []; if (Array.isArray(tree)) return tree.flatMap(x => all(x, predicate)); return [...(predicate(tree) ? [tree] : []), ...all(tree.props?.children, predicate)]; }
 const find = (tree, id) => all(tree, n => n.props?.testID === id)[0];
 const safety = load('reviewVideoSafety.ts');
+const generatedPreferences = load('reviewVideoPreferences.safe.generated.ts');
+const { buildPreferencesSource, buildGeneratedFile } = require('./generate-review-video-preferences.js');
+const sharedPreferencesInput = fs.readFileSync(base + 'reviewVideoSafety.ts', 'utf8');
+assert.equal(generatedPreferences.PLAYER_PREFERENCES_SOURCE, buildPreferencesSource(sharedPreferencesInput));
+assert.equal(fs.readFileSync(base + 'reviewVideoPreferences.safe.generated.ts', 'utf8'), buildGeneratedFile(sharedPreferencesInput));
+require('node:child_process').execFileSync(process.execPath, ['scripts/generate-review-video-preferences.js', '--check'], { stdio: 'pipe' });
+// A stale artifact must fail parity, including a function-only source edit.
+assert.notEqual(buildGeneratedFile(sharedPreferencesInput.replace('let wanted = 1,', 'let wanted = 2,')), buildGeneratedFile(sharedPreferencesInput));
+// Hermes need not preserve source text. Native HTML must never ask this function for its source.
+safety.createPlayerPreferences.toString = () => '[bytecode]';
+const staticPreferencesFactory = vm.runInNewContext('(' + generatedPreferences.PLAYER_PREFERENCES_SOURCE + ')');
+function preferenceParity(factory) {
+  const log = []; let actual = 1, modules = ['captions'], controller;
+  const player = { getOptions: () => modules, setOption() { log.push('caption-track'); controller.captionsOff(); }, unloadModule() { log.push('caption-unload'); controller.captionsOff(); }, getAvailablePlaybackRates: () => [0.5, 1, 1.5, 2], getPlaybackRate: () => actual, setPlaybackRate(rate) { log.push(['requested', rate]); actual = rate; controller.sync(); } };
+  controller = factory(() => player, message => log.push(message));
+  controller.choose(1.5); controller.sync(); controller.captionsOff(); controller.captionsOff(); modules = []; controller.captionsOff(); modules = ['captions']; controller.captionsOff(); controller.choose(1.25); controller.choose(99); controller.dispose(); controller.choose(2); controller.sync(); controller.captionsOff();
+  return JSON.stringify(log);
+}
+assert.equal(preferenceParity(staticPreferencesFactory), preferenceParity(safety.createPlayerPreferences));
 const { bridgeStatus, normalizeReviewVideos, allowPlayerNavigation } = safety;
 const validId = 'M7lc1UVf-VE'; // Public IFrame API fixture only, never production data.
+// Actual shared controller, also serialized into the native player document.
+let actualRate = 1, preferenceLive = false, rateCalls = [], captionCalls = [], preferenceMessages = [];
+const preferencePlayer = { getAvailablePlaybackRates: () => [0.5, 1, 1.5, 2, 99], getPlaybackRate: () => actualRate, setPlaybackRate: rate => { rateCalls.push(rate); actualRate = rate; }, getOptions: () => ['captions'], setOption: (...args) => captionCalls.push(args), unloadModule: name => captionCalls.push(name) };
+const pref = safety.createPlayerPreferences(() => preferenceLive ? preferencePlayer : null, message => preferenceMessages.push(message));
+pref.choose(1.5); assert.equal(rateCalls.length, 0); preferenceLive = true; pref.sync(); assert.equal(actualRate, 1.5);
+pref.choose(1.25); assert.equal(actualRate, 1.5); pref.choose(99); assert.equal(actualRate, 1.5);
+pref.captionsOff(); assert.equal(captionCalls[0][0], 'captions'); assert.equal(captionCalls[0][1], 'track'); assert.equal(captionCalls[1], 'captions');
+assert.equal(preferenceMessages.at(-1).r, 1.5); assert.equal(preferenceMessages.at(-1).a.includes(99), false);
+pref.dispose(); const stopped = preferenceMessages.length; pref.choose(2); pref.sync(); pref.captionsOff(); assert.equal(preferenceMessages.length, stopped);
+// Provider methods synchronously fire their own API/rate events, even without updating state.
+let reentrant, captionModules = ['captions'], reentrantTrack = 0, reentrantUnload = 0, reentrantRate = 0, reentrantActual = 1;
+const reentrantPlayer = { getOptions: () => captionModules, setOption() { reentrantTrack++; reentrant.captionsOff(); reentrant.sync(); }, unloadModule() { reentrantUnload++; reentrant.captionsOff(); reentrant.sync(); }, getAvailablePlaybackRates: () => [1, 1.5, 2], getPlaybackRate: () => reentrantActual, setPlaybackRate() { reentrantRate++; reentrant.sync(); } };
+reentrant = safety.createPlayerPreferences(() => reentrantPlayer, () => {});
+reentrant.captionsOff(); reentrant.captionsOff(); assert.equal(reentrantTrack, 1); assert.equal(reentrantUnload, 1);
+captionModules = []; reentrant.captionsOff(); captionModules = ['captions']; reentrant.captionsOff(); assert.equal(reentrantTrack, 2); assert.equal(reentrantUnload, 2);
+reentrant.choose(1.5); for (let i = 0; i < 20; i++) reentrant.sync(); assert.equal(reentrantRate, 1);
+reentrantActual = 1.5; reentrant.sync(); reentrantActual = 1; reentrant.sync(); assert.equal(reentrantRate, 2); reentrant.dispose();
+for (const target of [{ tagName: 'INPUT' }, { tagName: 'textarea' }, { tagName: 'SELECT' }, { isContentEditable: true }, { closest: () => ({ role: 'textbox' }) }]) assert.equal(safety.playerShortcutShouldPassThrough({ key: ' ', target }, false), true);
+assert.equal(safety.playerShortcutShouldPassThrough({ key: ' ', isComposing: true }, false), true);
+assert.equal(safety.playerShortcutShouldPassThrough({ key: ' ', target: null }, true), true);
+assert.equal(safety.playerShortcutShouldPassThrough({ key: 'ArrowRight', target: null }, true), true);
+assert.equal(safety.playerShortcutShouldPassThrough({ key: ' ', target: null }, false), false);
+
+assert.equal(bridgeStatus('{"k":"rate","r":99,"a":[1]}'), null); assert.equal(bridgeStatus('{"k":"rate","r":1.5,"a":[1,1.5,99]}').availablePlaybackRates.length, 2);
+for (const c of [{ width: 375, height: 812, top: 44, bottom: 34 }, { width: 390, height: 844, top: 47, bottom: 34 }, { width: 844, height: 390, top: 0, bottom: 21 }, { width: 1024, height: 768, top: 24, bottom: 20 }]) {
+  const popup = safety.floatingVideoGeometry(c.width, c.height, c, { x: 99999, y: -99999 });
+  assert.ok(popup.width >= 200 && popup.stageHeight >= 200); assert.ok(popup.x >= 0 && popup.y >= c.top); assert.ok(popup.x + popup.width <= c.width); assert.ok(popup.y + popup.height <= c.height - c.bottom);
+}
+
 // Official minimum is the iframe viewport, not a demand to stretch 16:9 video content.
 const geometryCases = [
   { width: 375, height: 812, top: 44, bottom: 34, full: false, expectedWidth: 335, expectedHeight: 200 },
@@ -83,8 +131,8 @@ assert.equal(allowPlayerNavigation({ url: 'https://www.youtube-nocookie.com/embe
 assert.equal(allowPlayerNavigation({ url: 'https://www.youtube-nocookie.com/embed/' + validId, isTopFrame: true }), false);
 assert.equal(allowPlayerNavigation({ url: 'https://evil.test', isTopFrame: false }), false);
 assert.equal(allowPlayerNavigation(null), false);
-const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', Image: 'Image', TextInput: 'TextInput', ActivityIndicator: 'Spinner', StyleSheet: { absoluteFill: {}, create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 900, height: 1100 }), BackHandler: { addEventListener: (_name, callback) => { native.back = callback; return { remove() { if (native.back === callback) native.back = null; } }; } } };
-const stageModule = load('YouTubeStage.tsx', { react: React, 'react-native': native, 'react-native-webview': { WebView: 'WebView' }, './reviewVideoSafety': safety });
+const native = { AppState: { addEventListener: () => ({ remove() {} }) }, PanResponder: { create: handlers => ({ panHandlers: handlers }) }, View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', Image: 'Image', TextInput: 'TextInput', ActivityIndicator: 'Spinner', StyleSheet: { absoluteFill: {}, create: x => x }, Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 900, height: 1100 }), BackHandler: { addEventListener: (_name, callback) => { native.back = callback; return { remove() { if (native.back === callback) native.back = null; } }; } } };
+const stageModule = load('YouTubeStage.tsx', { react: React, 'react-native': native, 'react-native-webview': { WebView: 'WebView' }, './reviewVideoSafety': safety, './reviewVideoPreferences.safe.generated': generatedPreferences });
 const stage = stageModule.YouTubeStage;
 for (const [event, payload, expected] of [
   ['onError', { nativeEvent: { code: -2, description: 'private diagnostic', url: 'https://private.invalid' } }, 'network'],
@@ -102,6 +150,7 @@ for (const [event, payload, expected] of [
 }
 // Execute the real inline script against a minimal documented IFrame API double.
 const html = stageModule.playerHtml(validId, safety.PLAYER_ORIGIN);
+assert.equal(html.includes('[bytecode]'), false); assert.ok(html.includes(generatedPreferences.PLAYER_PREFERENCES_SOURCE));
 const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)[1]; new vm.Script(inlineScript);
 const inlineMessages = []; let playerOptions;
 const inlineContext = { window: { ReactNativeWebView: { postMessage: value => inlineMessages.push(JSON.parse(value)) }, addEventListener() {} }, document: { addEventListener() {} }, YT: { Player: function (_id, options) { playerOptions = options; this.getDuration = () => 60; this.getIframe = () => ({ setAttribute() {} }); } }, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 2, clearInterval() {} };
@@ -119,21 +168,31 @@ assert.equal(tree.props.accessibilityElementsHidden, true); assert.equal(tree.pr
 assert.equal(web.props.allowsPictureInPictureMediaPlayback, false); assert.equal(web.props.allowsAirPlayForMediaPlayback, false);
 let injected = []; web.props.ref.current = { injectJavaScript: js => injected.push(js) };
 message({ nativeEvent: { data: 'null' } }); assert.equal(statuses.length, 0);
-message({ nativeEvent: { data: '{"k":"ready","d":60}' } }); handle.current.play(); assert.equal(injected.length, 1);
+message({ nativeEvent: { data: '{"k":"ready","d":60}' } }); handle.current.play(); assert.equal(injected.length, 2);
 tree = r.render({ ...props, onStatus: s => latest.push(s) }); web = all(tree, n => n.type === 'WebView')[0];
 assert.equal(web.props.source, source); assert.equal(web.props.onMessage, message);
 message({ nativeEvent: { data: '{"k":"state","s":1}' } }); assert.equal(latest[0].playing, true);
-handle.current.seek(NaN); assert.equal(injected.length, 1);
+handle.current.seek(NaN); assert.equal(injected.length, 2);
 web.props.onContentProcessDidTerminate(); assert.equal(latest.at(-1).ready, false); assert.equal(latest.at(-1).errorCode, 'process');
-assert.equal(all(r.render(), n => n.type === 'WebView').length, 0); handle.current.play(); assert.equal(injected.length, 1);
+assert.equal(all(r.render(), n => n.type === 'WebView').length, 0); handle.current.play(); assert.equal(injected.length, 2);
 message({ nativeEvent: { data: '{"k":"ready","d":60}' } }); assert.equal(latest.at(-1).ready, false);
 r.unmount();
 // New explicit mount recovers. A stale native callback after disposal cannot issue commands/status.
 const again = runner(stage, props); tree = again.render(); web = all(tree, n => n.type === 'WebView')[0]; const before = statuses.length; again.unmount(); web.props.onMessage({ nativeEvent: { data: '{"k":"ready","d":1}' } }); assert.equal(statuses.length, before);
 const deps = { react: React, 'react-native': native, 'expo-linear-gradient': { LinearGradient: 'Gradient' }, 'expo-status-bar': { StatusBar: 'StatusBar' }, '@expo/vector-icons': {}, 'react-native-svg': {}, 'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) }, '@/lib/api': { api: { reviewVideos: () => Promise.resolve({ videos: [] }) } }, '@/store/session': { useSession: selector => selector({ adminCode: null, student: { id: 'test' } }) }, './YouTubeStage': stageModule, './reviewVideoSafety': safety };
-const screens = load('ReviewVideos.tsx', deps);
+let actualKeyHandler;
+const screens = load('ReviewVideos.tsx', deps, { window: { addEventListener: (name, fn) => { if (name === 'keydown') actualKeyHandler = fn; }, removeEventListener() {} } });
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 (async () => {
+  let webOptions, webInstanceCount = 0, webDestroyed = 0, webActualRate = 1, webCaptionCalls = 0;
+  const webPlayer = { getDuration: () => 60, getIframe: () => ({ setAttribute() {}, style: {} }), getPlaybackRate: () => webActualRate, getAvailablePlaybackRates: () => [0.5, 1, 1.5, 2], setPlaybackRate: rate => { webActualRate = rate; }, getOptions: () => ['captions'], setOption: () => webCaptionCalls++, unloadModule() {}, destroy() { webDestroyed++; } };
+  const webGlobals = { window: { location: { origin: 'https://actual-origin.test' }, YT: { Player: function (_mount, options) { webOptions = options; webInstanceCount++; return webPlayer; } } }, document: { createElement: () => ({}) } };
+  const webModule = load('YouTubeStage.web.tsx', { react: React, './reviewVideoSafety': safety }, webGlobals);
+  const webStatuses = [], webHandle = { current: null }, webRunner = runner(webModule.YouTubeStage, { videoId: validId, onStatus: s => webStatuses.push(s) }, webHandle);
+  let webTree = webRunner.render(); webTree.props.ref.current = { replaceChildren() {} }; webHandle.current.setPlaybackRate(1.5); await flush();
+  assert.equal(webOptions.playerVars.origin, 'https://actual-origin.test'); webOptions.events.onReady({ target: webPlayer }); assert.equal(webActualRate, 1.5); assert.ok(webCaptionCalls > 0);
+  webOptions.events.onApiChange(); webOptions.events.onPlaybackRateChange({ data: 1.5 }); assert.equal(webStatuses.at(-1).playbackRate, 1.5);
+  webRunner.render(); assert.equal(webInstanceCount, 1); webRunner.unmount(); const count = webStatuses.length; webOptions.events.onStateChange({ data: 1 }); assert.equal(webStatuses.length, count); assert.equal(webDestroyed, 1);
   let resolve, calls = 0, closed = 0;
   const loadVideos = () => { calls++; return new Promise(r => { resolve = r; }); };
   const screenProps = { loadVideos, onClose: () => closed++ };
@@ -145,8 +204,20 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   tree = screen.render(); assert.equal(all(tree, n => n.props?.video).length, 1);
   const hiddenList = find(tree, 'review-videos-list'); assert.equal(hiddenList.props['aria-hidden'], true); assert.equal(hiddenList.props.accessibilityElementsHidden, true); assert.equal(hiddenList.props.importantForAccessibility, 'no-hide-descendants');
   const playerElement = all(tree, n => n.props?.video)[0];
+  native.Platform.OS = 'web'; let keyPrevented = 0;
+  const keyboardPlayer = runner(playerElement.type, { ...playerElement.props }); keyboardPlayer.render();
+  actualKeyHandler({ key: ' ', target: { tagName: 'INPUT' }, preventDefault() { keyPrevented++; } }); assert.equal(keyPrevented, 0);
+  actualKeyHandler({ key: ' ', target: null, preventDefault() { keyPrevented++; } }); assert.equal(keyPrevented, 1);
+  keyboardPlayer.render({ ...keyboardPlayer.props, floating: true }); actualKeyHandler({ key: ' ', target: null, preventDefault() { keyPrevented++; } }); assert.equal(keyPrevented, 1); keyboardPlayer.unmount(); native.Platform.OS = 'android';
   const playback = []; const playerRunner = runner(playerElement.type, { ...playerElement.props, onPlaybackStatus: s => playback.push(s) });
   let playerTree = playerRunner.render();
+  const stagePath = tree => { let found; const walk = (node, path = []) => { if (!node || typeof node !== 'object') return; if (Array.isArray(node)) return node.forEach((n, i) => walk(n, [...path, i])); if (node.type === stage) found = path; walk(node.props?.children, [...path, String(node.type)]); }; walk(tree); return JSON.stringify(found); };
+  const normalStagePath = stagePath(playerTree); assert.equal(all(playerTree, n => n.type === 'StatusBar').length, 1);
+  assert.ok(find(playerTree, 'review-video-speed-controls'));
+  const speedChoices = []; all(playerTree, n => n.type === stage)[0].props.ref.current = { setPlaybackRate: rate => speedChoices.push(rate), pause() {} };
+  all(playerTree, n => n.props?.accessibilityLabel === '1.5배속')[0].props.onPress(); assert.equal(speedChoices.at(-1), 1.5); assert.equal(playback.at(-1).playbackRate, 1);
+  playerTree = playerRunner.render({ ...playerRunner.props, floating: true }); assert.equal(all(playerTree, n => n.type === 'StatusBar').length, 0); assert.equal(stagePath(playerTree), normalStagePath); assert.ok(find(playerTree, 'review-video-popup-play')); assert.ok(all(playerTree, n => n.props?.testID === 'review-video-popup-restore')[0]); assert.ok(all(playerTree, n => n.props?.testID === 'review-video-popup-close')[0]);
+  playerTree = playerRunner.render({ ...playerRunner.props, floating: false }); assert.equal(all(playerTree, n => n.type === 'StatusBar').length, 1); assert.equal(stagePath(playerTree), normalStagePath);
   const viewport = find(playerTree, 'review-video-player-viewport'); assert.ok(viewport.props.style.width >= 200); assert.ok(viewport.props.style.height >= 200);
   const playerStage = () => all(playerTree, n => n.type === stage)[0];
   playerStage().props.onStatus({ ready: true, duration: 60 }); playerTree = playerRunner.render(); assert.equal(playback.at(-1).ready, true);
@@ -158,17 +229,38 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
   closePlayerControl.props.onPress(); assert.equal(pauses, 1); playerRunner.unmount();
   all(tree, n => n.props?.video)[0].props.onClose(); tree = screen.render(); assert.equal(all(tree, n => n.props?.video).length, 0);
   native.back(); assert.equal(closed, 1); screen.unmount();
+  // Actual ReviewVideosContent lifecycle: full-player X returns to the list; popup X dismisses the overlay.
+  let overlayClosed = 0; const floatingEvents = [];
+  const closeBranches = runner(content.type, { loadVideos: async () => ({ videos: normalized }), onClose: () => overlayClosed++, onFloatingChange: value => floatingEvents.push(value) });
+  closeBranches.render(); await flush(); let branchTree = closeBranches.render();
+  all(branchTree, n => n.props?.v)[0].props.onPress(); branchTree = closeBranches.render();
+  all(branchTree, n => n.props?.video)[0].props.onClose(); branchTree = closeBranches.render();
+  assert.equal(overlayClosed, 0); assert.equal(all(branchTree, n => n.props?.video).length, 0); assert.equal(find(branchTree, 'review-videos-list').props.style.display, 'flex');
+  all(branchTree, n => n.props?.v)[0].props.onPress(); branchTree = closeBranches.render();
+  all(branchTree, n => n.props?.video)[0].props.onFloatingChange(true); branchTree = closeBranches.render();
+  assert.equal(find(branchTree, 'review-videos-list').props.style.display, 'none'); assert.equal(all(branchTree, n => n.props?.video)[0].props.floating, true);
+  all(branchTree, n => n.props?.video)[0].props.onClose(); branchTree = closeBranches.render();
+  assert.equal(overlayClosed, 1); assert.equal(all(branchTree, n => n.props?.video).length, 0); assert.equal(floatingEvents.at(-1), false);
+  // Stay transparent until parent unmounts: never flash/expand the full list over the notes.
+  assert.equal(find(branchTree, 'review-videos-list').props.style.display, 'none'); closeBranches.unmount();
   // Late load completion is ignored after close/unmount, and reopening starts a new request.
   const pending = runner(content.type, content.props); pending.render(); pending.unmount(); resolve({ videos: normalized }); await flush(); assert.equal(pending.slots[0], null);
   const retryProps = { ...screenProps, loadVideos: (() => { let count = 0; return () => ++count === 1 ? Promise.reject(Error('offline')) : Promise.resolve({ videos: normalized }); })() };
   const retry = runner(content.type, retryProps); retry.render(); await flush(); tree = retry.render(); assert.ok(find(tree, 'review-videos-list-retry')); find(tree, 'review-videos-list-retry').props.onPress(); await flush(); tree = retry.render(); assert.equal(all(tree, n => n.props?.v).length, 2); retry.unmount();
   assert.equal(screens.ReviewVideosSheet({ visible: false, onClose() {} }), null);
+  assert.equal(screens.ReviewVideosOverlay({ visible: false, onClose() {} }), null);
+  assert.equal(screens.ReviewVideosOverlay({ visible: true, onClose() {} }).props.pointerEvents, 'box-none');
+  assert.equal(screens.ReviewVideosSheet({ visible: true, onClose() {} }).props.pointerEvents, 'box-none');
   for (const file of ['ReviewVideos.tsx', 'YouTubeStage.tsx', 'YouTubeStage.web.tsx']) {
     const source = fs.readFileSync(base + file, 'utf8'); assert.doesNotMatch(source, /<Modal\b|\.reload\(/); assert.doesNotMatch(source, /Linking\.openURL|window\.open\(/);
   }
+  const viewerSource = fs.readFileSync('app/viewer/[docId].tsx', 'utf8');
+  assert.match(viewerSource, /<DocumentView active=\{viewerActive\}/); assert.match(viewerSource, /const inkEnabled = true/); assert.match(viewerSource, /viewerActive && videosOpen && <View pointerEvents="box-none"/);
   const webSource = fs.readFileSync(base + 'YouTubeStage.web.tsx', 'utf8');
   assert.match(webSource, /'aria-hidden': true, inert: true/); assert.match(webSource, /f\.setAttribute\('aria-hidden', 'true'\)/); assert.match(webSource, /f\.setAttribute\('inert', ''\)/);
   const nativeSource = fs.readFileSync(base + 'YouTubeStage.tsx', 'utf8');
+  assert.doesNotMatch(nativeSource, /\.toString\s*\(|\beval\s*\(/);
+  assert.match(nativeSource, /PLAYER_PREFERENCES_SOURCE/);
   assert.match(nativeSource, /html: playerHtml\(videoId, PLAYER_ORIGIN\), baseUrl: PLAYER_BASE/);
   assert.doesNotMatch(nativeSource, /playerSourceUri|review-player-v1|uri:/);
   assert.match(nativeSource, /allowsPictureInPictureMediaPlayback=\{false\}/); assert.match(nativeSource, /allowsAirPlayForMediaPlayback=\{false\}/); assert.match(nativeSource, /accessibilityElementsHidden importantForAccessibility="no-hide-descendants"/);

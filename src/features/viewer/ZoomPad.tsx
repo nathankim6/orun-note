@@ -39,7 +39,7 @@ export function ZoomPad({ height, uri, pageW, pageH, sourceIndex, template, regi
     const gate = createIdleQualityGate({ onReady: ready => setQuality({ key: qualityKey, ready }), isBusy: () => { const ps = penSession.value; return ps.writing && Date.now() - ps.since < 20000; } });
     gate.activity(); return () => gate.dispose();
   }, [qualityKey]);
-  const dpr = Math.min(3, PixelRatio.get());
+  const dpr = PixelRatio.get();
   const tile = useMemo(() => zoomPadTile({ pageW, pageH, k, padW, padH: innerH, region, dpr }), [pageW, pageH, k, padW, innerH, region.x, region.y, region.w, dpr]);
   const move = (dx: number, dy: number) => setRegion({ ...region, x: Math.max(0, Math.min(pageW - region.w, region.x + dx)), y: Math.max(0, Math.min(pageH - regionH, region.y + dy)) });
   const nextLine = () => setRegion({ ...region, x: margin, y: Math.min(pageH - regionH, region.y + regionH * 0.92) });

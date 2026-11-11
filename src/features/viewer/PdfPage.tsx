@@ -8,6 +8,7 @@ import { RenderPriority, type RenderLease } from './renderScheduler';
 import { createPdfWork, readingPixels, detailPixels } from './pdfWork';
 import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnostics';
 import { PdfImageLayers } from './PdfImageLayers';
+import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
@@ -57,7 +58,7 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
       const ready = work.detail.value(fullKey); if (ready) { show(ready); return; }
       const cached = await PdfRenderer.cachedPage(uri, index, fullPx); if (!alive) return;
       if (cached) { work.detail.remember(fullKey, cached, { page, width: fullPx, index }); show(cached); return; }
-      await work.reading.whenIdle(); if (!alive) return;
+      await work.reading.whenIdle(RenderPriority.visible); if (!alive) return;
       lease = work.detail.acquire(fullKey, RenderPriority.visible, () => PdfRenderer.renderPage(uri, index, fullPx), { page, width: fullPx, index });
       show(await lease.promise);
     })().catch(() => {}); // a refinement failure must not hide the usable reading page
@@ -77,26 +78,45 @@ export function prefetchPage(uri: string | null, index: number, displayWidth: nu
   return work.reading.prefetch(`${page}|read|${width}`, RenderPriority.prefetch + rank / 100,
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
 }
-export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
-function TileLayer({ uri, index, tile, width, height }: { uri: string; index: number; tile?: PageTile; width: number; height: number }) {
-  const allowed = useContext(PageQualityContext);
-  const [shown, setShown] = useState<{ page: string; src: string; t: PageTile } | null>(null);
+export type { PageTile } from './pdfTileGeometry';
+type TileImage = { page: string; token: object; src: string; t: PageTile };
+/** Loaded tile stays underneath its replacement, including throughout motion. */
+export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; onFailure?: (key: string) => void }) {
+  const allowed = useContext(PageQualityContext), page = uri + '|' + index;
+  const identity = useRef({ page, token: {} });
+  if (identity.current.page !== page) identity.current = { page, token: {} };
+  const token = identity.current.token;
+  const [shown, setShown] = useState<TileImage | null>(null), [pending, setPending] = useState<TileImage | null>(null);
+  const pendingRef = useRef(pending); pendingRef.current = pending;
+  const shownRef = useRef(shown); shownRef.current = shown;
+  const failureRef = useRef(onFailure); failureRef.current = onFailure;
   const rr = PdfRenderer.hasRenderRegion() ? PdfRenderer.renderRegion : undefined;
   useEffect(() => {
-    if (!tile || !rr) { setShown(null); return; }
-    if (!allowed) return; // retain a valid old tile, but enqueue no expensive work while moving
-    let alive = true;
-    const key = `${uri}|${index}|${tile.pxW}|${tile.x}|${tile.y}|${tile.w}|${tile.h}`;
-    let lease: RenderLease | undefined;
+    if (!tile || !rr || !allowed) return;
+    let alive = true; let lease: RenderLease | undefined;
+    const failed = () => { if (alive && identity.current.token === token) failureRef.current?.(pageTileKey(tile)); };
     void (async () => {
-      await work.reading.whenIdle(); if (!alive) return;
-      lease = work.detail.acquire('tile|' + key, RenderPriority.tile, () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
-      const src = await lease.promise; if (alive && src) setShown({ page: uri + '|' + index, src, t: tile });
-    })().catch(() => {});
+      // Visible reads remain urgent. Speculative reading neighbours never delay a visible tile.
+      await work.reading.whenIdle(RenderPriority.visible); if (!alive) return;
+      lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(tile), RenderPriority.tile,
+        () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
+      const src = await lease.promise;
+      if (!src) { failed(); return; }
+      if (alive && identity.current.token === token) {
+        // A same-session cache hit is already decoded. A prior A session's same URI is not:
+        // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
+        const decoded = shownRef.current;
+        if (decoded?.token === token && decoded.src === src) setPending(null);
+        else setPending({ page, token, src, t: tile });
+      }
+    })().catch(failed);
     return () => { alive = false; lease?.release(); };
-  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed]);
-  if (!shown || !tile || shown.page !== uri + '|' + index) return null; const t = shown.t;
-  return <Image source={{ uri: shown.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height }} resizeMode="stretch" fadeDuration={0} />;
+  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token]);
+  const currentShown = shown?.token === token ? shown : null;
+  const images = [currentShown, pending].filter((im, i) => im && im.token === token && (i === 0 || im.src !== currentShown?.src)) as TileImage[];
+  return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height, opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
+    onLoad={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; shownRef.current = im; setShown(im); setPending(null); }}
+    onError={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; setPending(null); failureRef.current?.(pageTileKey(im.t)); }} />; })}</>;
 }
 
 export function BlankPaper({ width, height, template = 'plain' }: { width: number; height: number; template?: PaperTemplate }) {
@@ -116,9 +136,14 @@ export function PdfPage(props: { uri: string | null; index: number; width: numbe
 }
 function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile }) {
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
-  const { src, reading, detail, presented, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed);
+  const tileRequest = uri + '|' + index + '|' + pageTileKey(tile);
+  const [failedTile, setFailedTile] = useState<string | null>(null);
+  const tileFirst = !!tile && PdfRenderer.hasRenderRegion() && failedTile !== tileRequest;
+  // rs is cancelled here intentionally for the <=1200 reading image. Sharpness comes from the
+  // actual viewport × zoom × DPR tile, not a capped full page stretched by the outer transform.
+  const { src, reading, detail, presented, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed && !tileFirst);
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
+    {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
 export function clearImageCache() { work.reading.clear(); work.detail.clear(); }

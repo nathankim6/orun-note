@@ -23,7 +23,9 @@ export function createRenderScheduler(maxSettled = 64, maxPrefetch = 2, options:
     } catch {}
   }
   const entries = new Map<string, Entry>();
-  const idleWaiters = new Set<() => void>();
+  const idleWaiters = new Map<() => void, number>();
+  const hasWork = (priority: number) => [...entries.values()].some(e => e.state !== 'settled' && e.pri <= priority);
+  function notifyIdle() { for (const [done, priority] of idleWaiters) if (!hasWork(priority)) { idleWaiters.delete(done); done(); } }
   const speculative = new Map<RenderLease, number>();
   let active = false, seq = 0, user = 0;
   let window: RenderLease[] | null = null;
@@ -33,10 +35,11 @@ export function createRenderScheduler(maxSettled = 64, maxPrefetch = 2, options:
   }
   function touch(e: Entry) { entries.delete(e.key); entries.set(e.key, e); }
   function pump() {
+    notifyIdle();
     if (active) return;
     const e = [...entries.values()].filter(e => e.state === 'queued')
       .sort((a, b) => a.pri - b.pri || b.seq - a.seq)[0];
-    if (!e) { for (const done of idleWaiters) done(); idleWaiters.clear(); return; }
+    if (!e) return;
     active = true; e.state = 'running';
     // Also catch synchronous bridge failures; never leave the worker stuck or create an unhandled finally chain.
     let startedAt = 0;
@@ -66,14 +69,15 @@ export function createRenderScheduler(maxSettled = 64, maxPrefetch = 2, options:
         if (entries.get(key) === entry) entries.delete(key);
         entry.reject(new RenderCancelled());
       } else if (entry.users.size) entry.pri = Math.min(...entry.users.values());
+      notifyIdle();
     } };
     pump(); return lease;
   }
   return {
     acquire,
-    whenIdle(): Promise<void> {
-      if (!active && ![...entries.values()].some(e => e.state === 'queued')) return Promise.resolve();
-      return new Promise(resolve => idleWaiters.add(resolve));
+    whenIdle(priority = Infinity): Promise<void> {
+      if (!hasWork(priority)) return Promise.resolve();
+      return new Promise(resolve => idleWaiters.set(resolve, priority));
     },
     state: (key: string) => entries.get(key)?.state,
     value(key: string) { const e = entries.get(key); if (e?.state !== 'settled') return undefined; touch(e); return e.value; },

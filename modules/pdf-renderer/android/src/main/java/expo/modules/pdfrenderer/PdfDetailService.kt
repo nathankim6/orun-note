@@ -163,7 +163,7 @@ class PdfDetailService : Service() {
           }
           BufferedOutputStream(measured, 1 shl 16).use { buffer ->
             val encode = System.nanoTime()
-            val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, if (tile) 90 else 92, buffer)
+            val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, 92, buffer)
             encodeNanos = (System.nanoTime() - encode - diskNanos).coerceAtLeast(0L)
             if (!ok) throw IOException("compression failed")
           }

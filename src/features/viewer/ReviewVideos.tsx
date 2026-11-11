@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackHandler, View, Text, Pressable, StyleSheet, Image, ScrollView, TextInput, ActivityIndicator, useWindowDimensions, Platform, Animated, Easing, PanResponder } from 'react-native';
+import { AppState, BackHandler, View, Text, Pressable, StyleSheet, Image, ScrollView, TextInput, ActivityIndicator, useWindowDimensions, Platform, Animated, Easing, PanResponder } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, ReviewVideo } from '@/lib/api';
 import { useSession } from '@/store/session';
 import { YouTubeStage, StageHandle, StageStatus, EMPTY_STATUS } from './YouTubeStage';
-import { normalizeReviewVideos, reviewPlayerGeometry } from './reviewVideoSafety';
+import { normalizeReviewVideos, reviewPlayerGeometry, floatingVideoGeometry, PLAYBACK_RATES, playerShortcutShouldPassThrough } from './reviewVideoSafety';
 export type { StageStatus, StageErrorCode } from './YouTubeStage';
 
 // Thumbnail of the video (never shown as text). hqdefault is 4:3 with letterbox bars; a 16:9 cover crop removes them.
@@ -123,9 +123,22 @@ function RoundBtn({ icon, lib = 'ion', size = 52, onPress, label, solid, iconSiz
 }
 
 /** Full-screen dark player with custom controls. Rendered in the normal screen tree. */
-function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onClose: () => void; onPlaybackStatus?: (status: StageStatus) => void }) {
+function Player({ video, onClose, onPlaybackStatus, floating = false, onFloatingChange }: { video: ReviewVideo; onClose: () => void; onPlaybackStatus?: (status: StageStatus) => void; floating?: boolean; onFloatingChange?: (floating: boolean) => void }) {
   const { width: W, height: H } = useWindowDimensions(); const insets = useSafeAreaInsets();
   const stage = useRef<StageHandle>(null);
+  const chosenRate = useRef(1);
+  const [position, setPosition] = useState<{ x: number; y: number } | undefined>();
+  const popup = floatingVideoGeometry(W, H, insets, position);
+  const popupRef = useRef(popup); popupRef.current = popup;
+  const dragStart = useRef({ x: 0, y: 0 });
+  const drag = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => { dragStart.current = { x: popupRef.current.x, y: popupRef.current.y }; },
+    onPanResponderMove: (_e, g) => setPosition({ x: dragStart.current.x + g.dx, y: dragStart.current.y + g.dy }),
+    onPanResponderRelease: () => setPosition({ x: popupRef.current.x, y: popupRef.current.y }),
+  }), []);
+  useEffect(() => { const listener = AppState.addEventListener('change', state => { if (state !== 'active') stage.current?.pause(); }); return () => listener.remove(); }, []);
   const [st, setSt] = useState<StageStatus>(EMPTY_STATUS); const [attempt, setAttempt] = useState(0);
   const [chrome, setChrome] = useState(true); const [full, setFull] = useState(false); const [scrubbing, setScrubbing] = useState(false);
   const started = useRef(false); if (st.playing || st.time > 0.5) started.current = true;
@@ -140,28 +153,30 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
     try { stage.current?.pause(); } catch {}
     active.current = false; clearTimeout(hide.current); onClose();
   }, [onClose]);
-  const onStatus = useCallback((p: Partial<StageStatus>) => { if (active.current) setSt((s) => ({ ...s, ...p })); }, []);
+  const onStatus = useCallback((p: Partial<StageStatus>) => { if (active.current) { if (p.ready) stage.current?.setPlaybackRate(chosenRate.current); if ((p.ready || p.playing) && AppState.currentState && AppState.currentState !== 'active') stage.current?.pause(); setSt((s) => ({ ...s, ...p })); } }, []);
   useEffect(() => { onPlaybackStatus?.(st); }, [st, onPlaybackStatus]);
   useEffect(() => {
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { if (full) setFull(false); else closePlayer(); return true; });
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { if (full) setFull(false); else if (floating) onFloatingChange?.(false); else closePlayer(); return true; });
     return () => subscription.remove();
-  }, [full, closePlayer]);
+  }, [full, floating, onFloatingChange, closePlayer]);
   const toggle = () => { if (!st.ready) return; if (st.playing) stage.current?.pause(); else { if (st.ended) stage.current?.seek(0); stage.current?.play(); } poke(); };
   const skip = (d: number) => { if (!st.ready) return; const t = Math.max(0, Math.min(st.duration || 0, st.time + d)); stage.current?.seek(t); setSt((s) => ({ ...s, time: t, ended: false })); poke(); };
   const retry = () => { started.current = false; setSt(EMPTY_STATUS); setAttempt((n) => n + 1); };
   // desktop keyboard: space / arrows / esc
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === ' ') { e.preventDefault(); toggle(); } else if (e.key === 'ArrowLeft') skip(-10); else if (e.key === 'ArrowRight') skip(10); else if (e.key === 'Escape') { if (full) setFull(false); else closePlayer(); } };
+    const onKey = (e: KeyboardEvent) => { if (playerShortcutShouldPassThrough(e, floating)) return; if (e.key === ' ') { e.preventDefault(); toggle(); } else if (e.key === 'ArrowLeft') skip(-10); else if (e.key === 'ArrowRight') skip(10); else if (e.key === 'Escape') { if (full) setFull(false); else if (floating) onFloatingChange?.(false); else closePlayer(); } };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   });
-  const { width: stageW, height: stageH } = reviewPlayerGeometry(W, H, insets, full);
-  const showChrome = chrome || !st.playing || !!st.error;
+  const regular = reviewPlayerGeometry(W, H, insets, full);
+  const stageW = floating ? popup.width : regular.width, stageH = floating ? popup.stageHeight : regular.height;
+  const showChrome = !floating && (chrome || !st.playing || !!st.error);
   return (
-    <View testID="review-video-player" style={[StyleSheet.absoluteFill, { backgroundColor: '#05060A' }]} accessibilityViewIsModal>
+    <View testID="review-video-player" style={[floating ? { position: 'absolute', left: popup.x, top: popup.y, width: popup.width, height: popup.height, borderRadius: 12, overflow: 'hidden', zIndex: 1000, elevation: 50 } : StyleSheet.absoluteFill, { backgroundColor: '#05060A' }]} accessibilityViewIsModal={!floating}>
       <Text testID="review-video-playback-status" accessibilityLabel={st.error ? '영상 오류' : st.playing ? '재생 중' : st.ready ? '재생 준비 완료' : '영상 준비 중'} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden' }}>{st.error ? 'error' : st.playing ? 'playing' : st.ready ? 'ready' : 'loading'}</Text>
-      <StatusBar hidden={full} style="light" />
-      {!full && (
+      {!floating && <StatusBar hidden={full} style="light" />}
+      {floating && <View style={[{ height: 44, flexDirection: 'row', alignItems: 'center', zIndex: 2 }, popup.controlsHeight < 88 && { position: 'absolute', top: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.7)' }]}><View testID="review-video-popup-drag" {...drag.panHandlers} style={{ flex: 1, height: 44, justifyContent: 'center', paddingHorizontal: 10 }} accessibilityLabel="영상 창 이동"><Text numberOfLines={1} style={{ color: 'white' }}>{video.title}</Text></View><RoundBtn testID="review-video-popup-restore" icon="expand" size={44} label="영상 크게 보기" onPress={() => onFloatingChange?.(false)} /><RoundBtn testID="review-video-popup-close" icon="close" size={44} label="영상 닫기" onPress={closePlayer} /></View>}
+      {!full && !floating && (
         <View style={[styles.pTop, { paddingTop: insets.top + 10, width: Math.min(W, stageW + 8) }]}>
           <VideoTile size={34} />
           <View style={{ flex: 1, minWidth: 0 }}>
@@ -169,10 +184,11 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
             <Text numberOfLines={1} style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>{video.title}</Text>
           </View>
           <RoundBtn testID="review-video-player-close" icon="close" size={44} label="닫기" onPress={closePlayer} iconSize={22} />
+          <RoundBtn testID="review-video-minimize" icon="albums-outline" size={44} label="영상 작은 창으로 보기" onPress={() => { setFull(false); onFloatingChange?.(true); }} />
         </View>
       )}
-      <View style={{ flex: full ? 1 : undefined, alignItems: 'center', justifyContent: 'center', marginTop: full ? 0 : 6 }}>
-        <View testID="review-video-player-viewport" style={{ width: stageW, height: stageH, borderRadius: full ? 0 : 18, overflow: 'hidden', backgroundColor: '#000' }}>
+      <View style={{ flex: full && !floating ? 1 : undefined, alignItems: 'center', justifyContent: 'center', marginTop: full || floating ? 0 : 6 }}>
+        <View testID="review-video-player-viewport" style={{ width: stageW, height: stageH, borderRadius: full || floating ? 0 : 18, overflow: 'hidden', backgroundColor: '#000' }}>
           {!st.error && <YouTubeStage key={attempt} ref={stage} videoId={video.videoId} onStatus={onStatus} />}
           {/* poster until playback starts, and over YouTube's end screen */}
           {(!started.current || st.ended) && !st.error && <Image source={{ uri: thumb(video.videoId) }} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={st.ended ? 12 : 0} />}
@@ -223,7 +239,11 @@ function Player({ video, onClose, onPlaybackStatus }: { video: ReviewVideo; onCl
           )}
         </View>
       </View>
-      {!full && (
+      {floating && <View style={[{ height: 44, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', zIndex: 2 }, popup.controlsHeight < 88 && { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.7)' }]}><RoundBtn testID="review-video-popup-play" icon={st.playing ? 'pause' : 'play'} size={44} label={st.playing ? '일시정지' : '재생'} onPress={toggle} /><Text numberOfLines={1} accessibilityLiveRegion="polite" style={{ color: 'white', paddingHorizontal: 8, flexShrink: 1 }}>{st.error ? st.error : !st.ready ? '영상 준비 중' : mmss(st.time)}</Text></View>}
+      {!full && !floating && <ScrollView horizontal testID="review-video-speed-controls" style={{ alignSelf: 'center', maxHeight: 52, width: stageW }} contentContainerStyle={{ alignItems: 'center' }}>
+        {PLAYBACK_RATES.map(rate => <Pressable key={rate} accessibilityRole="button" accessibilityLabel={`${rate}배속`} accessibilityState={{ selected: st.playbackRate === rate, disabled: st.ready && !(st.availablePlaybackRates ?? []).includes(rate) }} disabled={st.ready && !(st.availablePlaybackRates ?? []).includes(rate)} onPress={() => { chosenRate.current = rate; stage.current?.setPlaybackRate(rate); }} style={{ minWidth: 44, height: 44, justifyContent: 'center', alignItems: 'center', opacity: st.ready && !(st.availablePlaybackRates ?? []).includes(rate) ? 0.35 : 1 }}><Text style={{ color: st.playbackRate === rate ? '#B6ADFF' : '#fff', fontWeight: '700' }}>{rate}×</Text></Pressable>)}
+      </ScrollView>}
+      {!full && !floating && (
         <ScrollView style={{ alignSelf: 'center', width: stageW, marginTop: 18 }} contentContainerStyle={{ paddingBottom: insets.bottom + 24, gap: 10 }}>
           <Text style={{ color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: -0.3 }}>{video.title}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -243,6 +263,7 @@ export type ReviewVideosScreenProps = {
   onClose: () => void;
   loadVideos?: (credential: string | null) => Promise<{ videos: ReviewVideo[] }>;
   onPlaybackStatus?: (status: StageStatus) => void;
+  onFloatingChange?: (floating: boolean) => void;
 };
 const defaultLoadVideos = (credential: string | null) => api.reviewVideos(credential);
 
@@ -264,13 +285,15 @@ export function ReviewVideosScreen(props: ReviewVideosScreenProps) {
   return <ReviewVideosBoundary onClose={props.onClose}><ReviewVideosContent {...props} /></ReviewVideosBoundary>;
 }
 
-function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlaybackStatus }: ReviewVideosScreenProps) {
+function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlaybackStatus, onFloatingChange }: ReviewVideosScreenProps) {
   const { width: W } = useWindowDimensions(); const insets = useSafeAreaInsets();
   const cred = useSession((s) => s.adminCode); const who = useSession((s) => s.student?.id ?? s.role ?? '');
   const key = `${who}|${cred ?? ''}`;
   const canCache = loadVideos === defaultLoadVideos;
   const [videos, setVideos] = useState<ReviewVideo[] | null>(null);
   const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null);
+  const [floating, setFloating] = useState(false);
+  const setFloatingMode = (value: boolean) => { setFloating(value); onFloatingChange?.(value); };
   const [q, setQ] = useState(''); const [playing, setPlaying] = useState<ReviewVideo | null>(null);
   const request = useRef(0); const mounted = useRef(false);
   const load = useCallback(async (force = false) => {
@@ -288,10 +311,10 @@ function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlayba
     } finally { if (mounted.current && id === request.current) setLoading(false); }
   }, [key, cred, loadVideos, canCache]);
   useEffect(() => {
-    mounted.current = true; setQ(''); setPlaying(null); void load();
+    mounted.current = true; setFloating(false); setQ(''); setPlaying(null); void load();
     return () => { mounted.current = false; ++request.current; };
   }, [load]);
-  const close = () => { mounted.current = false; ++request.current; setPlaying(null); onClose(); };
+  const close = () => { mounted.current = false; ++request.current; setPlaying(null); if (floating) onFloatingChange?.(false); onClose(); };
   useEffect(() => {
     if (playing) return;
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => { close(); return true; });
@@ -302,8 +325,8 @@ function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlayba
   const gap = 14, pad = 18; const cardW = (panelW - pad * 2 - gap * (cols - 1)) / cols;
   const list = useMemo(() => { const k = q.trim().toLowerCase(); if (!videos || !k) return videos ?? []; return videos.filter((v) => v.title.toLowerCase().includes(k) || v.passages.some((p) => p.title.toLowerCase().includes(k))); }, [videos, q]);
   return (
-    <View testID="review-videos-screen" style={{ flex: 1, backgroundColor: '#F2F2F7' }} {...(Platform.OS === 'web' ? { onContextMenu: (e: any) => e.preventDefault() } : {})}>
-        <View testID="review-videos-list" aria-hidden={!!playing} accessibilityElementsHidden={!!playing} importantForAccessibility={playing ? 'no-hide-descendants' : 'auto'} style={{ flex: 1, width: panelW, paddingTop: insets.top, paddingBottom: insets.bottom }}>
+    <View testID="review-videos-screen" pointerEvents="box-none" style={{ flex: 1, backgroundColor: floating ? 'transparent' : '#F2F2F7' }} {...(Platform.OS === 'web' ? { onContextMenu: (e: any) => e.preventDefault() } : {})}>
+        <View testID="review-videos-list" aria-hidden={!!playing} accessibilityElementsHidden={!!playing} importantForAccessibility={playing ? 'no-hide-descendants' : 'auto'} style={{ display: floating ? 'none' : 'flex', flex: 1, width: panelW, paddingTop: insets.top, paddingBottom: insets.bottom }}>
           <View style={[styles.header, { paddingHorizontal: pad }]}>
             <VideoTile />
             <View style={{ flex: 1, minWidth: 0 }}>
@@ -344,7 +367,7 @@ function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlayba
             {list.map((v) => <VideoCard key={v.id} v={v} width={cardW} onPress={() => setPlaying(v)} />)}
           </ScrollView>
         </View>
-        {playing && <Player key={playing.id} video={playing} onClose={() => setPlaying(null)} onPlaybackStatus={onPlaybackStatus} />}
+        {playing && <Player key={playing.id} video={playing} onClose={() => { if (floating) close(); else { setPlaying(null); setFloatingMode(false); } }} floating={floating} onFloatingChange={setFloatingMode} onPlaybackStatus={onPlaybackStatus} />}
     </View>
   );
 }
@@ -352,8 +375,11 @@ function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlayba
 /** Compatibility only: ordinary view overlay, never a native Modal. Hidden means disposed. */
 export function ReviewVideosSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   if (!visible) return null;
-  return <View style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 24 }]}><ReviewVideosScreen onClose={onClose} /></View>;
+  return <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { zIndex: 1000, elevation: 24 }]}><ReviewVideosScreen onClose={onClose} /></View>;
 }
+
+/** Same normal-view overlay contract for new callers; legacy Sheet name stays compatible. */
+export const ReviewVideosOverlay = ReviewVideosSheet;
 
 const styles = StyleSheet.create({
   panel: { backgroundColor: '#F2F2F7', overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 30, shadowOffset: { width: 0, height: 12 }, elevation: 24 },

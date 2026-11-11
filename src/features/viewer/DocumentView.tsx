@@ -3,6 +3,7 @@ import { View, Text, Platform, StyleSheet, PixelRatio } from 'react-native';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDecay, runOnJS, cancelAnimation, useAnimatedReaction, Easing } from 'react-native-reanimated';
 import { withPagePrefetchWindow } from './PdfPage';
+import { viewportPageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
 import { createIdleQualityGate } from './idleQuality';
 import { lastLookupAt } from './InkCanvas';
@@ -20,7 +21,8 @@ import { penSession, PALM_WINDOW_MS } from './penSession';
  */
 export type DocMode = 'vertical' | 'horizontal' | 'twoPage';
 /** A sharp re-render of the on-screen part of a zoomed page: region (x,y,w,h) in device pixels of a page rendered pxW wide; n* = same region normalized 0..1. */
-export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
+import type { PageTile } from './pdfTileGeometry';
+export type { PageTile } from './pdfTileGeometry';
 export type PageBox = { x: number; y: number; w: number; h: number; s: number }; // content coords at zoom 1; s = PDF pt → px at zoom 1
 export type DocHandle = { goto: (i: number, animated?: boolean) => void; zoomTo: (z: number, fx?: number, fy?: number) => void; zoomBy: (f: number) => void; fit: () => void; fitPage: () => void; getZoom: () => number };
 type Props = {
@@ -106,20 +108,17 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
   const [tiles, setTiles] = useState<Record<number, PageTile>>({}); const rangeRef = useRef(range); rangeRef.current = range;
   const computeTiles = useCallback(() => {
-    const zz = z.value, x0 = tx.value, y0 = ty.value; const dpr = Math.min(3, PixelRatio.get());
-    if (zz <= 1.2) { setTiles((t) => (Object.keys(t).length ? {} : t)); return; } // same threshold as the 2x page density
+    const zz = z.value, x0 = tx.value, y0 = ty.value, dpr = PixelRatio.get();
     const out: Record<number, PageTile> = {}; const [ra, rb] = rangeRef.current;
     for (let i = Math.max(0, ra); i <= rb && i < L.boxes.length; i++) {
-      const bx = L.boxes[i]; const sx = x0 + bx.x * zz, sy = y0 + bx.y * zz, sw = bx.w * zz, sh = bx.h * zz;
-      const ix0 = Math.max(0, sx), iy0 = Math.max(0, sy), ix1 = Math.min(W, sx + sw), iy1 = Math.min(H, sy + sh);
-      if (ix1 - ix0 < 8 || iy1 - iy0 < 8) continue;
-      const pxW = Math.round(sw * dpr), pxH = Math.round(sh * dpr);
-      const x = Math.max(0, Math.floor((ix0 - sx) * dpr)), y = Math.max(0, Math.floor((iy0 - sy) * dpr)); const w = Math.min(pxW - x, Math.ceil((ix1 - ix0) * dpr)), h = Math.min(pxH - y, Math.ceil((iy1 - iy0) * dpr));
-      out[i] = { pxW, x, y, w, h, nx: x / pxW, ny: y / pxH, nw: w / pxW, nh: h / pxH };
+      const bx = L.boxes[i];
+      const tile = viewportPageTile({ pageW: bx.w, pageH: bx.h, zoom: zz, screenX: x0 + bx.x * zz, screenY: y0 + bx.y * zz, viewportW: W, viewportH: H, dpr });
+      if (tile) out[i] = tile;
     }
     setTiles(out);
   }, [L, W, H]);
   computeTilesRef.current = computeTiles;
+  useEffect(() => { detailActivityRef.current(); }, [L, W, H]);
   useEffect(() => {
     if (!active) { setDetailReady(false); detailActivityRef.current = () => {}; return; }
     const gate = createIdleQualityGate({

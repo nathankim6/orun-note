@@ -4,7 +4,21 @@ import UIKit
 import CryptoKit
 import Security
 
-enum PdfRendererError: Error { case cannotOpen(String); case badPage(Int); case crypto(String); case unavailable }
+// Expo forwards Error.localizedDescription, not Swift enum associated values. Keep paths/status details private.
+enum PdfRendererError: Error, LocalizedError {
+  case cannotOpen(String); case badPage(Int); case crypto(String); case unavailable
+  var errorDescription: String? {
+    switch self {
+    case .cannotOpen: return "PDF_OPEN_FAILED"
+    case .badPage: return "PDF_PAGE_INVALID"
+    case .unavailable: return "PDF_UNAVAILABLE"
+    case .crypto(let reason):
+      if reason == "keychain -34018" { return "PDF_KEYCHAIN_ENTITLEMENT" }
+      if reason == "keychain -25308" { return "PDF_KEYCHAIN_LOCKED" }
+      return reason.hasPrefix("keychain ") ? "PDF_KEYCHAIN_FAILED" : "PDF_CRYPTO_FAILED"
+    }
+  }
+}
 
 // MARK: - Storage format v2 (streamed; a file is never held in memory as a whole)
 //   header: "OPDF2" | u32 BE chunk size | u8 key mode (0 = device key, 1 = per-file data key wrapped by the device key)
@@ -566,10 +580,10 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     /// A `w`×`h` px window (top-left `x`,`y`) of the page as it looks scaled to `pageWidthPx` wide — sharp tiles when zoomed in.
-    /// The region is clamped to the page. JPEG (q 0.9), cached on disk.
+    /// The region is clamped to the page. JPEG (q 0.92), cached separately from legacy lower-quality tiles.
     AsyncFunction("renderRegion") { (uri: String, index: Int, pageWidthPx: Int, x: Int, y: Int, w: Int, h: Int) throws -> String in
       try self.beginOperation(); defer { self.endOperation() }
-      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(pageWidthPx)-r\(x)_\(y)_\(w)_\(h).jpg")
+      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(uri))-\(index)-\(pageWidthPx)-r92-\(x)_\(y)_\(w)_\(h).jpg")
       if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
@@ -583,7 +597,7 @@ public class PdfRendererModule: Module {
         let opened = self.milliseconds()
         let image = self.draw(page, canvas: CGSize(width: rw, height: rh), scale: scale, origin: CGPoint(x: x0, y: y0), pageHeightPx: CGFloat(fullH))
         let drawn = self.milliseconds()
-        guard let data = image.jpegData(compressionQuality: 0.9) else { throw PdfRendererError.badPage(index) }
+        guard let data = image.jpegData(compressionQuality: 0.92) else { throw PdfRendererError.badPage(index) }
         let encoded = self.milliseconds()
         try data.write(to: out, options: [.atomic, .completeFileProtection])
         let written = self.milliseconds()

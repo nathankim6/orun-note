@@ -7,9 +7,9 @@ export const WIDTHS = [1, 2, 4, 8, 12];
 export type ToolConfig = { tool: Tool; color: string; width: number; shape: ShapeKind; opacity: number };
 export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> => {
   switch (tool) {
-    case 'pen': return { width: 0.5, opacity: 1 };
-    case 'eraser': return { width: 8, opacity: 1 };
-    case 'vectorEraser': return { width: 6, opacity: 1 };
+    case 'pen': return { width: 0.7, opacity: 1 };
+    case 'eraser': return { width: 10, opacity: 1 };
+    case 'vectorEraser': return { width: 8, opacity: 1 };
     case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
     case 'pencil': return { opacity: 0.75 };
     case 'brush': return { opacity: 0.9 };

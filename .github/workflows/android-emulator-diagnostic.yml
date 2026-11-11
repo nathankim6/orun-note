@@ -1,0 +1,59 @@
+name: Android emulator environment diagnostic (NOT native validation)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: emulator-environment-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  environment-diagnostic:
+    name: Diagnostic API ${{ matrix.api }} (no app)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [35, 36]
+    env:
+      EMULATOR_DIAGNOSTIC_API_LEVEL: '${{ matrix.api }}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Test standalone diagnostic privacy (no app dependencies)
+        run: node --test qa/native-emulator-diagnostic.test.mjs
+      - name: Enable emulator KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Collect emulator-only command evidence (not a native pass)
+        timeout-minutes: 10
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: google_apis
+          profile: pixel_tablet
+          cores: 4
+          ram-size: 4096M
+          emulator-boot-timeout: 240
+          pre-emulator-launch-script: node scripts/native-configure-avd.mjs
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader -feature -Vulkan -noaudio -no-boot-anim -camera-back none
+          script: |
+            mkdir -p qa/output
+            node scripts/native-emulator-diagnostic.mjs > qa/output/emulator-diagnostic-api${{ matrix.api }}.jsonl
+      - name: Upload enum/numeric command evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Emulator-environment-only-API${{ matrix.api }}-NOT-native-validation
+          path: qa/output/emulator-diagnostic-api${{ matrix.api }}.jsonl
+          if-no-files-found: warn
+          retention-days: 3
+# No build, APK, account, app launch, screenshot, XML or raw-log artifact.
+# A successful diagnostic job only means collection completed; real gates stay unchanged.

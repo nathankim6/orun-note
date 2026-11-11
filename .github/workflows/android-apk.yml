@@ -29,7 +29,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - name: Test ink, update policy and PDF scheduling
-        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js && node scripts/test-pdf-pipeline.js && node scripts/test-pdf-presentation.js && node scripts/test-zoom-pad-quality.js && node scripts/test-review-videos.js && node scripts/test-native-qa-gate.js && node scripts/test-pdf-process-plugin.js && node scripts/test-viewer-hooks.js && node scripts/test-apk-certificate.js
+        run: node scripts/test-fixed-ink.js && node scripts/test-ink-gesture.js && node scripts/test-app-updates.js && node scripts/test-update-server.js && node scripts/test-pdf-scheduler.js && node scripts/test-pdf-pipeline.js && node scripts/test-pdf-presentation.js && node scripts/test-zoom-pad-quality.js && node scripts/test-pdf-zoom-sharpness.js && node scripts/test-pdf-native-errors.js && node scripts/generate-review-video-preferences.js --check && node scripts/test-review-videos.js && node scripts/test-native-qa-gate.js && node scripts/test-pdf-process-plugin.js && node scripts/test-viewer-hooks.js && node scripts/test-apk-certificate.js
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --no-install
       - name: Load the existing release keystore (never generate a replacement)

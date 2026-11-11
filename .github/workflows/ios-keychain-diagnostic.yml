@@ -1,0 +1,37 @@
+name: iOS simulator keychain experiment (NOT native app validation)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: synthetic-ios-keychain-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  synthetic-keychain-experiment:
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      IOS_SYNTHETIC_KEYCHAIN_DIAGNOSTIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '26.2' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Test synthetic probe isolation and output privacy
+        run: node --test qa/native-ios-keychain-diagnostic.test.mjs
+      - name: Compare linker-ad-hoc baseline with explicit synthetic entitlements
+        timeout-minutes: 7
+        run: node scripts/native-ios-keychain-diagnostic.mjs
+      - name: Upload enum/numeric diagnostic evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Synthetic-simulator-keychain-experiment-NOT-native-validation
+          path: qa/output/ios-keychain-diagnostic.jsonl
+          retention-days: 3
+          if-no-files-found: warn
+# No React Native build, production signing change, account, secret, IPA/app,
+# raw codesign output or simulator/host-keychain dump is uploaded.
+# Every run creates/deletes its own simulator. Results are NOT native gate evidence.

@@ -22,6 +22,7 @@ import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
 import { WordLookup } from '@/features/viewer/WordLookup';
 import { cachedWords, loadWords } from '@/features/viewer/words';
 import { reportError } from '@/lib/diag';
+import { ReviewVideosScreen } from '@/features/viewer/ReviewVideos';
 import { Toolbar } from '@/features/viewer/Toolbar';
 import { ToolConfig, toolDefaults } from '@/features/viewer/ink';
 import { LeftPanel, LeftTab } from '@/features/viewer/Panels';
@@ -35,6 +36,7 @@ export default function Viewer() {
   const store = useDocsStore(); const toast = store.showToast; const settings = useSettingsStore(); const prefs = settings.viewer; const ink = useInkStore();
   const docId = store.activeTab && store.openTabs.includes(store.activeTab) ? store.activeTab : paramId!;
   useEffect(() => { if (paramId) store.openTab(paramId); }, [paramId]);
+  const [videosOpen, setVideosOpen] = useState(false);
   const doc = store.docs[docId]; const cycle = doc?.cycle ?? 1;
   const [uri, setUri] = useState<string | null>(null); const [missing, setMissing] = useState(false);
   useEffect(() => {
@@ -159,7 +161,7 @@ export default function Viewer() {
           {splitOn && <SubDocWindow docked={{ w: subW, h: subH }} split onToggleSplit={toggleSplit} mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
         </View>
       </View>
-      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} onVideos={() => { setLookup(null); setSheet(null); router.push('/review-videos'); }} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
+      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (['pen', 'highlighter'].includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} onVideos={() => { setLookup(null); setSheet(null); setVideosOpen(true); }} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
       {lookup && <WordLookup text={lookup.text} anchor={lookup.abs} onClose={() => setLookup(null)} onLookup={(q) => setLookup((l) => l && { ...l, text: q })} onHighlight={() => { const k = lookup.k; const add = lookup.rects.map((r) => ({ id: Math.random().toString(36).slice(2, 10), tool: 'highlighter' as Tool, color: '#FDE68A', width: r.h * 0.95, opacity: 0.45, points: [{ x: r.x, y: r.y + r.h / 2 }, { x: r.x + r.w, y: r.y + r.h / 2 }], createdAt: Date.now() })); ink.setStrokes(k, [...(ink.pages[k]?.strokes ?? []), ...add]); setLookup(null); toast('형광펜으로 표시했어요'); }} />}
       {zoomPad && uri && (() => { const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = ink.pages[k]; return (
         <ZoomPad height={padH} uri={uri} pageW={pageAt(pageIndex).width} pageH={pageAt(pageIndex).height} sourceIndex={pageAt(pageIndex).index} template={doc.template}
@@ -204,6 +206,7 @@ export default function Viewer() {
         <Row style={{ flexWrap: 'wrap', marginTop: 10 }} gap={6}>{pages.map((i) => <Pressable key={i} onPress={() => { goto(i); setSheet(null); }} style={{ width: 40, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: i === pageIndex ? colors.primary : doc.bookmarks.includes(i) ? colors.primarySoft : colors.surfaceAlt }}><Text style={{ fontWeight: '700', fontSize: 12, color: i === pageIndex ? '#fff' : colors.text }}>{i + 1}</Text></Pressable>)}</Row>
       </Sheet>
       <GuideOverlay visible={!settings.viewerGuideDone && !!uri} onDone={() => settings.setViewerGuideDone(true)} />
+      {viewerActive && videosOpen && <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { zIndex: 2000, elevation: 60 }]}><ReviewVideosScreen onClose={() => setVideosOpen(false)} /></View>}
     </View>
   );
 }

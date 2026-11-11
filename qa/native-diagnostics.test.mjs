@@ -455,29 +455,30 @@ test('manual platform selection defaults all, isolates concurrency and skips onl
 async function mockedPdfSmoke(options={}) {
   const {createRequire}=await import('node:module'),{runInNewContext}=await import('node:vm');const ts=createRequire(import.meta.url)('typescript');
   const code=ts.transpileModule(fs.readFileSync('qa/pdf-smoke.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
-  const events=[],calls=[];let timings=0,clock=0;
+  const events=[],calls=[],budgets=[];let timings=0,clock=0;
   const reject=(stage)=>{calls.push(stage);if(options.fail===stage)throw Error(options.message??canary);};
   const files={cacheDirectory:'file:///private/'+canary+'/',EncodingType:{Base64:'base64'},writeAsStringAsync:async()=>reject('write_source'),deleteAsync:async()=>reject('cleanup')};
   const renderer={
     hasReadingRenderer:()=>options.fail!=='reading_api',
     importFile:async()=>{reject('import');return {uri:'file:///encrypted/'+canary+'.pdfenc'};},
-    getInfo:async()=>{reject('info');return {pageCount:options.pages??2};},
+    getInfo:async()=>{reject('info');return {pageCount:options.pages??2,pages:[{width:612,height:792},options.pageSize??{width:612,height:792}]};},
     renderPage:async(...args)=>{reject('render_detail');assert.equal(args[1],0);assert.equal(args[2],2400);if(options.fail==='await_render')return new Promise(()=>{});return 'private-render';},
-    renderReading:async(...args)=>{reject('render_reading');assert.equal(args[1],1);assert.equal(args[2],900);if(options.fail==='await_render')return new Promise(()=>{});return 'private-render';},
+    renderReading:async(...args)=>{reject('render_reading');assert.equal(args[1],1);assert.equal(args[2],900);if(options.fail==='await_render')return new Promise(()=>{});return 'file:///reading/'+canary;},
+    renderRegion:async(...args)=>{reject('region');assert.deepEqual(args.slice(1),[1,2400,300,100,900,600]);clock+=options.regionAdvance??0;return 'file:///region/'+canary;},
     deleteFile:async()=>{calls.push('cleanup_import');if(options.cleanupAlsoFails)throw Error(canary);},
     takeRenderTimings:async()=>{timings++;if(timings%2===1)return [];reject('timings');return options.noTimings?[]:[{lane:'detail',page:0,width:2400,totalMs:100,uri:canary},{lane:'reading',page:1,width:900,totalMs:1,uri:canary}];},
   };
-  const context={exports:{},performance:{now:()=>++clock},Date:{now:()=>1},setTimeout:(fn,ms)=>{if(ms===25||options.fail==='await_render')queueMicrotask(fn);return 1;},clearTimeout:()=>{},require:name=>name==='expo-file-system/legacy'?files:name==='../modules/pdf-renderer'?{PdfRenderer:renderer}:name==='./fixtures/pdf.generated'?{PDF_BASE64:'U1lOVEhFVElD'}:name==='./telemetry'?{marker:(event,values)=>events.push({event,...values})}:(()=>{throw Error('unexpected test import');})()};
+  const context={exports:{},performance:{now:()=>++clock},Date:{now:()=>1},setTimeout:(fn,ms)=>{if(ms!==25)budgets.push(ms);if(ms===25||options.fail==='await_render')queueMicrotask(fn);return 1;},clearTimeout:()=>{},require:name=>name==='react-native'?{Image:{getSize:(uri,success,error)=>{calls.push('image_load');if(options.fail==='image_load'){error(Error(canary));return;}const region=uri.includes('/region/');clock+=options.imageAdvance??0;success(...(region?(options.regionSize??[900,600]):(options.readingSize??[900,1165])));}}}:name==='expo-file-system/legacy'?files:name==='../modules/pdf-renderer'?{PdfRenderer:renderer}:name==='./fixtures/pdf.generated'?{PDF_BASE64:'U1lOVEhFVElD'}:name==='./telemetry'?{marker:(event,values)=>events.push({event,...values})}:(()=>{throw Error('unexpected test import');})()};
   runInNewContext(code,context);
   let summary;
   try{await context.exports.pdfSmoke();}catch(error){summary=context.exports.pdfFailureSummary(error);events.push({event:'pdf_result',result:'fail',...summary});}
-  return {events,calls,summary,api:context.exports};
+  return {events,calls,budgets,summary,api:context.exports};
 }
 test('PDF diagnostics identify write/import/info/render/await/timings/cleanup failures without native messages', async () => {
-  const cases=[['write_source','write_source'],['import','import'],['info','info'],['render_detail','render_detail'],['render_reading','render_reading'],['await_render','await_render'],['timings','timings'],['cleanup','cleanup']];
+  const cases=[['write_source','write_source'],['import','import'],['info','info'],['render_detail','render_detail'],['render_reading','render_reading'],['await_render','await_render'],['region','region'],['image_load','image_load'],['timings','timings'],['cleanup','cleanup']];
   for(const [fail,stage] of cases){
     const result=await mockedPdfSmoke({fail});assert.equal(result.summary.stage,stage);assert.equal(result.summary.trial,1);
-    assert.equal(result.summary.reason,fail==='await_render'?'render_timeout':'operation_failed');
+    assert.equal(result.summary.reason,fail==='await_render'?'render_timeout':fail==='image_load'?'image_load_failed':'operation_failed');
     assert(result.events.some(r=>r.event==='pdf_stage'&&r.stage===stage&&r.trial===1));
     assert(result.events.some(r=>r.event==='pdf_failure'&&r.stage===stage&&!r.secondary));
     assert(!JSON.stringify(result.events).includes(canary));
@@ -512,4 +513,42 @@ test('PDF sanitizer validates fixed stage/trial/reason fields and strips private
   assert.equal(output.status,1);assert(output.output.includes('keychain_entitlement'));assert(output.output.includes('"stage":"import"'));
   assert(!output.output.includes(canary));assert(!output.output.includes('-34018'));assert(!output.output.includes('-99999'));
   assert(!output.output.includes('"trial":4'));assert(!output.output.includes('"message"'));assert(!output.output.includes('"uri"'));
+});
+
+test('PDF native region and both decoded rasters are checked on all three trials using actual page aspect', async () => {
+  const result=await mockedPdfSmoke();
+  assert.equal(result.calls.filter(c=>c==='region').length,3);assert.equal(result.calls.filter(c=>c==='image_load').length,6);
+  const rasters=result.events.filter(r=>r.event==='pdf_raster');assert.equal(rasters.length,6);
+  for(const raster of rasters){assert.equal(raster.status,1);assert.equal(raster.width,900);for(const [key,value] of Object.entries(raster))if(key!=='event')assert.equal(typeof value,'number');}
+  const reading=rasters.find(r=>r.raster===0),region=rasters.find(r=>r.raster===1);
+  assert.equal(reading.height,1165);assert(Math.abs(reading.expectedHeight-900*792/612)<0.000001);assert.equal(reading.tolerancePx,1);
+  assert.equal(region.height,600);assert.equal(region.expectedHeight,600);assert.equal(region.tolerancePx,0);
+  assert.equal((await mockedPdfSmoke({readingSize:[900,1164]})).summary.reason,'reading_serialized'); // Floor/round both within 1px.
+  assert.equal((await mockedPdfSmoke({readingSize:[900,1200]})).summary.reason,'raster_dimensions'); // Not a 600x800 page.
+  assert.equal((await mockedPdfSmoke({pageSize:{width:600,height:800},readingSize:[900,1200]})).summary.reason,'reading_serialized'); // Metadata drives expectation.
+  assert(!JSON.stringify(result.events).includes(canary));
+});
+test('PDF region/decode failures or wrong dimensions cannot pass and never expose URI/messages', async () => {
+  for(const options of [{regionSize:[901,600]},{regionSize:[900,601]},{readingSize:[900,NaN]}]) {
+    const result=await mockedPdfSmoke(options);assert.equal(result.summary.stage,'image_load');assert.equal(result.summary.reason,'raster_dimensions');assert(result.events.some(r=>r.event==='pdf_raster'&&r.status===0));assert(!JSON.stringify(result.events).includes(canary));
+  }
+  const region=await mockedPdfSmoke({fail:'region'});assert.equal(region.summary.stage,'region');assert.equal(region.summary.reason,'operation_failed');assert(!region.calls.includes('image_load'));
+  const load=await mockedPdfSmoke({fail:'image_load'});assert.equal(load.summary.reason,'image_load_failed');assert(load.events.some(r=>r.event==='pdf_raster'&&r.status===0));
+  const metadata=await mockedPdfSmoke({pageSize:{width:0,height:792}});assert.equal(metadata.summary.stage,'info');assert.equal(metadata.summary.reason,'fixture_dimensions');
+});
+test('PDF parallel render, region and image decoding share one shrinking 90s budget per trial', async () => {
+  const result=await mockedPdfSmoke();assert.equal(result.budgets.length,9);
+  for(let i=0;i<result.budgets.length;i+=3){const [parallel,region,decode]=result.budgets.slice(i,i+3);assert(parallel<=90000&&region<parallel&&decode<region&&decode>0);}
+  const lateRegion=await mockedPdfSmoke({regionAdvance:90000});assert.equal(lateRegion.summary.reason,'render_timeout');assert.equal(lateRegion.summary.stage,'region');assert(!lateRegion.calls.includes('image_load'));
+  const lateDecode=await mockedPdfSmoke({imageAdvance:90000});assert.equal(lateDecode.summary.reason,'render_timeout');assert.equal(lateDecode.summary.stage,'image_load');
+  assert(lateDecode.budgets.at(-1)<lateDecode.budgets[0]);assert(!JSON.stringify(lateDecode.events).includes(canary));
+});
+test('PDF raster sanitizer retains only bounded numeric status/dimensions and rejects failed raster as a pass', () => {
+  const rows=[{event:'pdf_raster',trial:1,raster:0,status:1,width:900,height:1165,expectedWidth:900,expectedHeight:900*792/612,tolerancePx:1,uri:canary,message:canary},
+    {event:'pdf_raster',trial:1,raster:1,status:0,width:900,height:601,expectedWidth:900,expectedHeight:600,tolerancePx:0,uri:canary},
+    {event:'pdf_raster',trial:2,raster:1,status:1,width:canary,height:Infinity,expectedWidth:-1,tolerancePx:100001},
+    {event:'pdf_raster',trial:4,raster:0,status:1},{event:'pdf_raster',trial:1,raster:canary,status:1},
+    {event:'suite_result',platform:'android',result:'pass'}];
+  const result=sanitize(rows.map(row=>'QA_JSON '+JSON.stringify(row)).join('\n'),'raster-private');assert.equal(result.status,1);assert(!result.output.includes(canary));assert(!result.output.includes('"uri"'));assert(!result.output.includes('"message"'));assert(!result.output.includes('"trial":4'));
+  const parsed=result.output.trim().split('\n').map(JSON.parse).filter(r=>r.event==='pdf_raster');assert.equal(parsed.length,3);assert.equal(parsed[0].height,1165);assert.equal(parsed[2].width,undefined);assert.equal(parsed[2].height,undefined);
 });

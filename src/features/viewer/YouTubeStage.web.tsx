@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { StageHandle, StageStatus, stageFailure, bridgeStatus, validVideoId } from './reviewVideoSafety';
+import { StageHandle, StageStatus, stageFailure, bridgeStatus, validVideoId, createPlayerPreferences, validPlaybackRate } from './reviewVideoSafety';
 export { StageHandle, StageStatus, StageErrorCode, EMPTY_STATUS, stageError } from './reviewVideoSafety';
 
 type YTApi = { Player: new (el: HTMLElement, o: any) => any };
@@ -25,15 +25,15 @@ function loadYT(): Promise<YTApi> {
 export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus: (s: Partial<StageStatus>) => void }>(function YouTubeStage({ videoId, onStatus }, ref) {
   const host = useRef<HTMLDivElement | null>(null); const player = useRef<any>(null);
   const cb = useRef(onStatus); cb.current = onStatus;
-  const ready = useRef(false);
+  const ready = useRef(false); const desiredRate = useRef(1); const preferences = useRef<ReturnType<typeof createPlayerPreferences> | null>(null);
   useImperativeHandle(ref, () => {
     const call = (method: string, ...args: unknown[]) => { if (!ready.current) return; try { player.current?.[method]?.(...args); } catch { /* a disposed iframe must never escape into UI */ } };
-    return { play: () => call('playVideo'), pause: () => call('pauseVideo'), seek: (v: number) => { if (Number.isFinite(v)) call('seekTo', Math.max(0, v), true); } };
+    return { setPlaybackRate: (rate: number) => { if (validPlaybackRate(rate)) { desiredRate.current = rate; preferences.current?.choose(rate); } }, play: () => call('playVideo'), pause: () => call('pauseVideo'), seek: (v: number) => { if (Number.isFinite(v)) call('seekTo', Math.max(0, v), true); } };
   }, []);
   useEffect(() => {
     let disposed = false, failed = false; let tick: ReturnType<typeof setInterval> | undefined;
     ready.current = false;
-    const destroy = () => { clearInterval(tick); ready.current = false; const p = player.current; player.current = null; try { p?.destroy?.(); } catch {} host.current?.replaceChildren(); };
+    const destroy = () => { preferences.current?.dispose(); preferences.current = null; clearInterval(tick); ready.current = false; const p = player.current; player.current = null; try { p?.destroy?.(); } catch {} host.current?.replaceChildren(); };
     const fail = (code: unknown) => {
       if (disposed || failed) return;
       failed = true; clearTimeout(guard); destroy();
@@ -43,6 +43,10 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
       if (disposed || failed) return;
       const status = bridgeStatus(JSON.stringify(message)); if (status) cb.current(status);
     };
+    preferences.current = createPlayerPreferences(() => ready.current ? player.current : null, emit);
+    preferences.current.choose(desiredRate.current);
+    const onVisibility = () => { if (document.hidden && ready.current) { try { player.current?.pauseVideo?.(); } catch {} } };
+    document.addEventListener?.('visibilitychange', onVisibility);
     const guard = setTimeout(() => { if (!ready.current) fail('timeout'); }, 30000);
     if (!validVideoId(videoId)) fail('invalid');
     else loadYT().then((YT) => {
@@ -55,19 +59,22 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
           onReady: (event: any) => {
             if (disposed || failed || ready.current) return;
             try {
-              ready.current = true; clearTimeout(guard);
+              ready.current = true; clearTimeout(guard); onVisibility();
               const f = event.target.getIframe?.(); if (f) { f.setAttribute('tabindex', '-1'); f.setAttribute('aria-hidden', 'true'); f.setAttribute('inert', ''); f.setAttribute('allow', 'autoplay; encrypted-media'); f.style.pointerEvents = 'none'; }
               emit({ k: 'ready', d: event.target.getDuration() || 0 });
+              preferences.current?.captionsOff(); preferences.current?.sync();
               tick = setInterval(() => { if (disposed || failed || !player.current) return; try { const p = player.current; emit({ k: 'time', t: p.getCurrentTime(), d: p.getDuration(), l: p.getVideoLoadedFraction() }); } catch { fail('process'); } }, 250);
             } catch { fail('load'); }
           },
+          onApiChange: () => { if (!disposed && !failed) { preferences.current?.captionsOff(); preferences.current?.sync(); } },
+          onPlaybackRateChange: () => { if (!disposed && !failed) preferences.current?.sync(); },
           onStateChange: (e: any) => emit({ k: 'state', s: e.data }),
           onAutoplayBlocked: () => emit({ k: 'state', s: 2 }),
           onError: (e: any) => fail(e.data),
         },
       });
     }).catch(() => fail('network'));
-    return () => { disposed = true; clearTimeout(guard); destroy(); };
+    return () => { disposed = true; document.removeEventListener?.('visibilitychange', onVisibility); clearTimeout(guard); destroy(); };
   }, [videoId]);
   return React.createElement('div', {
     ref: host, 'aria-hidden': true, inert: true, onContextMenu: (e: any) => e.preventDefault(), 'data-testid': 'review-video-stage',
