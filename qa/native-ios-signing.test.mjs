@@ -88,7 +88,9 @@ test('Xcode embedded entitlement verifier rejects absent section and identity mi
  assert.throws(()=>sectionXml('no section'));
  const e={'application-identifier':BUNDLE_ID,'keychain-access-groups':[BUNDLE_ID]};
  assert(validateXcodeEntitlements(info,e));
- for(const x of [{},{...e,'application-identifier':APP_IDENTIFIER},{...e,'keychain-access-groups':['$(AppIdentifierPrefix)com.paperly.study']}])assert.throws(()=>validateXcodeEntitlements(info,x));
+ // a team-prefixed identifier for OUR bundle id is fine; another bundle id, an unresolved variable or a missing group is not
+ assert(validateXcodeEntitlements(info,{...e,'application-identifier':'ABCDE12345.'+BUNDLE_ID,'keychain-access-groups':['ABCDE12345.'+BUNDLE_ID]}));
+ for(const x of [{},{...e,'application-identifier':'ABCDE12345.com.other.app'},{...e,'application-identifier':'$(AppIdentifierPrefix)'+BUNDLE_ID},{...e,'keychain-access-groups':['$(AppIdentifierPrefix)com.paperly.study']},{...e,'keychain-access-groups':['ABCDE12345.com.other.app']}])assert.throws(()=>validateXcodeEntitlements(info,x));
 });
 test('normal smoke uses Xcode signing and preserves nested frameworks without manual signing',()=>{
  const s=fs.readFileSync('scripts/native-ios-smoke.sh','utf8');

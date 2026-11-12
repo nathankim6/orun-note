@@ -111,8 +111,12 @@ export function sectionXml(text) {
 }
 export function validateXcodeEntitlements(info, ents) {
   validateIdentity(info);
-  if(ents?.['application-identifier']!==BUNDLE_ID)throw Error('embedded_application_identifier_mismatch');
-  if(!Array.isArray(ents['keychain-access-groups']) || !ents['keychain-access-groups'].includes(BUNDLE_ID) || ents['keychain-access-groups'].some(x=>typeof x!=='string'||/\$[({]/.test(x)))throw Error('embedded_keychain_groups_mismatch');
+  // Xcode may prefix the identifier with a team id (or leave it bare); the bundle id itself must be ours, unresolved
+  // build variables ($(…)) are never accepted.
+  const appId=ents?.['application-identifier'];
+  if(typeof appId!=='string'||/\$[({]/.test(appId)||!(appId===BUNDLE_ID||appId.endsWith('.'+BUNDLE_ID)))throw Error('embedded_application_identifier_mismatch');
+  const groups=ents['keychain-access-groups'];
+  if(!Array.isArray(groups)||!groups.some(x=>x===BUNDLE_ID||(typeof x==='string'&&x.endsWith('.'+BUNDLE_ID)))||groups.some(x=>typeof x!=='string'||/\$[({]/.test(x)))throw Error('embedded_keychain_groups_mismatch');
   return true;
 }
 export function prepareXcodeEntitlements(source,destination,stripSiwa=false) {
