@@ -11,7 +11,7 @@ export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> 
     case 'eraser': return { width: 3, opacity: 1 };
     case 'vectorEraser': return { width: 3, opacity: 1 };
     case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
-    case 'pencil': return { width: 1.2, opacity: 0.8, color: '#3A3A3C' };
+    case 'pencil': return { width: 1.2, opacity: 0.8, color: '#1C1C1E' };
     case 'brush': return { opacity: 0.9 };
     case 'fountain': return { opacity: 1 };
     default: return { opacity: 1 };

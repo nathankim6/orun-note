@@ -97,7 +97,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   );
   const penColor = cfg.tool === 'pen' ? cfg.color : viewer.toolPresets?.pen?.color ?? '#1C1C1E';
   const hlColor = cfg.tool === 'highlighter' ? cfg.color : viewer.toolPresets?.highlighter?.color ?? '#FACC15';
-  const pencilColor = cfg.tool === 'pencil' ? cfg.color : viewer.toolPresets?.pencil?.color ?? '#3A3A3C';
+  const pencilColor = cfg.tool === 'pencil' ? cfg.color : viewer.toolPresets?.pencil?.color ?? '#1C1C1E';
   const roundBtn = (label: string, icon: any, onPress?: () => void, disabled?: boolean) => <Pressable accessibilityLabel={label} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.roundBtn, pressed && { opacity: 0.55 }]}><Ionicons name={icon} size={18} color={disabled ? '#C7C7CC' : '#1C1C1E'} /></Pressable>;
   const iconBtn = (label: string, name: any, lib: 'ion' | 'mci', active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.iconBtn, active && styles.iconBtnActive, pressed && { opacity: 0.55 }]}>{lib === 'mci' ? <MaterialCommunityIcons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} /> : <Ionicons name={name} size={21} color={active ? '#007AFF' : '#1C1C1E'} />}</Pressable>;
   const chip = (label: string, text: string, icon: any, active: boolean, onPress?: () => void) => <Pressable accessibilityLabel={label} onPress={onPress} style={({ pressed }) => [styles.chip, active && styles.chipActive, pressed && { opacity: 0.6 }]}><MaterialCommunityIcons name={icon} size={15} color={active ? '#007AFF' : '#3A3A3C'} />{winW >= 1100 ? <Text style={[styles.chipText, active && { color: '#007AFF' }]}>{text}</Text> : null}</Pressable>;
