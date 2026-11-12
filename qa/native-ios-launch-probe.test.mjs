@@ -26,3 +26,39 @@ test('probe runs after install before XCTest using same exact simulator',()=>{
  assert.match(s,/xcodebuild -project[^\n]*-destination "id=\$UDID"/);
  assert.match(fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8'),/XCUIApplication\(bundleIdentifier: "com.paperly.study"\)/);
 });
+
+import os from 'node:os';
+import path from 'node:path';
+import {exitSummary,crashSummary,frameworkSummary,newestCrash,EXIT_CLASSES} from '../scripts/native-ios-launch-probe.mjs';
+test('console emits closed classifications and missing library basename only',()=>{
+ const value=exitSummary('dyld: Library not loaded: /Users/secret/build/Frameworks/hermes.framework/hermes\nSymbol not found: sensitive_symbol\ncode signature invalid\nRCTFatalException: TypeError: secret message\nUnhandled JS Exception\nhermes error\nkeychain failure\nSIGABRT SIGSEGV');
+ assert.equal(value.missingLibrary,'hermes'); assert.equal(value.classes.length,9);
+ assert.ok(value.classes.every(x=>EXIT_CLASSES.includes(x)));assert.ok(!JSON.stringify(value).includes('secret'));
+ assert.deepEqual(exitSummary('private@email.test'),{classes:['other'],missingLibrary:null});
+});
+const crashFixture=()=>({bundleInfo:{CFBundleIdentifier:'com.paperly.study'},procPath:'/Users/private/Devices/DEVICE/data/Containers/Bundle/Application/id/Paperly.app/Paperly',exception:{type:'EXC_CRASH',signal:'SIGABRT'},termination:{namespace:'DYLD',code:1,indicator:'Library not loaded: /Users/private/hermes.framework/hermes'},faultingThread:0,threads:[{frames:Array.from({length:10},()=>({imageIndex:0,symbol:'abort',imageOffset:1234}))}],usedImages:[{name:'/Users/private/libsystem_kernel.dylib',path:'/Users/private/secret'}],asi:{message:'RCTFatalException: TypeError: private@email.test'}});
+const ips=x=>JSON.stringify({bundleID:'com.paperly.study'})+'\n'+JSON.stringify(x);
+test('IPS summary has bounded frames, safe names, classified reason and no raw messages',()=>{
+ const x=crashSummary(ips(crashFixture()));assert.equal(x.frames.length,8);assert.equal(x.frames[0].imageName,'libsystem_kernel.dylib');assert.equal(x.exceptionType,'EXC_CRASH');assert.equal(x.jsErrorName,'TypeError');assert.equal(x.rctFatalException,true);assert.equal(x.terminationReason.missingLibrary,'hermes');assert.ok(!/private|Users|imageOffset|1234|email/.test(JSON.stringify(x)));
+ const f=crashFixture();f.threads[0].frames=[{imageIndex:0,symbol:'/Users/private/secret'},{imageIndex:0,symbol:'a'.repeat(100)}];f.termination.namespace='private';f.exception.type='private';f.asi.message='Unhandled JS Exception: CustomPrivateName: sensitive';
+ const y=crashSummary(ips(f));assert.equal(y.frames[0].symbol,'other');assert.equal(y.frames[1].symbol.length,80);assert.equal(y.terminationNamespace,'other');assert.equal(y.exceptionType,null);assert.equal(y.jsErrorName,null);assert.equal(y.unhandledJsException,true);
+});
+test('newest crash matches app, simulator and time; never attributes stale crash',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ios-crash-test-'));
+ try {fs.writeFileSync(path.join(dir,'app.ips'),ips(crashFixture()));assert.equal(newestCrash(dir,Date.now()-5000,'DEVICE').found,true);assert.equal(newestCrash(dir,Date.now()+5000,'DEVICE').found,false);assert.equal(newestCrash(dir,0,'OTHER').found,false);
+ const f=crashFixture();f.bundleInfo.CFBundleIdentifier='other.app';fs.writeFileSync(path.join(dir,'other.ips'),JSON.stringify({bundleID:'other.app'})+'\n'+JSON.stringify(f));assert.equal(newestCrash(dir,0,'DEVICE').exceptionType,'EXC_CRASH');}finally{fs.rmSync(dir,{recursive:true});}
+});
+test('framework signature summary does not export details',()=>{
+ assert.deepEqual(frameworkSummary('/private/hermes.framework',{status:1,stderr:'code object is not signed at all /private'}),{framework:'hermes.framework',signed:false,adhoc:false});
+ assert.deepEqual(frameworkSummary('React.framework',{status:0,stderr:'Executable=/private\nSignature=adhoc\n'}),{framework:'React.framework',signed:true,adhoc:true});
+});
+test('candidate verifies deep strict and installed app before allowing XCTest',()=>{
+ const source=fs.readFileSync('scripts/native-ios-launch-probe.mjs','utf8');
+ assert.match(source,/guardEnv\(\);\s*const info=/);assert.match(source,/validateIdentity\(info\)/);
+ assert.match(source,/targets.push\(path.join\(app,info.CFBundleExecutable\)\)/);
+ assert.match(source,/signApp\(app,work\);verifyApp\(app\)/);
+ assert.match(source,/\['--verify','--deep','--strict',app\]/);
+ assert.ok(source.indexOf('result.before=probe')<source.indexOf('resignCandidate(app,path.dirname'));
+ assert.ok(source.indexOf('resignCandidate(app,path.dirname')<source.indexOf('result.after=probe'));
+ assert.match(source,/if\(!result.candidate.verified\)throw Error/);
+});
