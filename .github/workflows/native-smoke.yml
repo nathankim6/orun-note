@@ -15,7 +15,7 @@ concurrency:
   group: native-smoke-${{ github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: false
 jobs:
-  android:
+  android-diagnostic-player-context:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'android' }}
     runs-on: ubuntu-latest
     timeout-minutes: 75

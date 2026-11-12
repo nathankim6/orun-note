@@ -13,6 +13,17 @@ import { PLAYER_PREFERENCES_SOURCE } from './reviewVideoPreferences.safe.generat
 
 const blockWindow = () => {};
 
+// ISOLATED QA DIAGNOSTIC BRANCH ONLY. Never export URLs, IDs, headers or messages.
+export function sanitizeQAPlayerContext(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || (value as any).k !== 'qa-context') return null;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = { event: 'player_context' };
+  for (const key of ['topOriginMatches', 'baseOriginMatches', 'frameExists', 'frameOriginMatches', 'frameHasOrigin', 'apiReady', 'secureContext', 'documentReferrerPresent']) if (typeof input[key] === 'boolean') output[key] = input[key];
+  if (['official', 'nocookie', 'other', 'unknown'].includes(input.frameHost as string)) output.frameHost = input.frameHost;
+  for (const key of ['width', 'height']) if (typeof input[key] === 'number' && Number.isInteger(input[key]) && (input[key] as number) >= 0 && (input[key] as number) <= 10000) output[key] = input[key];
+  return output;
+}
+
 export function playerHtml(videoId: string, origin: string) {
   const vars = JSON.stringify({ autoplay: 1, controls: 0, disablekb: 1, fs: 0, rel: 0, playsinline: 1, modestbranding: 1, iv_load_policy: 3, cc_load_policy: 0, hl: 'ko', origin });
   return `<!doctype html><html><head><meta charset="utf-8">
@@ -25,6 +36,12 @@ export function playerHtml(videoId: string, origin: string) {
 var player=null,ready=false,tick=null,timeout=null;
 var prefs=(${PLAYER_PREFERENCES_SOURCE})(function(){return ready?player:null},post);
 function post(m){try{window.ReactNativeWebView.postMessage(JSON.stringify(m))}catch(e){}}
+function qaContext(){
+  var c={k:'qa-context',apiReady:ready,secureContext:window.isSecureContext===true,documentReferrerPresent:!!document.referrer,frameHost:'unknown',frameExists:false};
+  try{c.topOriginMatches=window.location.origin===${JSON.stringify(origin)};c.baseOriginMatches=new URL(document.baseURI).origin===${JSON.stringify(origin)};var f=player&&player.getIframe();c.frameExists=!!f;
+    if(f){var u=new URL(f.src);c.frameHost=u.hostname==='www.youtube.com'?'official':u.hostname==='www.youtube-nocookie.com'?'nocookie':'other';c.frameHasOrigin=u.searchParams.has('origin');c.frameOriginMatches=u.searchParams.get('origin')===${JSON.stringify(origin)};var r=f.getBoundingClientRect();c.width=Math.round(r.width);c.height=Math.round(r.height);}
+  }catch(e){}post(c);
+}
 function onYouTubeIframeAPIReady(){
   try{player=new YT.Player('p',{host:'https://www.youtube-nocookie.com',videoId:${JSON.stringify(videoId)},width:'100%',height:'100%',playerVars:${vars},
     events:{
@@ -34,7 +51,7 @@ function onYouTubeIframeAPIReady(){
       onPlaybackRateChange:function(){prefs.sync()},
       onStateChange:function(e){post({k:'state',s:e.data})},
       onAutoplayBlocked:function(){post({k:'state',s:2})},
-      onError:function(e){post({k:'error',c:e.data})}}});}catch(e){post({k:'error',c:'load'})}
+      onError:function(e){qaContext();post({k:'error',c:e.data})}}});}catch(e){post({k:'error',c:'load'})}
 }
 window.cmd=function(c){if(!player||!ready)return;
   if(c.t==='play')player.playVideo();else if(c.t==='pause')player.pauseVideo();else if(c.t==='seek')player.seekTo(c.v,true);else if(c.t==='rate')prefs.choose(c.v);};
@@ -73,6 +90,7 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
   useImperativeHandle(ref, () => ({ play: () => send({ t: 'play' }), pause: () => send({ t: 'pause' }), setPlaybackRate: (rate: number) => { if (validPlaybackRate(rate)) { desiredRate.current = rate; send({ t: 'rate', v: rate }); } }, seek: (v: number) => { if (Number.isFinite(v)) send({ t: 'seek', v: Math.max(0, v) }); } }), [send]);
   const onMessage = useCallback((event: WebViewMessageEvent) => {
     if (!alive.current || failed.current) return;
+    try { const raw = event?.nativeEvent?.data; const context = typeof raw === 'string' && raw.length <= 2048 ? sanitizeQAPlayerContext(JSON.parse(raw)) : null; if (context) { console.log('QA_JSON ' + JSON.stringify(context)); return; } } catch {}
     const status = bridgeStatus(event?.nativeEvent?.data);
     if (!status) return;
     if (status.error) { fail(status.errorCode ?? 'load'); return; }

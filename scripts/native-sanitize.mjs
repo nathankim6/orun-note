@@ -7,7 +7,7 @@ const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_r
 const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'ready', 'emulator_system_ui_anr', 'emulator_app_anr', 'emulator_app_crash', 'emulator_os_blocked', 'emulator_os_not_ready', 'emulator_display_mismatch', 'emulator_capacity_unsupported', 'emulator_configuration_failed', 'apk_install_failed', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'native_evidence_uncertain', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
 const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'ready_controls', 'progress_controls', 'wait_progress', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
 const numeric = new Set(['cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'trials']);
-const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [];
+const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [], playerContexts = [];
 function sanitizeSurface(row) {
   const clean = { event: 'driver_surface' };
   const enums = { foreground: ['app','launcher','permission','systemdialog','unknown'], dialog: ['none','gms_crash','app_crash','anr','system_ui_anr','keyguard','debugger','permission','gesture_tutorial','unknown'], xmlSource: ['fresh','cached','unavailable'], uiPackage: ['app','launcher','permission','system','mixed','other','unknown'] };
@@ -22,6 +22,13 @@ for (const line of text.split('\n')) {
   const at = line.indexOf('QA_JSON '); if (at < 0) continue;
   try {
     const row = JSON.parse(line.slice(at + 8));
+    if (row.event === 'player_context') {
+      const clean = { event: 'player_context' };
+      for (const key of ['topOriginMatches', 'baseOriginMatches', 'frameExists', 'frameOriginMatches', 'frameHasOrigin', 'apiReady', 'secureContext', 'documentReferrerPresent']) if (typeof row[key] === 'boolean') clean[key] = row[key];
+      if (['official', 'nocookie', 'other', 'unknown'].includes(row.frameHost)) clean.frameHost = row.frameHost;
+      for (const key of ['width', 'height']) if (Number.isInteger(row[key]) && row[key] >= 0 && row[key] <= 10000) clean[key] = row[key];
+      if (playerContexts.length < 2) playerContexts.push(clean); continue;
+    }
     if (row.event === 'ios_driver_status') { if (iosDriverStatuses.length < 2) iosDriverStatuses.push(sanitizeIosDriverStatus(row)); continue; }
     if (['driver_evidence','driver_milestones','driver_telemetry'].includes(row.event)) { const clean = sanitizeEvidence(row); if (clean && evidenceRows.length < 8) evidenceRows.push(clean); continue; }
     if(row.event==='pdf_raster') {
@@ -93,7 +100,7 @@ if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail'
 // Diagnostics are retained only on a failing suite. Each field is validated again
 // here even when it came from the driver; arbitrary QA_JSON cannot bypass this.
 if (!passed) {
-  rows.push(...iosDriverStatuses,...surfaces,...readiness,...evidenceRows);
+  rows.push(...playerContexts,...iosDriverStatuses,...surfaces,...readiness,...evidenceRows);
   const seen = new Set();
   const finalCounts = new Map();
   for (const row of [...diagnostics, ...report.diagnostics]) {
