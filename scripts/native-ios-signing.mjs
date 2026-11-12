@@ -1,4 +1,4 @@
-// CI-only ad-hoc signing for the simulator QA app. Synthetic team prefix; no Apple certs/profiles/keychain changes.
+// CI-only simulator QA signing. Normal smoke uses Xcode link-time entitlements, never re-signs.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -98,12 +98,51 @@ export function verifyApp(app, variant='V4') {
   run('codesign', ['--verify', '--deep', '--strict', app]);
   parseAdhoc(details('codesign', ['-dvv', app]));
 }
+// otool -s prints section bytes as hex words, not host-endian integers.
+export function sectionXml(text) {
+  const rows=String(text).split('\n').filter(l=>/^\s*[0-9a-f]{8,16}\s+/i.test(l));
+  const hex=rows.map(l=>l.trim().split(/\s+/).slice(1).filter(w=>/^(?:[0-9a-f]{2}){1,8}$/i.test(w)).join('')).join('');
+  if(!hex)throw Error('embedded_entitlements_missing');
+  return extractPlistXml(Buffer.from(hex,'hex').toString('utf8'));
+}
+export function validateXcodeEntitlements(info, ents) {
+  validateIdentity(info);
+  if(ents?.['application-identifier']!==BUNDLE_ID)throw Error('embedded_application_identifier_mismatch');
+  if(!Array.isArray(ents['keychain-access-groups']) || !ents['keychain-access-groups'].includes(BUNDLE_ID) || ents['keychain-access-groups'].some(x=>typeof x!=='string'||/\$[({]/.test(x)))throw Error('embedded_keychain_groups_mismatch');
+  return true;
+}
+export function prepareXcodeEntitlements(source,destination,stripSiwa=false) {
+  guardEnv();
+  const ents=plistJson(['--',source]);
+  if(stripSiwa)delete ents['com.apple.developer.applesignin'];
+  const resolve=v=>typeof v==='string'?v.replace(/\$\(AppIdentifierPrefix\)|\$\{AppIdentifierPrefix\}/g,'').replace(/\$\(CFBundleIdentifier\)|\$\(PRODUCT_BUNDLE_IDENTIFIER\)/g,BUNDLE_ID):Array.isArray(v)?v.map(resolve):v;
+  for(const k of Object.keys(ents))ents[k]=resolve(ents[k]);
+  ents['application-identifier']=BUNDLE_ID;
+  // Preserve existing groups; ensure default SecItemAdd has the app's own group.
+  ents['keychain-access-groups']=[...new Set([...(ents['keychain-access-groups']||[]),BUNDLE_ID])];
+  fs.writeFileSync(destination,run('plutil',['-convert','xml1','-o','-','-'],JSON.stringify(ents)));
+}
+export function verifyXcodeApp(app) {
+  guardEnv();
+  const info=plistJson(['--',path.join(app,'Info.plist')]);validateIdentity(info);
+  if(fs.existsSync(path.join(app,'embedded.mobileprovision')))throw Error('simulator_profile_refused');
+  if(typeof info.CFBundleExecutable!=='string'||path.basename(info.CFBundleExecutable)!==info.CFBundleExecutable)throw Error('invalid_executable');
+  const embedded=plistJson(['-'],sectionXml(run('otool',['-s','__TEXT','__entitlements',path.join(app,info.CFBundleExecutable)])));
+  validateXcodeEntitlements(info,embedded);
+  // On simulator codesign may report no signature-slot entitlements. Embedded section is authoritative.
+  const shown=details('codesign',['-d','--entitlements',':-',app]);
+  if(/<plist/.test(shown))validateXcodeEntitlements(info,plistJson(['-'],extractPlistXml(shown)));
+  run('codesign',['--verify','--deep','--strict',app]);parseAdhoc(details('codesign',['-dvv',app]));
+  return {embeddedEntitlements:true,applicationIdentifierMatches:true,keychainGroupMatches:true,adhoc:true,noAuthority:true};
+}
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [cmd, app, work] = process.argv.slice(2);
+  const [cmd, app, work, option] = process.argv.slice(2);
   try {
-    if (cmd === 'sign') signApp(app, work || '.');
-    else if (cmd === 'verify') verifyApp(app);
+    if(cmd==='prepare-xcode')prepareXcodeEntitlements(app,work,option==='strip-siwa');
+    else if(cmd==='verify-xcode')console.log(JSON.stringify(verifyXcodeApp(app)));
+    else if(cmd==='sign')throw Error('manual_resigning_disabled');
+    else if(cmd==='verify')verifyApp(app);
     else throw Error('usage');
-    console.log(`ios_qa_signing_${cmd}_ok`);
-  } catch (e) { console.error(`ios_qa_signing_failed:${e.message}`); process.exit(1); }
+    console.log('ios_qa_signing_'+cmd+'_ok');
+  }catch(e){console.error('ios_qa_signing_failed:'+e.message);process.exit(1);}
 }

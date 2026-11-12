@@ -32,11 +32,11 @@ test('adhoc detection rejects authority-signed apps', () => {
 });
 test('smoke script wires signing only after build and before install, with no security/keychain mutation', () => {
   const s = fs.readFileSync('scripts/native-ios-smoke.sh', 'utf8');
-  const b = s.indexOf('CODE_SIGNING_ALLOWED=NO build'), matrix = s.indexOf('native-ios-launch-probe.mjs');
+  const b = s.indexOf('CODE_SIGNING_ALLOWED=YES'), matrix = s.indexOf('native-ios-launch-probe.mjs');
   assert(b > 0 && b < matrix && matrix < s.indexOf('xcodebuild -project'));
   assert(s.includes('iphonesimulator') && s.includes('GITHUB_ACTIONS'));
   assert(!/\bsecurity\s+(disable|create|import|unlock|set-)/.test(s));
-  assert(!/Release-iphoneos|AppStore|PROVISIONING|DEVELOPMENT_TEAM/.test(s));
+  assert(!/Release-iphoneos|AppStore/.test(s));
 });
 
 test('actual workflow CI=1 is accepted but false QA flags and device SDKs reject', () => {
@@ -76,4 +76,22 @@ test('PDF keychain does not request access groups; verifier remains deep strict'
  const src=fs.readFileSync('scripts/native-ios-signing.mjs','utf8');
  assert(src.includes("if(variant==='V1') {run('codesign',['--force','--sign','-','--timestamp=none',app]);return;}"));
  assert(src.includes("['--verify', '--deep', '--strict', app]"));assert(src.includes('simulator_profile_refused'));
+});
+
+import {sectionXml,validateXcodeEntitlements} from '../scripts/native-ios-signing.mjs';
+test('Xcode embedded entitlement verifier rejects absent section and identity mismatch',()=>{
+ const xml='<?xml version="1.0"?><plist version="1.0"><dict/></plist>';
+ const hex=Buffer.from(xml).toString('hex').match(/.{1,8}/g).join(' ');
+ assert.equal(sectionXml('Contents of (__TEXT,__entitlements) section\n0000000100001000 '+hex),xml);
+ assert.throws(()=>sectionXml('no section'));
+ const e={'application-identifier':BUNDLE_ID,'keychain-access-groups':[BUNDLE_ID]};
+ assert(validateXcodeEntitlements(info,e));
+ for(const x of [{},{...e,'application-identifier':APP_IDENTIFIER},{...e,'keychain-access-groups':['$(AppIdentifierPrefix)com.paperly.study']}])assert.throws(()=>validateXcodeEntitlements(info,x));
+});
+test('normal smoke uses Xcode signing and preserves nested frameworks without manual signing',()=>{
+ const s=fs.readFileSync('scripts/native-ios-smoke.sh','utf8');
+ for(const setting of ['CODE_SIGNING_ALLOWED=YES','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY="-"','CODE_SIGN_STYLE=Manual','DEVELOPMENT_TEAM=""','PROVISIONING_PROFILE_SPECIFIER=""','CODE_SIGN_ENTITLEMENTS="$QA_ENTITLEMENTS"','otool -s __TEXT __entitlements','verify-xcode'])assert(s.includes(setting));
+ assert(!/native-ios-signing\.mjs sign\b/.test(s));
+ const entry=fs.readFileSync('scripts/native-ios-launch-probe.mjs','utf8').split("if(process.argv[1]===fileURLToPath(import.meta.url))")[1];
+ assert(!entry.includes('runMatrix('));assert(!entry.includes('signApp('));assert(entry.includes('verifyXcodeApp(app)'));
 });

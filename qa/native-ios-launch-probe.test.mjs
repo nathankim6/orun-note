@@ -20,7 +20,7 @@ test('keys never expose values or unknown names',()=>{
 });
 test('probe runs after install before XCTest using same exact simulator',()=>{
  const s=fs.readFileSync('scripts/native-ios-smoke.sh','utf8');
- assert.ok(s.indexOf('CODE_SIGNING_ALLOWED=NO build')<s.indexOf('node scripts/native-ios-launch-probe.mjs'));
+ assert.ok(s.indexOf('CODE_SIGNING_ALLOWED=YES')<s.indexOf('node scripts/native-ios-launch-probe.mjs'));
  assert.ok(s.indexOf('node scripts/native-ios-launch-probe.mjs')<s.indexOf('xcodebuild -project'));
  assert.match(s,/native-ios-launch-probe\.mjs "\$UDID" "\$APP"/);
  assert.match(s,/xcodebuild -project[^\n]*-destination "id=\$UDID"/);

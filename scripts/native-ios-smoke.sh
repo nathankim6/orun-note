@@ -6,11 +6,30 @@ command -v xcodegen >/dev/null || brew install xcodegen
 UDID=$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{const d=Object.values(JSON.parse(s).devices).flat().find(x=>x.isAvailable&&x.name.startsWith("iPad"));if(!d)process.exit(1);console.log(d.udid)})')
 xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
-xcodebuild -workspace ios/Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination "id=$UDID" -derivedDataPath qa/build/app CODE_SIGNING_ALLOWED=NO build
-APP=qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
-# Diagnostic branch only: each variant signs nested frameworks, verifies, installs and probes.
-# The matrix reinstalls and fail-closed verifies the first live variant before XCTest.
+# QA-only copy: production entitlements and signing settings remain unchanged.
 export PAPERLY_IOS_QA_SIGNING=1
+QA_ENTITLEMENTS="$PWD/qa/build/simulator.entitlements"
+SOURCE_ENTITLEMENTS=$(find ios -maxdepth 2 -name '*.entitlements' -not -path '*/Pods/*' | head -1)
+[[ -n "$SOURCE_ENTITLEMENTS" ]] || { echo ios_qa_entitlements_source_missing >&2; exit 1; }
+node scripts/native-ios-signing.mjs prepare-xcode "$SOURCE_ENTITLEMENTS" "$QA_ENTITLEMENTS"
+build_simulator() {
+  xcodebuild -workspace ios/Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination "id=$UDID" -derivedDataPath qa/build/app CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER="" CODE_SIGN_ENTITLEMENTS="$QA_ENTITLEMENTS" build
+}
+if ! build_simulator > qa/build/ios-build.raw 2>&1; then
+  # Retry ONLY a diagnosed SIWA signing/team capability refusal, never a generic build failure.
+  if grep -Eiq '(Sign in with Apple|com\.apple\.developer\.applesignin).*(requires|support|provision|team)|(requires|support|provision|team).*(Sign in with Apple|com\.apple\.developer\.applesignin)' qa/build/ios-build.raw; then
+    node scripts/native-ios-signing.mjs prepare-xcode "$SOURCE_ENTITLEMENTS" "$QA_ENTITLEMENTS" strip-siwa
+    echo ios_qa_only_siwa_entitlement_removed
+    build_simulator >> qa/build/ios-build.raw 2>&1 || { echo ios_qa_xcode_build_failed >&2; exit 1; }
+  else echo ios_qa_xcode_build_failed >&2; exit 1; fi
+fi
+APP=qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
+# Keep raw section/signature diagnostics local. The verifier fails closed on missing section/identity.
+otool -s __TEXT __entitlements "$APP/Paperly" > qa/build/ios-entitlements-section.raw
+head qa/build/ios-entitlements-section.raw
+codesign -d --entitlements :- "$APP" > qa/build/ios-codesign-entitlements.raw 2>&1
+node scripts/native-ios-signing.mjs verify-xcode "$APP"
+# One install/probe, no variant matrix and no mutation of Xcode-signed nested frameworks.
 node scripts/native-ios-launch-probe.mjs "$UDID" "$APP" qa/output/ios-launch-probe.json
 (cd qa/ios && xcodegen generate)
 # Raw simulator/XCTest output and xcresult stay local. Never upload them or screenshots.

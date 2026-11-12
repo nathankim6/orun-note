@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { guardEnv, BUNDLE_ID, extractPlistXml, validateIdentity, signApp, verifyApp, SIGNING_VARIANTS } from './native-ios-signing.mjs';
+import { guardEnv, BUNDLE_ID, extractPlistXml, validateIdentity, signApp, verifyApp, SIGNING_VARIANTS, verifyXcodeApp } from './native-ios-signing.mjs';
 const DOMAINS = ['FBSOpenApplicationServiceErrorDomain','FBSOpenApplicationErrorDomain','FBProcessExit','RBSRequestErrorDomain','RBSServiceErrorDomain','NSPOSIXErrorDomain','NSOSStatusErrorDomain','IXUserPresentableErrorDomain','MIInstallerErrorDomain'];
 const KEYS = ['application-identifier','com.apple.developer.team-identifier','get-task-allow','keychain-access-groups','com.apple.developer.applesignin','com.apple.security.application-groups','aps-environment'];
 export function classify(result) {
@@ -102,7 +102,7 @@ export function resignCandidate(app,work,variant='V4') {
 }
 function execute(cmd,args,input,timeout=60000) {return spawnSync(cmd,args,{input,encoding:'utf8',timeout,killSignal:'SIGKILL',maxBuffer:1024*1024});}
 function plist(input) {const r=execute('plutil',['-convert','json','-o','-','-'],input); if(r.status!==0) throw Error('plist_unreadable'); return JSON.parse(r.stdout);}
-export function probe(udid,app,variant='V4') {
+export function probe(udid,app,variant='xcode') {
   guardEnv();
   const out={schema:2,notReleaseEvidence:true};
   const list=execute('xcrun',['simctl','list','devices','-j']);
@@ -120,7 +120,7 @@ export function probe(udid,app,variant='V4') {
   const container=execute('xcrun',['simctl','get_app_container',udid,BUNDLE_ID,'app']);
   out.container={...classify(container),exists:container.status===0&&fs.existsSync(container.stdout.trim())};
   if(out.container.exists) {
-    verifyApp(container.stdout.trim(),variant);
+    if(variant==='xcode')out.embeddedSigning=verifyXcodeApp(container.stdout.trim());else verifyApp(container.stdout.trim(),variant);
     out.installedSigning=installedSigning(container.stdout.trim());
     out.installedVariantVerified=true;
   }
@@ -169,5 +169,15 @@ export function runMatrix(udid,app,destination) {
   return result;
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
-  try {runMatrix(...process.argv.slice(2));}catch {console.error('ios_signing_matrix_failed');process.exitCode=1;}
+  const [udid,app,destination]=process.argv.slice(2);
+  const result={schema:4,notReleaseEvidence:true,mode:'xcode_embedded_entitlements'};
+  try {
+    result.signing=verifyXcodeApp(app);
+    const install=execute('xcrun',['simctl','install',udid,app],undefined,300000);result.install=classify(install);
+    if(install.status!==0||install.error)throw Error('install_failed');
+    result.probe=probe(udid,app);result.launched=launchedSuccessfully(result.probe);
+    if(!result.launched)throw Error('probe_launch_failed');
+    console.log('ios_xcode_launch_probe_ok');
+  }catch{result.failed=true;console.error('ios_xcode_launch_probe_failed');process.exitCode=1;}
+  finally{fs.writeFileSync(destination,JSON.stringify(result,null,2)+'\n',{mode:0o600});}
 }
