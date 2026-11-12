@@ -13,6 +13,8 @@ export PAPERLY_IOS_QA_SIGNING=1
 node scripts/native-ios-signing.mjs sign "$APP" qa/build
 node scripts/native-ios-signing.mjs verify "$APP"
 xcrun simctl install "$UDID" "$APP"
+# Diagnostic only: direct launch on the exact UDID used by the XCTest destination below.
+node scripts/native-ios-launch-probe.mjs "$UDID" "$APP" qa/output/ios-launch-probe.json
 (cd qa/ios && xcodegen generate)
 # Raw simulator/XCTest output and xcresult stay local. Never upload them or screenshots.
 xcrun simctl spawn "$UDID" log stream --style compact --level debug --predicate 'process == "Paperly"' > qa/build/ios-system.raw 2>&1 &
