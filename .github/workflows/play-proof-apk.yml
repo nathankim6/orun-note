@@ -1,0 +1,56 @@
+name: Play package-registration proof APK (historical key)
+on:
+  workflow_dispatch:
+    inputs:
+      snippet:
+        description: adi-registration.properties snippet from Play Console
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Restore the historical CI keystore (artifact of run 41271352795, expires 2027-01-30)
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-keystore-keep-private
+          run-id: 41271352795
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ks
+      - name: Verify the keystore fingerprint is the key Play listed
+        env: { STORE_PASS: paperly-local }
+        run: |
+          set -euo pipefail
+          FP=$(keytool -list -v -keystore ks/paperly.jks -storepass "$STORE_PASS" -alias paperly | grep -m1 'SHA256:' | sed 's/.*SHA256: *//')
+          echo "fingerprint=$FP"
+          [[ "$FP" == "7E:B2:26:5D:FE:5C:1A:4C:2E:FA:24:F2:DE:85:9D:04:11:21:9E:41:A8:C1:95:C6:7C:00:BF:7B:4A:44:55:C4" ]]
+      - name: Build and sign the minimal proof APK (package com.paperly.study, assets/adi-registration.properties)
+        env: { STORE_PASS: paperly-local, SNIPPET: "${{ inputs.snippet }}" }
+        run: |
+          set -euo pipefail
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1); PLAT=$(ls -d "$ANDROID_HOME"/platforms/android-* | sort -V | tail -1)
+          mkdir -p proof/assets out
+          printf '%s\n' "$SNIPPET" > proof/assets/adi-registration.properties
+          cat > proof/AndroidManifest.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.paperly.study" android:versionCode="1" android:versionName="proof">
+            <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+            <application android:label="orun-note-proof" android:hasCode="false" />
+          </manifest>
+          XML
+          "$BT/aapt2" link -o out/unsigned.apk --manifest proof/AndroidManifest.xml -I "$PLAT/android.jar" -A proof/assets
+          "$BT/zipalign" -f 4 out/unsigned.apk out/aligned.apk
+          "$BT/apksigner" sign --ks ks/paperly.jks --ks-pass "pass:$STORE_PASS" --ks-key-alias paperly --out out/orun-note-registration-proof.apk out/aligned.apk
+          "$BT/apksigner" verify --print-certs out/orun-note-registration-proof.apk | grep -i 'SHA-256' | head -2
+          unzip -l out/orun-note-registration-proof.apk | grep adi-registration.properties
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orun-note-registration-proof-apk
+          path: out/orun-note-registration-proof.apk
+          retention-days: 3
