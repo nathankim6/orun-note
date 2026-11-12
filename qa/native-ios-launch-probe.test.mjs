@@ -20,7 +20,7 @@ test('keys never expose values or unknown names',()=>{
 });
 test('probe runs after install before XCTest using same exact simulator',()=>{
  const s=fs.readFileSync('scripts/native-ios-smoke.sh','utf8');
- assert.ok(s.indexOf('simctl install "$UDID" "$APP"')<s.indexOf('node scripts/native-ios-launch-probe.mjs'));
+ assert.ok(s.indexOf('CODE_SIGNING_ALLOWED=NO build')<s.indexOf('node scripts/native-ios-launch-probe.mjs'));
  assert.ok(s.indexOf('node scripts/native-ios-launch-probe.mjs')<s.indexOf('xcodebuild -project'));
  assert.match(s,/native-ios-launch-probe\.mjs "\$UDID" "\$APP"/);
  assert.match(s,/xcodebuild -project[^\n]*-destination "id=\$UDID"/);
@@ -52,13 +52,18 @@ test('framework signature summary does not export details',()=>{
  assert.deepEqual(frameworkSummary('/private/hermes.framework',{status:1,stderr:'code object is not signed at all /private'}),{framework:'hermes.framework',signed:false,adhoc:false});
  assert.deepEqual(frameworkSummary('React.framework',{status:0,stderr:'Executable=/private\nSignature=adhoc\n'}),{framework:'React.framework',signed:true,adhoc:true});
 });
-test('candidate verifies deep strict and installed app before allowing XCTest',()=>{
+import {launchedSuccessfully} from '../scripts/native-ios-launch-probe.mjs';
+test('matrix signs installs probes cleans all four and restores selected with installed verification',()=>{
  const source=fs.readFileSync('scripts/native-ios-launch-probe.mjs','utf8');
- assert.match(source,/guardEnv\(\);\s*const info=/);assert.match(source,/validateIdentity\(info\)/);
- assert.match(source,/targets.push\(path.join\(app,info.CFBundleExecutable\)\)/);
- assert.match(source,/signApp\(app,work\);verifyApp\(app\)/);
- assert.match(source,/\['--verify','--deep','--strict',app\]/);
- assert.ok(source.indexOf('result.before=probe')<source.indexOf('resignCandidate(app,path.dirname'));
- assert.ok(source.indexOf('resignCandidate(app,path.dirname')<source.indexOf('result.after=probe'));
- assert.match(source,/if\(!result.candidate.verified\)throw Error/);
+ assert(source.includes('for(const variant of SIGNING_VARIANTS)'));
+ assert(source.includes('signApp(app,work,variant);verifyApp(app,variant)'));
+ assert(source.includes("['--verify','--deep','--strict',app]"));
+ assert(source.includes('row.cleanup=clean();save()'));
+ assert(source.includes('if(row.launched&&!result.selectedVariant)result.selectedVariant=variant'));
+ assert(source.includes('verifyApp(container.stdout.trim(),result.selectedVariant);result.selectedInstalledVerified=true'));
+});
+test('launch acceptance requires verified live app and no crash; timeout alone never passes',()=>{
+ const healthy={installedVariantVerified:true,installedSigning:{deepStrict:{exitCode:0,timedOut:false}},crash:{found:false},launch:{exitCode:null,timedOut:true,domains:[]},terminate:{exitCode:0,timedOut:false}};
+ assert(launchedSuccessfully(healthy));
+ for(const delta of [{installedVariantVerified:false},{crash:{found:true}},{crash:{found:false,collectionError:true}},{terminate:{exitCode:3}},{launch:{exitCode:1,domains:[]}},{launch:{timedOut:true,domains:[{domain:'NSPOSIXErrorDomain',code:1}]}}])assert(!launchedSuccessfully({...healthy,...delta}));
 });

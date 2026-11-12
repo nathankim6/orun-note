@@ -8,12 +8,9 @@ xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
 xcodebuild -workspace ios/Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator -destination "id=$UDID" -derivedDataPath qa/build/app CODE_SIGNING_ALLOWED=NO build
 APP=qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
-# CI simulator QA app only: ad-hoc sign with synthetic entitlements, then fail closed unless bundle/signature/entitlements agree.
+# Diagnostic branch only: each variant signs nested frameworks, verifies, installs and probes.
+# The matrix reinstalls and fail-closed verifies the first live variant before XCTest.
 export PAPERLY_IOS_QA_SIGNING=1
-node scripts/native-ios-signing.mjs sign "$APP" qa/build
-node scripts/native-ios-signing.mjs verify "$APP"
-xcrun simctl install "$UDID" "$APP"
-# Diagnostic only: direct launch on the exact UDID used by the XCTest destination below.
 node scripts/native-ios-launch-probe.mjs "$UDID" "$APP" qa/output/ios-launch-probe.json
 (cd qa/ios && xcodegen generate)
 # Raw simulator/XCTest output and xcresult stay local. Never upload them or screenshots.

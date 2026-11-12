@@ -32,8 +32,8 @@ test('adhoc detection rejects authority-signed apps', () => {
 });
 test('smoke script wires signing only after build and before install, with no security/keychain mutation', () => {
   const s = fs.readFileSync('scripts/native-ios-smoke.sh', 'utf8');
-  const b = s.indexOf('CODE_SIGNING_ALLOWED=NO build'), sg = s.indexOf('native-ios-signing.mjs sign'), v = s.indexOf('native-ios-signing.mjs verify'), i = s.indexOf('simctl install');
-  assert(b > 0 && b < sg && sg < v && v < i);
+  const b = s.indexOf('CODE_SIGNING_ALLOWED=NO build'), matrix = s.indexOf('native-ios-launch-probe.mjs');
+  assert(b > 0 && b < matrix && matrix < s.indexOf('xcodebuild -project'));
   assert(s.includes('iphonesimulator') && s.includes('GITHUB_ACTIONS'));
   assert(!/\bsecurity\s+(disable|create|import|unlock|set-)/.test(s));
   assert(!/Release-iphoneos|AppStore|PROVISIONING|DEVELOPMENT_TEAM/.test(s));
@@ -58,3 +58,22 @@ test('bundle identity is checked before any signing mutation', () => {
 });
 
 test('command failures expose only known categories, never raw messages or paths',()=>{assert.equal(commandFailure({stderr:'private-canary code object is not signed at all'}),'unsigned_nested_code');assert.equal(commandFailure({stderr:'private-canary'}),'command_failed');assert.equal(commandFailure({error:{code:'ETIMEDOUT'},stderr:'private-canary'}),'timeout');});
+
+import {SIGNING_VARIANTS, variantEntitlements, validateVariant} from '../scripts/native-ios-signing.mjs';
+test('four exact variants reject extra, missing, changed and unknown entitlements',()=>{
+ assert.deepEqual(SIGNING_VARIANTS,['V1','V2','V3','V4']);
+ assert.deepEqual(variantEntitlements('V1'),{});
+ assert.deepEqual(variantEntitlements('V2'),{'get-task-allow':true});
+ assert.deepEqual(variantEntitlements('V3'),{'get-task-allow':true,'keychain-access-groups':[APP_IDENTIFIER]});
+ assert.deepEqual(variantEntitlements('V4'),ents);
+ for(const v of SIGNING_VARIANTS){const e=variantEntitlements(v);assert(validateVariant(info,e,v));assert.throws(()=>validateVariant(info,{...e,unexpected:true},v));assert.throws(()=>validateVariant({...info,CFBundleSupportedPlatforms:['iPhoneOS']},e,v));}
+ assert.throws(()=>variantEntitlements('private-canary'));assert.throws(()=>validateVariant(info,ents,'V1'));assert.throws(()=>validateVariant(info,{},'V2'));
+ for(const v of ['V1','V2','V3'])assert(!entitlementsXml(v).includes('application-identifier'));
+ assert(!entitlementsXml('V2').includes('keychain-access-groups'));
+});
+test('PDF keychain does not request access groups; verifier remains deep strict',()=>{
+ assert(!fs.readFileSync('modules/pdf-renderer/ios/PdfRendererModule.swift','utf8').includes('kSecAttrAccessGroup'));
+ const src=fs.readFileSync('scripts/native-ios-signing.mjs','utf8');
+ assert(src.includes("if(variant==='V1') {run('codesign',['--force','--sign','-','--timestamp=none',app]);return;}"));
+ assert(src.includes("['--verify', '--deep', '--strict', app]"));assert(src.includes('simulator_profile_refused'));
+});
