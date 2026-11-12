@@ -49,6 +49,17 @@ jobs:
         run: |
           scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform android --no-install && cd android && ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=x86_64'
           git diff --exit-code -- index.ts
+      - name: Retain synthetic compiled ELF for exact-PC diagnosis, no app or user data
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-native-elf-api${{ matrix.api }}-not-release
+          path: |
+            android/app/build/intermediates/cxx/**/obj/x86_64/libappmodules.so
+            android/app/.cxx/**/x86_64/libappmodules.so
+            android/app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib/x86_64/libhermesvm.so
+            android/app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib/x86_64/libreactnative.so
+          if-no-files-found: error
+          retention-days: 1
       - name: Real Android emulator UI smoke
         # Explicit expected mode, scoped to this launch with -no-boot-anim below.
         env:

@@ -23,6 +23,8 @@ export function sanitizeDiagnostic(row) {
   } else if (row.event === 'crash_native_frame') {
     if (typeof row.nativeLibrary !== 'string' || !library.test(row.nativeLibrary) || typeof row.nativePc !== 'string' || !/^0x[0-9a-f]{1,16}$/.test(row.nativePc)) return null;
     out.nativeLibrary = row.nativeLibrary; out.nativePc = row.nativePc;
+    if(['webview','safe_area','svg','screens','gesture_handler','slider'].includes(row.nativeComponent))out.nativeComponent=row.nativeComponent;
+    if(['props_parse','props_constructor','event_dispatch','component_registration','jsi_string','jsi_property','jsi_call'].includes(row.nativeOperation))out.nativeOperation=row.nativeOperation;
   } else if (row.event === 'crash_js_exception') {
     if (!jsEnums.has(row.jsException)) return null;
     out.jsException = row.jsException;
@@ -151,7 +153,9 @@ export function extractCrashDiagnostics(text, { platform, pids = [], force = fal
     const native = line.match(/#\d+\s+pc\s+([0-9a-fA-F]{1,16})\s+(\S+)/);
     if (native) {
       const basename = native[2].split('/').pop().split('!').pop();
-      add({ event: 'crash_native_frame', nativeLibrary: basename, nativePc: '0x' + native[1].toLowerCase() });
+      const nativeComponent = /RNCWebView/.test(line)?'webview':/RNCSafeArea/.test(line)?'safe_area':/RNSVG/.test(line)?'svg':/RNSScreen/.test(line)?'screens':/RNGesture/.test(line)?'gesture_handler':/RNCSlider/.test(line)?'slider':undefined;
+      const nativeOperation = /RawPropsParser/.test(line)?'props_parse':/Props::.*Props\(|PropsC[12]E/.test(line)?'props_constructor':/EventEmitter|dispatchEvent/.test(line)?'event_dispatch':/ComponentDescriptor|DescriptorRegistry/.test(line)?'component_registration':/PropNameID|StringPrimitive|createString/.test(line)?'jsi_string':/getProperty|setProperty/.test(line)?'jsi_property':/HermesRuntimeImpl::call|jsi::Function::call/.test(line)?'jsi_call':undefined;
+      add({ event: 'crash_native_frame', nativeLibrary: basename, nativePc: '0x' + native[1].toLowerCase(), nativeComponent, nativeOperation });
     }
     if (platform === 'ios') {
       for (const name of iosEnums) if (/^(?:EXC_|SIG)/.test(name) && new RegExp('\\b' + name + '\\b').test(line)) add({ event: 'crash_ios_exception', iosException: name });
