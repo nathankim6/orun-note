@@ -98,12 +98,16 @@ export function verifyApp(app, variant='V4') {
   run('codesign', ['--verify', '--deep', '--strict', app]);
   parseAdhoc(details('codesign', ['-dvv', app]));
 }
-// otool -s prints section bytes as hex words, not host-endian integers.
+// otool prints native-endian words on arm64; other versions emit byte-ordered hex.
 export function sectionXml(text) {
   const rows=String(text).split('\n').filter(l=>/^\s*[0-9a-f]{8,16}\s+/i.test(l));
-  const hex=rows.map(l=>l.trim().split(/\s+/).slice(1).filter(w=>/^(?:[0-9a-f]{2}){1,8}$/i.test(w)).join('')).join('');
-  if(!hex)throw Error('embedded_entitlements_missing');
-  return extractPlistXml(Buffer.from(hex,'hex').toString('utf8'));
+  const words=rows.flatMap(l=>l.trim().split(/\s+/).slice(1).filter(w=>/^(?:[0-9a-f]{2}){1,8}$/i.test(w)));
+  if(!words.length)throw Error('embedded_entitlements_missing');
+  for(const hex of [words.join(''),words.map(w=>w.match(/../g).reverse().join('')).join('')]) {
+    const decoded=Buffer.from(hex,'hex').toString('utf8');
+    if(decoded.startsWith('<?xml'))return extractPlistXml(decoded);
+  }
+  throw Error('embedded_entitlements_encoding');
 }
 export function validateXcodeEntitlements(info, ents) {
   validateIdentity(info);

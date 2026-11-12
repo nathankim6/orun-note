@@ -83,6 +83,8 @@ test('Xcode embedded entitlement verifier rejects absent section and identity mi
  const xml='<?xml version="1.0"?><plist version="1.0"><dict/></plist>';
  const hex=Buffer.from(xml).toString('hex').match(/.{1,8}/g).join(' ');
  assert.equal(sectionXml('Contents of (__TEXT,__entitlements) section\n0000000100001000 '+hex),xml);
+ const nativeWords=Buffer.from(xml).toString('hex').match(/.{1,8}/g).map(w=>w.match(/../g).reverse().join('')).join(' ');
+ assert.equal(sectionXml('Contents of (__TEXT,__entitlements) section\n0000000100001000 '+nativeWords),xml);
  assert.throws(()=>sectionXml('no section'));
  const e={'application-identifier':BUNDLE_ID,'keychain-access-groups':[BUNDLE_ID]};
  assert(validateXcodeEntitlements(info,e));
