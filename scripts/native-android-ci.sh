@@ -33,6 +33,9 @@ fi
 rm -f "$IMAGE.tmp"
 # Native release console markers can survive when accessibility telemetry is
 # truncated/unavailable. Keep raw logcat local; only the sanitizer output uploads.
+# Every QA marker the app printed since `logcat -c` (the accessibility telemetry label is clipped by the UI dump on long
+# runs); the bounded recent dump below stays for crash evidence.
+timeout 25s adb logcat -d -v threadtime -s ReactNativeJS:V >> qa/build/android.raw 2>/dev/null || true
 timeout 15s adb logcat -d -v threadtime -t 8000 >> qa/build/android.raw 2>/dev/null || true
 node scripts/native-sanitize.mjs qa/build/android.raw qa/output/android.jsonl android
 SANITIZER_STATUS=$?
