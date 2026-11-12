@@ -1,3 +1,4 @@
+import { androidPassLog } from './native-pass-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ test('worker exception class, Java class/method/line survive, no message or proc
 test('unrelated process fatal does not fail an app smoke result', () => {
   const other = javaCrash.replaceAll('com.paperly.study:pdfdetail', 'com.android.unrelated');
   assert.deepEqual(extractCrashDiagnostics(other, { platform: 'android', pids: ['777'] }), { crash: false, diagnostics: [] });
-  const result = sanitize(other + '\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}', 'unrelated');
+  const result = sanitize(other + '\n' + androidPassLog, 'unrelated');
   assert.equal(result.status, 0);
   assert(!result.output.includes('crash_java'));
 });
@@ -64,7 +65,7 @@ test('sanitizer strips private fields, rejects malicious symbols, bounds count, 
   assert(result.output.includes('expo.modules.pdfrenderer.PdfRendererModule'));
   const parsed = result.output.trim().split('\n').map(JSON.parse);
   assert.equal(parsed.filter(r => r.event === 'crash_java_frame').length, 32);
-  const success = sanitize('QA_JSON ' + JSON.stringify(rows[2]) + '\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}', 'success');
+  const success = sanitize('QA_JSON ' + JSON.stringify(rows[2]) + '\n' + androidPassLog, 'success');
   assert.equal(success.status, 0); assert(!success.output.includes('crash_java_frame'));
   assert.equal(sanitizeDiagnostic({ event: 'crash_ios_exception', iosException: canary }), null);
   assert.equal(sanitizeDiagnostic({ event: 'crash_native_frame', nativeLibrary: 'libc.so', nativePc: '0x' + 'a'.repeat(17) }), null);
@@ -323,7 +324,7 @@ test('surface sanitizer exports bounded counts/fixed enums only and drops succes
   assert(result.output.includes('"foreground":"permission"')); assert(result.output.includes('"nodeCount":20'));
   const parsed=result.output.trim().split('\n').map(JSON.parse).filter(r=>r.event==='driver_surface');
   assert.equal(parsed[0].nodeCount,undefined); assert.equal(parsed[0].foreground,undefined); assert.deepEqual(parsed[0].uiLabels,['qa_boot']);
-  const passed=sanitize('QA_JSON '+JSON.stringify(good)+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','surface-success');
+  const passed=sanitize('QA_JSON '+JSON.stringify(good)+'\n' + androidPassLog,'surface-success');
   assert.equal(passed.status,0); assert(!passed.output.includes('driver_surface'));
 });
 
@@ -340,7 +341,7 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
     const dir=fs.mkdtempSync(path.join(work,'screenshot-'));fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'bin'));
     for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs','native-ios-test-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
     fs.writeFileSync(path.join(dir,'scripts/native-android-preflight.mjs'), 'console.log("QA_JSON "+JSON.stringify({event:"emulator_preflight",phase:process.argv[2],result:"pass",reason:"ready"}));');
-    fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
+    fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'console.log(' + JSON.stringify(androidPassLog) + ');const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
     if(scenario.sanitizerFail)fs.writeFileSync(path.join(dir,'scripts/native-sanitize.mjs'),'process.exitCode=1;');
     fs.writeFileSync(path.join(dir,'bin/timeout'),'#!/bin/sh\nshift\nexec "$@"\n',{mode:0o755});
     fs.writeFileSync(path.join(dir,'bin/adb'),'#!/bin/sh\nif [ "$1" = install ]; then exit 0; fi\nif [ "$1" = shell ] && [ "$2" = getprop ]; then printf "%s\\n" "$QA_MOCK_QEMU"; exit 0; fi\nif [ "$1" = exec-out ] && [ "$2" = screencap ]; then printf "\\211PNG\\r\\n\\032\\nS"; exit 0; fi\nexit 1\n',{mode:0o755});
@@ -410,12 +411,16 @@ test('QA content-clock marker requires real finite progress and emits once per c
   const output=sanitize('QA_JSON '+JSON.stringify(progress)+'\nQA_JSON '+JSON.stringify({event:'player_progress',timeSeconds:canary,durationSeconds:canary,url:canary})+'\nQA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"network_or_player_timeout"}','progress-private');
   assert(output.output.includes('"timeSeconds":1'));assert(output.output.includes('"durationSeconds":600'));assert(!output.output.includes(canary));
 });
-test('both native drivers enforce a <=60s progression gate after explicit play before final pause', () => {
+test('iOS retains progression gate; Android keeps it unless the provider refused the embed (environment-limited)', () => {
   const android=fs.readFileSync('scripts/native-android-smoke.mjs','utf8'),ios=fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8');
   for(const [source,play,progress,pause] of [
-    [android,"currentStep = 'play'; await tap('재생');","wait(`qa-progressing-${cycle}`, 60, true)","currentStep = 'pause'; await tap('일시정지');"],
     [ios,'currentStep = "play"; tap("재생");','wait("qa-progressing-\\(cycle)", 60, contains: true)','currentStep = "pause"; tap("일시정지");'],
   ]) {const p=source.indexOf(play),g=source.indexOf(progress,p),end=source.indexOf(pause,p);assert(p>=0&&g>p&&end>g);assert(source.includes('qa-progressing'));}
+  // Android keeps the real play/progress/pause gate when the provider lets the embed play, and only skips it for a
+  // provider refusal (150/101/100/5) recorded as player_environment_limited.
+  assert(android.includes('await wait(`qa-progressing-${cycle}`'));
+  assert(android.includes('if (environmentLimitedCycles.has(cycle)) {'));
+  assert(android.includes('player_environment_limited'));
   assert(android.includes('cycle <= 20'));assert(android.includes('cycle <= 3'));assert(ios.includes('1...20'));assert(ios.includes('cycle <= 3'));
   const pdf=fs.readFileSync('qa/pdf-smoke.ts','utf8');assert(pdf.includes('trial <= 3'));
 });
@@ -448,7 +453,7 @@ test('failed readiness exports exact missing criteria without trusting stale/no 
   const result=sanitize('QA_JSON '+JSON.stringify(input)+'\nQA_JSON {"event":"suite_result","platform":"android","result":"fail","reason":"emulator_os_not_ready"}','readiness-private');
   assert.equal(result.status,1);assert(result.output.includes('"missing":["xml"]'));assert(!result.output.includes(canary));
   const malicious=sanitize('QA_JSON '+JSON.stringify({event:'emulator_readiness',bootComplete:canary,focusSource:canary,focusKind:canary,missing:[canary,'focus']})+'\nQA_JSON {"event":"suite_result","result":"fail","platform":"android"}','readiness-malicious');assert(!malicious.output.includes(canary));
-  const passed=sanitize('QA_JSON '+JSON.stringify(input)+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','readiness-passed');assert(!passed.output.includes('emulator_readiness'));
+  const passed=sanitize('QA_JSON '+JSON.stringify(input)+'\n' + androidPassLog,'readiness-passed');assert(!passed.output.includes('emulator_readiness'));
 });
 test('activity fallback never bypasses app ANR or a permission dialog; failed dump cannot accept cached XML', async () => {
   const {classifyPreflight,preflight}=await import('../scripts/native-android-preflight.mjs');const activity='mResumedActivity: ActivityRecord{x u0 com.android.launcher3/.Launcher}';
@@ -635,7 +640,7 @@ test('temporal PID reuse cannot retroactively turn unrelated Java/native history
   const unrelated = [line(321,'FATAL EXCEPTION: main'),line(321,'Process: com.android.unrelated, PID: 321'),line(321,'java.lang.RuntimeException: '+canary),line(999,'>>> com.android.unrelated <<<','DEBUG'),line(999,'signal 11 (SIGSEGV)','DEBUG'),line(999,'#00 pc 1234 /private/libart.so','DEBUG'),line(321,'Process: com.paperly.study, PID: 321')].join('\n');
   const report=extractCrashDiagnostics(unrelated,{platform:'android',pids:['321']});
   assert.equal(report.crash,false);assert.equal(report.evidence?.attribution ?? 'none','none');assert.deepEqual(report.diagnostics,[]);
-  const result=sanitize(unrelated+'\nQA_JSON {"event":"suite_result","result":"pass","platform":"android"}','temporal');assert.equal(result.status,0);assert(!result.output.includes('crash_native_frame'));
+  const result=sanitize(unrelated+'\n' + androidPassLog,'temporal');assert.equal(result.status,0);assert(!result.output.includes('crash_native_frame'));
 });
 test('independent named main, worker and explicit WebView lifetimes preserve genuine fatal gates',()=>{
   for(const name of ['com.paperly.study','com.paperly.study:pdfdetail']) {
@@ -677,7 +682,7 @@ test('exact trigger record is immutable and later snapshot cannot replace trigge
 test('provenance and milestone export is failure-only, strict enums/booleans/bounded numbers',()=>{
   const rows=[{event:'driver_evidence',origin:'trigger',category:'native',role:'worker',attribution:'explicit',cached:false,record:1,name:canary,pid:321,timestamp:canary,message:canary},{event:'driver_milestones',ready:true,pdfPass:false,cycle:20,root:canary,record:10001},{event:'driver_telemetry',xmlSource:'cached',cached:true,uri:canary}];
   const input=rows.map(r=>'QA_JSON '+JSON.stringify(r)).join('\n');const failure=sanitize(input+'\nQA_JSON {"event":"suite_result","result":"fail"}','evidence-private');assert(!failure.output.includes(canary));assert(!failure.output.includes('321'));assert(!failure.output.includes('10001'));assert(failure.output.includes('"xmlSource":"cached"'));assert(failure.output.includes('"ready":true'));
-  const success=sanitize(input+'\nQA_JSON {"event":"suite_result","result":"pass"}','evidence-pass');assert.equal(success.status,0);assert(!success.output.includes('driver_evidence'));assert(!success.output.includes('driver_milestones'));
+  const success=sanitize(input+'\n' + androidPassLog,'evidence-pass');assert.equal(success.status,0);assert(!success.output.includes('driver_evidence'));assert(!success.output.includes('driver_milestones'));
 });
 
 test('actual driver labels post-ready fatal precisely and keeps later JS evidence separate',()=>{

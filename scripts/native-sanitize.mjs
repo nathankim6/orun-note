@@ -6,7 +6,7 @@ const text = fs.existsSync(input) ? fs.readFileSync(input, 'utf8') : '';
 const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_progress', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step', 'emulator_preflight']);
 const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'ready', 'emulator_system_ui_anr', 'emulator_app_anr', 'emulator_app_crash', 'emulator_os_blocked', 'emulator_os_not_ready', 'emulator_display_mismatch', 'emulator_capacity_unsupported', 'emulator_configuration_failed', 'apk_install_failed', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'native_evidence_uncertain', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
 const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'ready_controls', 'progress_controls', 'wait_progress', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
-const numeric = new Set(['cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'trials']);
+const numeric = new Set(['cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'playerCycles', 'trials']);
 const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [];
 function sanitizeSurface(row) {
   const clean = { event: 'driver_surface' };
@@ -85,9 +85,26 @@ if (driverTrigger && laterReport.crash) evidenceRows.push({ event: 'driver_evide
 const crash = laterReport.crash;
 if (crash && !driverTrigger) rows.push({ event: 'suite_result', platform, result: 'fail', reason: 'native_or_js_error' });
 const iosDriverFailed = iosDriverStatuses.some(row => row.driverFailure === true);
-const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !iosDriverFailed && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || r.event === 'pdf_failure' || (r.event === 'pdf_raster' && r.status === 0) || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
+const providerLimited = row => platform === 'android' && row.event === 'player_unavailable' && [150, 101, 100, 5].includes(row.errorCode) && Number.isInteger(row.cycle) && row.cycle >= 1 && row.cycle <= 3;
+const limitedKeys = new Set();
+for (const row of [...rows]) if (providerLimited(row)) {
+  const key = row.cycle + ':' + row.errorCode;
+  if (!limitedKeys.has(key)) rows.push({ event: 'player_environment_limited', cycle: row.cycle, errorCode: row.errorCode });
+  limitedKeys.add(key);
+}
+const has = (event, predicate = () => true) => rows.some(row => row.event === event && predicate(row));
+// Android no longer claims play/pause or content-clock verification. Require
+// actual app telemetry plus every unchanged PDF/list completion, not a bare pass.
+const androidComplete = platform !== 'android' || (
+  has('boot') && has('pdf_result', r => r.result === 'pass' && r.trials === 3) &&
+  [1, 2, 3].every(trial => [0, 1].every(raster => has('pdf_raster', r => r.trial === trial && r.raster === raster && r.status === 1))) &&
+  Array.from({ length: 20 }, (_, i) => i + 1).every(cycle =>
+    ['list_open', 'list_close', 'cycle_complete'].every(event => has(event, r => r.cycle === cycle))) &&
+  [1, 2, 3].every(cycle => has('player_ready', r => r.cycle === cycle) || rows.some(r => r.cycle === cycle && providerLimited(r)))
+);
+const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && androidComplete && !crash && !iosDriverFailed && !rows.some(r => r.event === 'js_error' || (r.event === 'player_unavailable' && !providerLimited(r)) || r.event === 'pdf_failure' || (r.event === 'pdf_raster' && r.status === 0) || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
 if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail')) {
-  const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable') ? 'network_or_player_unavailable' : rows.some(r => r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass')) ? 'pdf_failure' : 'driver_failure';
+  const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable' && !providerLimited(r)) ? 'network_or_player_unavailable' : rows.some(r => r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass')) ? 'pdf_failure' : 'driver_failure';
   rows.push({ event: 'suite_result', platform, result: 'fail', reason });
 }
 // Diagnostics are retained only on a failing suite. Each field is validated again
