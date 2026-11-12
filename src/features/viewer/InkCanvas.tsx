@@ -1,7 +1,7 @@
 import { useSharedValue, runOnJS } from 'react-native-reanimated';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, TextInput, Pressable, Text, Platform, PixelRatio } from 'react-native';
-import Svg, { Path, Rect as SvgRect, G, Circle } from 'react-native-svg';
+import Svg, { Path, Rect as SvgRect, G, Circle, Defs, Pattern } from 'react-native-svg';
 import { Gesture, GestureDetector, PointerType } from 'react-native-gesture-handler';
 import { ImageBox, Point, Stroke, TextBox } from '@/data/types';
 import { Image } from 'react-native';
@@ -9,7 +9,7 @@ import { TEXT_FONTS } from './Toolbar';
 import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
-import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
+import { ToolConfig, penOutline, isInkPen, pencilGrainId, PENCIL_GRAIN_DOTS, PENCIL_GRAIN_CELL, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
 
@@ -288,10 +288,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const inkEls = (layer: 'base' | 'sharp') => { const withUi = layer === 'sharp' || !sharpBox;
     const sb = layer === 'base' && sharpBox && !interactive ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
     const skip = (st: Stroke) => { if (layer === 'sharp') return st.opacity < 0.99; if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
+    const pencilColors = Array.from(new Set(strokes.filter((st) => st.tool === 'pencil' && !skip(st)).map((st) => st.color)));
     return (<>
+    {pencilColors.length > 0 && <Defs>{pencilColors.map((c) => <Pattern key={c} id={pencilGrainId(c)} patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={c} fillOpacity={g.a} />)}</Pattern>)}</Defs>}
     {withUi && textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
     {strokes.map((st) => { if (skip(st)) return null; const sel = selection.includes(st.id); const tr = sel ? selTransform : undefined;
       if (st.poly) return <Path key={st.id} transform={tr} d={dFor(st, 'poly')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />;
+      if (!st.shape && st.tool === 'pencil' && st.points.length > 0) { const d = dFor(st, 'pen'); return <G key={st.id} transform={tr}><Path d={d} scale={s} fill={st.color} fillOpacity={st.opacity * 0.55} /><Path d={d} scale={s} fill={`url(#${pencilGrainId(st.color)})`} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>; }
       if (!st.shape && isInkPen(st.tool) && st.points.length > 0) return <G key={st.id} transform={tr}><Path d={dFor(st, 'pen')} scale={s} fill={st.color} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>;
       return <Path key={st.id} transform={tr} d={dFor(st, 'line')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={sel ? Math.min(1, st.opacity + 0.3) : st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />; })}
     {withUi && selBounds && <SvgRect x={selBounds.x * s - 6} y={selBounds.y * s - 6} width={selBounds.w * s + 12} height={selBounds.h * s + 12} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="6 4" fill="rgba(47,111,237,0.04)" />}
@@ -363,7 +366,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
           {liveBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: liveBox.x, top: liveBox.y }} width={liveBox.w} height={liveBox.h} viewBox={`${liveBox.x} ${liveBox.y} ${liveBox.w} ${liveBox.h}`}>
             <G>
               {marquee && <SvgRect x={Math.min(marquee.a.x, marquee.b.x) * s} y={Math.min(marquee.a.y, marquee.b.y) * s} width={Math.abs(marquee.b.x - marquee.a.x) * s} height={Math.abs(marquee.b.y - marquee.a.y) * s} fill="rgba(47,111,237,0.08)" stroke={colors.primary} strokeWidth={1} strokeDasharray="4 3" />}
-              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
+              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? (cfg.tool === 'pencil'
+                ? <G><Defs><Pattern id="pg-live" patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={cfg.color} fillOpacity={g.a} />)}</Pattern></Defs><Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity * 0.55} /><Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill="url(#pg-live)" fillOpacity={cfg.opacity} /></G>
+                : <Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} />) : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
               {laser.length > 0 && <Path d={pathFromPoints(laser, s)} stroke="#FF3B30" strokeWidth={4} strokeOpacity={0.9} fill="none" strokeLinecap="round" />}
               {lasso.length > 1 && <Path d={pathFromPoints(lasso, s, false)} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="5 4" fill="rgba(14,124,123,0.08)" />}
               {(cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') && live.length > 0 && <Circle cx={live[live.length - 1].x * s} cy={live[live.length - 1].y * s} r={eraserR * s} stroke="#888" strokeWidth={1} fill="rgba(0,0,0,0.05)" />}

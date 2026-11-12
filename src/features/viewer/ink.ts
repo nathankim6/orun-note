@@ -78,6 +78,8 @@ export function penOutline(points: Point[], width: number, live = false, tool: T
   const out = pencil
     ? getStroke(input, { size: width * 1.15, thinning: 0.55, smoothing: 0.5, streamline: 0.35, simulatePressure: false, last: !live, start: { cap: true, taper: width * 1.5 }, end: { cap: true, taper: width * 1.5 } })
     : getStroke(input, { size: width * 1.05, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+  // graphite edge: a small deterministic wobble on the outline so the stroke looks drawn with a soft lead, not a marker
+  if (pencil && out.length > 2) { const a = width * 0.14; for (let i = 0; i < out.length; i++) { const n = grain(out[i][0] * 7.3 + out[i][1] * 3.1 + i); out[i] = [out[i][0] + (n - 0.5) * a, out[i][1] + (grain(n * 97 + i) - 0.5) * a]; } }
   let d = '';
   if (out.length > 2) {
     d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;
@@ -101,6 +103,13 @@ export function cleanHighlight(points: Point[], width: number): Point[] {
   if (out.length >= 3) { const n = out.length, w0 = out[n - 3], u = out[n - 2], v = out[n - 1]; if ((v.x - u.x) * (u.x - w0.x) + (v.y - u.y) * (u.y - w0.y) < 0 && dist(u, v) < r0) out.pop(); }
   return out;
 }
+/** deterministic 0..1 noise (same stroke always renders the same grain) */
+export function grain(seed: number) { const x = Math.sin(seed * 12.9898) * 43758.5453; return x - Math.floor(x); }
+/** id of the SVG grain pattern for a pencil colour */
+export const pencilGrainId = (color: string) => 'pg' + color.replace(/[^0-9a-zA-Z]/g, '').toLowerCase();
+/** graphite grain: an irregular field of tiny specks in one pattern cell (page units, cell PENCIL_GRAIN_CELL square) */
+export const PENCIL_GRAIN_CELL = 7;
+export const PENCIL_GRAIN_DOTS = Array.from({ length: 34 }, (_, i) => ({ cx: grain(i * 3.7 + 1) * PENCIL_GRAIN_CELL, cy: grain(i * 5.1 + 2) * PENCIL_GRAIN_CELL, r: 0.16 + grain(i * 2.3 + 3) * 0.3, a: 0.25 + grain(i * 7.9 + 5) * 0.7 }));
 export const isInkPen = (tool: string) => tool === 'pen' || tool === 'pencil' || tool === 'fountain' || tool === 'brush';
 
 /** Polyline path (no smoothing) for auto-corrected polygons and straight highlighter strokes. */

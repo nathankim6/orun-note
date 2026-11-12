@@ -7,9 +7,9 @@ import { Tool, ShapeKind } from '@/data/types';
 import { ToolConfig } from './ink';
 import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
-import Svg, { G, Path } from 'react-native-svg';
+import Svg, { G, Path, Defs, Pattern, Circle } from 'react-native-svg';
 import { GradientPalette } from './GradientPalette';
-import { penOutline } from './ink';
+import { penOutline, PENCIL_GRAIN_DOTS, PENCIL_GRAIN_CELL } from './ink';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
 import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
@@ -105,7 +105,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const removeFav = (i: number) => { const next = favs.filter((_, j) => j !== i); settings.setViewer({ favoritePens: next }); if (!next.length) setFavEdit(false); };
   const favRow = (
     <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Text style={styles.rowLbl}>즐겨찾기</Text>
-      {favs.map((f, i) => <Pressable key={i} accessibilityLabel={favEdit ? `즐겨찾는 펜 ${i + 1} 삭제` : `즐겨찾는 펜 ${i + 1}`} onPress={() => { if (favEdit) { removeFav(i); return; } onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); setPanel(f.tool as Panel); }} onLongPress={() => setFavEdit(true)} style={({ pressed }) => [styles.fav, !favEdit && cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }, favEdit && { borderColor: 'rgba(255,59,48,0.45)' }, pressed && { transform: [{ scale: 0.92 }] }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : f.tool === 'pencil' ? 'pencil' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} />{favEdit && <View pointerEvents="none" style={styles.favDel}><Ionicons name="close" size={10} color="#fff" /></View>}</Pressable>)}
+      {favs.map((f, i) => <Pressable key={i} accessibilityLabel={favEdit ? `즐겨찾는 펜 ${i + 1} 삭제` : `즐겨찾는 펜 ${i + 1}`} onPress={() => { if (favEdit) { removeFav(i); return; } onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); setPanel(null); /* picked a favourite: close the card and write right away */ }} onLongPress={() => setFavEdit(true)} style={({ pressed }) => [styles.fav, !favEdit && cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }, favEdit && { borderColor: 'rgba(255,59,48,0.45)' }, pressed && { transform: [{ scale: 0.92 }] }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : f.tool === 'pencil' ? 'pencil' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} />{favEdit && <View pointerEvents="none" style={styles.favDel}><Ionicons name="close" size={10} color="#fff" /></View>}</Pressable>)}
       {!favEdit && favs.length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...favs, { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? true : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color="#8E8E93" /></Pressable>}
       {favs.length > 0 && <Pressable accessibilityLabel={favEdit ? '즐겨찾기 편집 완료' : '즐겨찾기 편집'} onPress={() => setFavEdit((v) => !v)} style={({ pressed }) => [styles.favEditBtn, favEdit && { backgroundColor: '#007AFF' }, pressed && { opacity: 0.6 }]}><Text style={{ fontSize: 12, fontWeight: '700', color: favEdit ? '#fff' : '#007AFF' }}>{favEdit ? '완료' : '편집'}</Text></Pressable>}
       {favEdit && <Text style={{ fontSize: 11, color: '#8E8E93' }}>지울 펜을 누르세요</Text>}
@@ -140,6 +140,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="#F6F7FB" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
           <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="rgba(0,122,255,0.22)" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
         </G>
+      : cfg.tool === 'pencil' ? <G><Defs><Pattern id="pg-preview" patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={cfg.color} fillOpacity={g.a} />)}</Pattern></Defs><Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity * 0.55} /><Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill="url(#pg-preview)" fillOpacity={cfg.opacity} /></G>
       : <Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity} />;
     return <View style={styles.previewBox}><Svg width={W_} height={H_}>{ink}</Svg></View>;
   };
