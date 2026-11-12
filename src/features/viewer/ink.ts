@@ -7,11 +7,11 @@ export const WIDTHS = [1, 2, 4, 8, 12];
 export type ToolConfig = { tool: Tool; color: string; width: number; shape: ShapeKind; opacity: number };
 export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> => {
   switch (tool) {
-    case 'pen': return { width: 0.7, opacity: 1 };
-    case 'eraser': return { width: 10, opacity: 1 };
-    case 'vectorEraser': return { width: 8, opacity: 1 };
+    case 'pen': return { width: 1, opacity: 1 };
+    case 'eraser': return { width: 6, opacity: 1 };
+    case 'vectorEraser': return { width: 5, opacity: 1 };
     case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
-    case 'pencil': return { opacity: 0.75 };
+    case 'pencil': return { width: 1.2, opacity: 0.8, color: '#3A3A3C' };
     case 'brush': return { opacity: 0.9 };
     case 'fountain': return { opacity: 1 };
     default: return { opacity: 1 };
@@ -65,17 +65,26 @@ export function boundsOf(points: Point[]) { const xs = points.map((p) => p.x), y
  * Returned path is in PDF page units; render with `scale={s}`. Cached per points array (immutable per stroke).
  */
 const outlineCache = new WeakMap<Point[], string>();
-export function penOutline(points: Point[], width: number, live = false): string {
-  if (!live) { const hit = outlineCache.get(points); if (hit) return hit; }
-  const input = points.map((q) => [q.x, q.y, 0.5]);
-  const out = getStroke(input, { size: width * 1.05, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+const pencilOutlineCache = new WeakMap<Point[], string>();
+/**
+ * Pencil (연필): the same outline generator, but the stylus pressure recorded with each point thins and thickens the
+ * line (graphite feel) and the ends taper slightly. Points without pressure (finger / legacy) fall back to a medium
+ * pressure so the stroke still looks even. Rendered with the preset's partial opacity.
+ */
+export function penOutline(points: Point[], width: number, live = false, tool: Tool | string = 'pen'): string {
+  const pencil = tool === 'pencil'; const cache = pencil ? pencilOutlineCache : outlineCache;
+  if (!live) { const hit = cache.get(points); if (hit) return hit; }
+  const input = pencil ? points.map((q) => [q.x, q.y, Math.min(1, Math.max(0.15, q.p ?? 0.5))]) : points.map((q) => [q.x, q.y, 0.5]);
+  const out = pencil
+    ? getStroke(input, { size: width * 1.15, thinning: 0.55, smoothing: 0.5, streamline: 0.35, simulatePressure: false, last: !live, start: { cap: true, taper: width * 1.5 }, end: { cap: true, taper: width * 1.5 } })
+    : getStroke(input, { size: width * 1.05, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
   let d = '';
   if (out.length > 2) {
     d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;
     for (let i = 0; i < out.length; i++) { const [x0, y0] = out[i]; const [x1, y1] = out[(i + 1) % out.length]; d += ` ${x0.toFixed(2)} ${y0.toFixed(2)} ${((x0 + x1) / 2).toFixed(2)} ${((y0 + y1) / 2).toFixed(2)}`; }
     d += ' Z';
   } else if (points.length) { const q = points[0]; const r = width * 0.6; d = `M ${q.x - r} ${q.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`; }
-  if (!live) outlineCache.set(points, d);
+  if (!live) cache.set(points, d);
   return d;
 }
 /**

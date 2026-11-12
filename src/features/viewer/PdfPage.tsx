@@ -5,7 +5,7 @@ import { useTheme } from '@/theme';
 import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
 import { RenderPriority, type RenderLease } from './renderScheduler';
-import { createPdfWork, readingPixels, detailPixels } from './pdfWork';
+import { createPdfWork, readingPixels, previewPixels, detailPixels } from './pdfWork';
 import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnostics';
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
@@ -16,40 +16,58 @@ const imageLoads = createImageLoadReporter(Platform.OS, reportError);
 export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
 type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
-  const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
-  const readKey = `${page}|read|${readPx}`, fullKey = `${page}|detail|${fullPx}`;
+  const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), previewPx = previewPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
+  const previewKey = `${page}|preview|${previewPx}`, readKey = `${page}|read|${readPx}`, fullKey = `${page}|detail|${fullPx}`;
   const [presentedRequest, setPresentedRequest] = useState<object | null>(null); const pageRef = useRef(page); pageRef.current = page;
   const trackingRef = useRef<{ page: string; session: ReturnType<typeof imageLoads.begin>; loads: Map<string, () => void> } | null>(null);
   if (trackingRef.current?.page !== page) trackingRef.current = { page, session: imageLoads.begin(index), loads: new Map() };
   const tracking = trackingRef.current;
-  const sourceReady = (source: string, sharp: boolean) => {
-    if (!tracking.loads.has(source)) tracking.loads.set(source, tracking.session.ready(sharp ? 'detail' : 'reading', sharp ? fullPx : readPx));
+  const sourceReady = (source: string, sharp: boolean, width = sharp ? fullPx : readPx) => {
+    if (!tracking.loads.has(source)) tracking.loads.set(source, tracking.session.ready(sharp ? 'detail' : 'reading', width));
   };
   const [image, setImage] = useState<PageImage>({ page: '', reading: null, detail: null, detailWidth: 0, err: false });
   useEffect(() => {
     if (!uri || uri === 'blank:') return;
-    let alive = true; let lease: RenderLease | undefined;
+    let alive = true; const leases: RenderLease[] = [];
+    const isCurrent = () => alive && pageRef.current === page;
     setImage(old => old.page === page ? { ...old, err: false } : { page, reading: null, detail: null, detailWidth: 0, err: false });
-    const show = (src: string, sharp: boolean) => {
-      if (alive && pageRef.current === page) { sourceReady(src, sharp); setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false })); }
+    const show = (src: string, sharp: boolean, width = sharp ? fullPx : readPx) => {
+      if (isCurrent()) { sourceReady(src, sharp, width); setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false })); }
     };
     const start = async () => {
       const sharp = work.detail.value(fullKey), ready = work.reading.value(readKey);
       if (sharp) { show(sharp, true); return; }
       if (ready) { show(ready, false); return; }
+      const preview = work.reading.value(previewKey);
       const available = work.detail.available(page, fullPx) ?? work.reading.available(page, readPx);
-      if (available) show(available, false);
-      // Reusing a ready full image is cheap; neither lookup waits behind the native drawing workers.
-      const [cachedFull, cachedRead] = await Promise.all([PdfRenderer.cachedPage(uri, index, fullPx), PdfRenderer.cachedReading(uri, index, readPx)]);
-      if (!alive) return;
+      if (available) show(available, false, available === preview ? previewPx : readPx);
+      // Disk lookups bypass native drawing workers, including the width-specific preview cache.
+      const [cachedFull, cachedRead, cachedPreview] = await Promise.all([
+        PdfRenderer.cachedPage(uri, index, fullPx), PdfRenderer.cachedReading(uri, index, readPx),
+        PdfRenderer.cachedReading(uri, index, previewPx).catch(() => null),
+      ]);
+      if (!isCurrent()) return;
       if (cachedFull) { work.detail.remember(fullKey, cachedFull, { page, width: fullPx, index }); show(cachedFull, true); return; }
       if (cachedRead) { work.reading.remember(readKey, cachedRead, { page, width: readPx, index }); show(cachedRead, false); return; }
-      lease = work.reading.acquire(readKey, RenderPriority.preview, () => PdfRenderer.renderReading(uri, index, readPx), { page, width: readPx, index });
-      show(await lease.promise, false);
+      if (cachedPreview) {
+        work.reading.remember(previewKey, cachedPreview, { page, width: previewPx, index });
+        if (!available) show(cachedPreview, false, previewPx);
+      } else if (!available) {
+        const previewLease = work.reading.acquire(previewKey, RenderPriority.preview,
+          () => PdfRenderer.renderReading(uri, index, previewPx), { page, width: previewPx, index });
+        leases.push(previewLease);
+        try { show(await previewLease.promise, false, previewPx); }
+        catch { /* A failed optional preview must not prevent the normal reading request. */ }
+      }
+      if (!isCurrent()) return;
+      const readingLease = work.reading.acquire(readKey, RenderPriority.visible,
+        () => PdfRenderer.renderReading(uri, index, readPx), { page, width: readPx, index });
+      leases.push(readingLease);
+      show(await readingLease.promise, false);
     };
-    void start().catch(() => { if (alive) setImage(old => ({ ...old, page, err: true })); });
-    return () => { alive = false; lease?.release(); };
-  }, [uri, index, readPx, fullPx]);
+    void start().catch(() => { if (isCurrent()) setImage(old => ({ ...old, page, err: true })); });
+    return () => { alive = false; leases.forEach(lease => lease.release()); };
+  }, [uri, index, readPx, previewPx, fullPx]);
   useEffect(() => {
     if (!uri || uri === 'blank:' || !detailAllowed || presentedRequest !== tracking) return;
     let alive = true; let lease: RenderLease | undefined;

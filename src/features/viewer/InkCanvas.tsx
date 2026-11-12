@@ -270,7 +270,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const geoCache = useRef(new WeakMap<Stroke, { s: number; d: string }>()).current;
   const dFor = (st: Stroke, kind: 'pen' | 'poly' | 'line'): string => {
     const sk = kind === 'pen' ? 1 : s; const c = geoCache.get(st); if (c && c.s === sk) return c.d;
-    const d = kind === 'pen' ? penOutline(st.points, st.width) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.tool === 'highlighter' ? cleanHighlight(st.points, st.width) : st.points, s, st.tool !== 'highlighter');
+    const d = kind === 'pen' ? penOutline(st.points, st.width, false, st.tool) : kind === 'poly' ? polyPath(st.points, s, st.closed) : st.shape ? shapePath(st.shape, st.points[0], st.points[1] ?? st.points[0], s) : pathFromPoints(st.tool === 'highlighter' ? cleanHighlight(st.points, st.width) : st.points, s, st.tool !== 'highlighter');
     geoCache.set(st, { s: sk, d }); return d;
   };
   const { inkBounds, boxOf } = useMemo(() => {
@@ -363,7 +363,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
           {liveBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: liveBox.x, top: liveBox.y }} width={liveBox.w} height={liveBox.h} viewBox={`${liveBox.x} ${liveBox.y} ${liveBox.w} ${liveBox.h}`}>
             <G>
               {marquee && <SvgRect x={Math.min(marquee.a.x, marquee.b.x) * s} y={Math.min(marquee.a.y, marquee.b.y) * s} width={Math.abs(marquee.b.x - marquee.a.x) * s} height={Math.abs(marquee.b.y - marquee.a.y) * s} fill="rgba(47,111,237,0.08)" stroke={colors.primary} strokeWidth={1} strokeDasharray="4 3" />}
-              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
+              {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? <Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} /> : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
               {laser.length > 0 && <Path d={pathFromPoints(laser, s)} stroke="#FF3B30" strokeWidth={4} strokeOpacity={0.9} fill="none" strokeLinecap="round" />}
               {lasso.length > 1 && <Path d={pathFromPoints(lasso, s, false)} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="5 4" fill="rgba(14,124,123,0.08)" />}
               {(cfg.tool === 'eraser' || cfg.tool === 'vectorEraser') && live.length > 0 && <Circle cx={live[live.length - 1].x * s} cy={live[live.length - 1].y * s} r={eraserR * s} stroke="#888" strokeWidth={1} fill="rgba(0,0,0,0.05)" />}

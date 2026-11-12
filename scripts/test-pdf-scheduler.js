@@ -24,6 +24,18 @@ function gate() { let resolve; const promise = new Promise(r => { resolve = r; }
   assert.deepEqual(order, ['busy', 'preview-new', 'preview-old', 'tile', 'full']);
   assert.equal(q.state('stale-tile'), undefined);
 
+  // Current-page preview wins over queued reading and neighbour prefetch; stale preview is cancelled.
+  q = createRenderScheduler(); g = gate(); order = [];
+  q.acquire('running-native', P.prefetch, () => g.promise);
+  q.prefetch('neighbour-read', P.prefetch, run('neighbour-read'));
+  q.acquire('visible-read', P.visible, run('visible-read'));
+  const abandonedPreview = q.acquire('old-page|preview|480', P.preview, run('abandoned-preview'));
+  q.acquire('current-page|preview|480', P.preview, run('current-preview'));
+  abandonedPreview.release(); await assert.rejects(abandonedPreview.promise, RenderCancelled);
+  g.resolve('done'); await flush();
+  assert.deepEqual(order, ['current-preview', 'visible-read', 'neighbour-read']);
+  assert.equal(q.state('old-page|preview|480'), undefined);
+
   // Shared ownership: promote prefetch, keep it for the remaining subscriber, downgrade when visible leaves.
   q = createRenderScheduler(); g = gate(); order = [];
   q.acquire('busy', 2, () => g.promise);

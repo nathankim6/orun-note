@@ -1,7 +1,7 @@
 import React from 'react';
 import Svg, { Defs, LinearGradient, Stop, Path, Rect, Circle, G } from 'react-native-svg';
 
-export type ToolArtKind = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'select';
+export type ToolArtKind = 'pen' | 'pencil' | 'highlighter' | 'eraser' | 'lasso' | 'select';
 
 /**
  * Apple Pencil-kit style tool illustrations (vector, crisp at any scale). The nib / band show the tool's current colour.
@@ -20,6 +20,9 @@ export function ToolArt({ kind, color = '#1C1C1E', size = 1 }: { kind: ToolArtKi
         <LinearGradient id={`${g}-metal`} x1="0" y1="0" x2="1" y2="0">
           <Stop offset="0" stopColor="#BDBDC6" /><Stop offset="0.38" stopColor="#F5F5F7" /><Stop offset="1" stopColor="#A8A8B2" />
         </LinearGradient>
+        <LinearGradient id={`${g}-wood`} x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0" stopColor="#E7B86A" /><Stop offset="0.3" stopColor="#F7DCA6" /><Stop offset="0.7" stopColor="#F1C97C" /><Stop offset="1" stopColor="#C9933F" />
+        </LinearGradient>
         <LinearGradient id={`${g}-pink`} x1="0" y1="0" x2="1" y2="0">
           <Stop offset="0" stopColor="#E98F98" /><Stop offset="0.35" stopColor="#FBC2C7" /><Stop offset="1" stopColor="#DE7F89" />
         </LinearGradient>
@@ -28,6 +31,15 @@ export function ToolArt({ kind, color = '#1C1C1E', size = 1 }: { kind: ToolArtKi
         {cone}
         <Path d="M11.6 13.5 C12.5 10.5 13.3 8 14 6 C14.7 8 15.5 10.5 16.4 13.5 Z" fill={color} />
         {body(31)}
+        <Rect x={5} y={37} width={18} height={6} fill={color} />
+      </G>}
+      {kind === 'pencil' && <G>
+        {/* graphite tip, wooden cone, hex body in classic pencil yellow with a band in the current colour */}
+        <Path d="M12.2 13 C12.9 10 13.5 7.8 14 6 C14.5 7.8 15.1 10 15.8 13 Z" fill={color} />
+        <Path d="M6 31 C8 23 11 15 12.2 13 L15.8 13 C17 15 20 23 22 31 Z" fill={`url(#${g}-wood)`} />
+        <Rect x={5} y={31} width={18} height={49} fill="#F5C33B" />
+        <Rect x={5} y={31} width={4} height={49} fill="#E0AB22" /><Rect x={19} y={31} width={4} height={49} fill="#D9A11C" />
+        <Rect x={11} y={31} width={5} height={49} fill="#FFD95A" fillOpacity={0.9} />
         <Rect x={5} y={37} width={18} height={6} fill={color} />
       </G>}
       {kind === 'highlighter' && <G>

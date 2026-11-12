@@ -56,7 +56,7 @@ export function CycleSheet({ visible, onClose, cycle, maxCycle, onSwitch, onNew,
 
 export function GuideOverlay({ visible, onDone }: { visible: boolean; onDone: () => void }) {
   const { colors } = useTheme(); const [step, setStep] = useState(0);
-  const steps = [{ t: '펜 도구', d: '펜과 형광펜을 쓸 수 있어요. 선택된 펜을 다시 탭하면 종류·굵기를 바꿔요.', i: 'pencil' }, { t: '색상 · 굵기', d: '5가지 색과 5가지 굵기를 빠르게 고르고, 다시 탭하면 세부 패널(투명도·커스텀 색)이 열려요.', i: 'color-palette' }, { t: '지우개 · 올가미', d: '획 단위 지우개와 지나간 부분만 지우는 벡터 지우개. 올가미로 선택한 필기는 복제·삭제할 수 있어요.', i: 'cut' }, { t: '도형 · 텍스트 · 레이저', d: '직선/화살표/사각형/원을 드래그로 그리고, 텍스트 도구로 탭하면 글상자가 생겨요. 레이저는 저장되지 않는 임시 포인터예요.', i: 'shapes' }, { t: '편집 · 버전', d: '실행취소/다시실행, 현재 페이지 지우기. 지운 필기는 더보기 > 버전 기록에서 언제든 복원돼요.', i: 'arrow-undo' }, { t: '손/이동', d: '손 도구에서는 스크롤·핀치 확대만 돼요. 손가락은 확대·스크롤, 펜슬로만 필기돼요.', i: 'hand-left' }];
+  const steps = [{ t: '펜 도구', d: '펜·연필·형광펜을 쓸 수 있어요. 선택된 펜을 다시 탭하면 종류·굵기를 바꿔요.', i: 'pencil' }, { t: '색상 · 굵기', d: '5가지 색과 5가지 굵기를 빠르게 고르고, 다시 탭하면 세부 패널(투명도·커스텀 색)이 열려요.', i: 'color-palette' }, { t: '지우개 · 올가미', d: '획 단위 지우개와 지나간 부분만 지우는 벡터 지우개. 올가미로 선택한 필기는 복제·삭제할 수 있어요.', i: 'cut' }, { t: '도형 · 텍스트 · 레이저', d: '직선/화살표/사각형/원을 드래그로 그리고, 텍스트 도구로 탭하면 글상자가 생겨요. 레이저는 저장되지 않는 임시 포인터예요.', i: 'shapes' }, { t: '편집 · 버전', d: '실행취소/다시실행, 현재 페이지 지우기. 지운 필기는 더보기 > 버전 기록에서 언제든 복원돼요.', i: 'arrow-undo' }, { t: '손/이동', d: '손 도구에서는 스크롤·핀치 확대만 돼요. 손가락은 확대·스크롤, 펜슬로만 필기돼요.', i: 'hand-left' }];
   if (!visible) return null; const st = steps[step];
   return (
     <View style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
