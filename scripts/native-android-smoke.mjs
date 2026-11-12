@@ -9,7 +9,7 @@ let nodes = [], lastLogcat = '', nodesReadAt = 0, currentStep = 'startup';
 const knownPids = new Set();
 let lastTelemetry = [], lastUINodes = [], lastXMLState = 'unavailable', telemetrySource = 'unavailable';
 let logRecord = null, trigger = null, logSequence = 0, cycleNumber = 0;
-const environmentLimitedCycles = new Set();
+const environmentLimitedCycles = new Set(); let rendererExitNoted = false;
 const milestones = { initialPid: false, root: false, pdfPass: false, list: false, ready: false, progress: false };
 function fail(reason, report = logRecord?.report) {
   if (!trigger) trigger = Object.freeze({ reason, record: logRecord, report });
@@ -67,7 +67,14 @@ function read() {
   for (const pid of live.split(/\s+/).filter(Boolean)) knownPids.add(pid);
   const report = crashLogs(!live);
   if (!live) throw fail('process_crash');
-  if (report.evidence?.attribution === 'uncertain' && !report.crash) throw fail('native_evidence_uncertain', report);
+  if (report.evidence?.attribution === 'uncertain' && !report.crash) {
+    // A WebView renderer that went away without any signal or native cause while the app process itself is alive and
+    // responsive is how Chromium tears down a refused embed (provider 150 / bot check); it is not an app crash. Any
+    // other uncertain evidence (java / javascript / native / a signal) still fails closed.
+    const e = report.evidence; const benignRendererExit = e.candidateCategory === 'renderer' && (e.nativeCause ?? 'none') === 'none' && !(e.candidateSignal > 0);
+    if (!benignRendererExit) throw fail('native_evidence_uncertain', report);
+    if (!rendererExitNoted) { rendererExitNoted = true; emit('renderer_exit_ignored', { cycle: cycleNumber }); }
+  }
   if (report.crash) {
     fail('native_or_js_error', report);
     // The fatal category is authoritative, but preserve the latest callback code
