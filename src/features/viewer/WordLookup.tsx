@@ -25,6 +25,10 @@ async function play(url: string, fallbackText: string, accent: 'us' | 'uk') {
     return;
   }
   try { player?.remove?.(); } catch {}
+  // The relay answers 404 when neither source has a recording in this accent (common for American audio); then the
+  // device's en-US / en-GB voice reads the word immediately instead of waiting for a player that never starts.
+  const head = await fetch(url).catch(() => null);
+  if (!head || !head.ok || !/audio|mpeg|octet/.test(head.headers.get('content-type') ?? '')) return tts();
   try {
     const p = createAudioPlayer({ uri: url }); player = p; p.play();
     setTimeout(() => { try { const st: any = (p as any).currentStatus ?? {}; const started = p.playing || (p.currentTime ?? 0) > 0 || st.didJustFinish || (st.currentTime ?? 0) > 0; if (!started) { try { p.pause(); } catch {} tts(); } } catch { tts(); } }, 1600);

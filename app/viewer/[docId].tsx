@@ -66,7 +66,10 @@ export default function Viewer() {
   const [leftTab, setLeftTabState] = useState<LeftTab | null>(() => (isTablet && (useSettingsStore.getState().viewer.pagesPanelOpen ?? true) ? 'pages' : null));
   const setLeftTab = useCallback((t: LeftTab | null) => { setLeftTabState(t); if (isTablet && useSettingsStore.getState().hydrated) useSettingsStore.getState().setViewer({ pagesPanelOpen: !!t }); }, [isTablet]); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
-  const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => {
+  // Not a lazy setState updater: React may run those during a later render, and the settings-store write inside would
+  // then update other components mid-render ("Cannot update a component while rendering a different component").
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const onCfg = useCallback((p: Partial<ToolConfig>) => { const c = cfgRef.current; const next = (() => {
     const next = { ...c, ...p }; const v = useSettingsStore.getState().viewer;
     if (p.tool && p.tool !== c.tool) { const pr = v.toolPresets?.[p.tool]; if (pr) { next.color = p.color ?? pr.color; next.width = p.width ?? pr.width; next.opacity = p.opacity ?? pr.opacity; } else Object.assign(next, toolDefaults(p.tool, next), p); }
     if (p.color) setRecentColors((r) => Array.from(new Set([p.color!, ...r])).slice(0, 6));
@@ -74,14 +77,21 @@ export default function Viewer() {
     // remember per-tool settings and last tool across launches (only once the saved settings have been read, so a
     // write cannot be overwritten by the hydration that follows)
     if (useSettingsStore.getState().hydrated && ['pen', 'pencil', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'text'].includes(next.tool)) useSettingsStore.getState().setViewer({ toolPresets: { ...useSettingsStore.getState().viewer.toolPresets, [next.tool]: { color: next.color, width: next.width, opacity: next.opacity } }, ...(INK_PENS.includes(next.tool) ? { lastTool: next.tool } : {}) });
-    return next; }), []);
+    return next; })(); cfgRef.current = next; setCfg(next); }, []);
 
   useEffect(() => { if (doc) store.touch(doc.id, pageIndex); }, [pageIndex, doc?.id]);
   // remember the exact reading spot (page + position inside it + zoom): on page change, when the app goes to the
   // background and when the viewer closes, so the next open resumes right there
-  const saveView = useCallback(() => { const v = docRef.current?.getView(); if (!doc || !v) return; const d = useDocsStore.getState().docs[doc.id]; if (!d) return; if (d.lastView && d.lastView.page === v.page && Math.abs(d.lastView.frac - v.frac) < 0.002 && Math.abs(d.lastView.zoom - v.zoom) < 0.01) return; store.update(doc.id, { lastView: v }); }, [doc?.id]);
+  const lastViewRef = useRef<{ page: number; frac: number; zoom: number } | null>(null);
+  const saveView = useCallback(() => {
+    // DocumentView may already be gone when the viewer closes: fall back to the last position sampled while it was alive
+    const v = docRef.current?.getView() ?? lastViewRef.current; if (!doc || !v) return; lastViewRef.current = v;
+    const d = useDocsStore.getState().docs[doc.id]; if (!d) return;
+    if (d.lastView && d.lastView.page === v.page && Math.abs(d.lastView.frac - v.frac) < 0.002 && Math.abs(d.lastView.zoom - v.zoom) < 0.01) return;
+    store.update(doc.id, { lastView: v });
+  }, [doc?.id]);
   useEffect(() => { saveView(); }, [pageIndex, saveView]);
-  useEffect(() => { const sub = AppState.addEventListener('change', (st) => { if (st !== 'active') saveView(); }); const t = setInterval(saveView, 15000); return () => { sub.remove(); clearInterval(t); saveView(); }; }, [saveView]);
+  useEffect(() => { const sub = AppState.addEventListener('change', (st) => { if (st !== 'active') saveView(); }); const t = setInterval(saveView, 2000); return () => { sub.remove(); clearInterval(t); saveView(); }; }, [saveView]);
   const initialView = useMemo(() => (doc?.lastView && doc.lastView.page === (doc.lastPage ?? 0) ? doc.lastView : null), [doc?.id]);
   const prevPage = useRef(pageIndex);
   useEffect(() => { if (doc && prevPage.current !== pageIndex) { ink.snapshot(inkKey(doc.id, cycle, String(prevPage.current))); prevPage.current = pageIndex; } }, [pageIndex]);
@@ -167,7 +177,7 @@ export default function Viewer() {
           <View style={{ width: mainW, height: mainH }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
             : <DocumentView active={viewerActive} ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} initialView={initialView} renderPage={renderPage} dark={dark}
-                mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled} onPrefetch={(i, box, rank) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w, rank); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct}
+                mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled && cfg.tool !== 'select'} onPrefetch={(i, box, rank) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w, rank); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct}
                 onPullAddPage={doc.kind === 'blank' ? () => { addBlankPages(doc, 1); toast('새 페이지를 추가했어요'); } : undefined} />}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}
           </View>

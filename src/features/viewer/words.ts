@@ -6,8 +6,31 @@ export function cachedWords(uri: string | null, index: number) { return uri ? ca
 export function loadWords(uri: string | null, index: number): Promise<PdfWord[]> {
   if (!uri || uri === 'blank:') return Promise.resolve([]); const k = key(uri, index);
   if (cache.has(k)) return Promise.resolve(cache.get(k)!); if (pending.has(k)) return pending.get(k)!;
-  const p = PdfRenderer.getWords(uri, index).then((w) => { cache.set(k, w); pending.delete(k); return w; }).catch(() => { pending.delete(k); return []; });
+  const p = PdfRenderer.getWords(uri, index).then((w) => { const m = mergeFragments(w); cache.set(k, m); pending.delete(k); return m; }).catch(() => { pending.delete(k); return []; });
   pending.set(k, p); return p;
+}
+/**
+ * PDF text layers often break one word into pieces ("signi" + "ficant" around a ligature, "re" + "search" at a kerning
+ * pair). Pieces sit on the same line with (almost) no gap between them, while real neighbouring words keep a space of
+ * roughly a quarter of the line height or more. Glue such pieces so the tap finds the whole word.
+ */
+export function mergeFragments(words: PdfWord[]): PdfWord[] {
+  if (!words?.length) return words ?? [];
+  const out: PdfWord[] = [];
+  for (const w of words) {
+    const prev = out[out.length - 1];
+    if (prev) {
+      const h = Math.max(prev.h, w.h, 1e-4); const sameLine = Math.abs((prev.y + prev.h / 2) - (w.y + w.h / 2)) < h * 0.45 && Math.abs(prev.h - w.h) < h * 0.5;
+      const gap = w.x - (prev.x + prev.w); const letters = /[A-Za-z]$/.test(prev.t) && /^[A-Za-z]/.test(w.t);
+      if (sameLine && letters && gap > -h * 0.3 && gap < h * 0.09) {
+        const x = Math.min(prev.x, w.x), y = Math.min(prev.y, w.y);
+        out[out.length - 1] = { ...prev, t: prev.t + w.t, x, y, w: Math.max(prev.x + prev.w, w.x + w.w) - x, h: Math.max(prev.y + prev.h, w.y + w.h) - y };
+        continue;
+      }
+    }
+    out.push(w);
+  }
+  return out;
 }
 /** Word under a point (page coords → normalized by page size). Slight padding so small words are easy to hit. */
 export function wordAt(words: PdfWord[] | null, nx: number, ny: number): PdfWord | null {

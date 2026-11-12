@@ -194,13 +194,16 @@ async function audioFor(raw: string, accent: string): Promise<Response> {
     const j = await r.json().catch(() => null); const items = j?.searchResultMap?.searchResultListMap?.WORD?.items ?? [];
     const it = items.find((x: any) => String(x.expEntry ?? "").replace(/<[^>]+>/g, "").trim().toLowerCase() === q);
     const syms = (it?.searchPhoneticSymbolList ?? []).filter((x: any) => x.symbolFile);
-    const pick = syms.find((x: any) => String(x.symbolTypeCode ?? "").includes(accent === "uk" ? "GB" : "US")) ?? syms[0];
+    // Only a recording of the requested accent: Naver often has a British file but no American one, and falling back to
+    // syms[0] played the British voice for the "미국" button. Without a match we try dictionaryapi.dev, then 404 so the
+    // app uses the device's en-US / en-GB voice instead.
+    const pick = syms.find((x: any) => String(x.symbolTypeCode ?? "").includes(accent === "uk" ? "GB" : "US"));
     if (pick) res = await grab(pick.symbolFile, "https://en.dict.naver.com/");
   }
   if (!res) {
     const d = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(q)}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
     const list: string[] = (Array.isArray(d) ? d : []).flatMap((e: any) => e.phonetics ?? []).map((p: any) => String(p.audio ?? "")).filter(Boolean);
-    const pick = list.find((u) => u.endsWith(accent === "uk" ? "-uk.mp3" : "-us.mp3")) ?? list[0];
+    const pick = list.find((u) => u.endsWith(accent === "uk" ? "-uk.mp3" : "-us.mp3"));
     if (pick) res = await grab(pick);
   }
   if (!res) return new Response("no recording", { status: 404, headers: cors });

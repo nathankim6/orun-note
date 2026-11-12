@@ -7,7 +7,7 @@ import { Tool, ShapeKind } from '@/data/types';
 import { ToolConfig } from './ink';
 import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { G, Path } from 'react-native-svg';
 import { GradientPalette } from './GradientPalette';
 import { penOutline } from './ink';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
@@ -135,9 +135,13 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
     const k = 2.2; // screen px per page unit in the sample (matches a typical zoom)
     const ink = cfg.tool === 'highlighter'
       ? <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke={cfg.color} strokeOpacity={cfg.opacity} strokeWidth={cfg.width * k} strokeLinecap="butt" strokeLinejoin="round" fill="none" />
-      : isEraser ? <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="rgba(0,0,0,0.18)" strokeWidth={cfg.width * k} strokeLinecap="round" strokeLinejoin="round" fill="none" strokeDasharray="1 0" />
+      : isEraser ? <G>{/* a thin stroke with its middle rubbed out by an eraser of the chosen size */}
+          <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="#3C3C43" strokeWidth={2.2} strokeLinecap="round" fill="none" />
+          <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="#F6F7FB" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="rgba(0,122,255,0.22)" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </G>
       : <Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity} />;
-    return <View style={styles.previewBox}><Svg width={W_} height={H_}>{isEraser && <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y + 8}`).join(' ')} stroke="#C7C7CC" strokeWidth={1.6} fill="none" strokeLinecap="round" />}{ink}</Svg></View>;
+    return <View style={styles.previewBox}><Svg width={W_} height={H_}>{ink}</Svg></View>;
   };
   const cardW = Math.min(560, winW - 24);
 
@@ -189,7 +193,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
                 {cfg.tool === 'highlighter' && <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}</View>
               {colorRow(cfg.tool === 'highlighter' ? HL_PALETTE : PALETTE)}
               {sizeRow('굵기')}
-              {cfg.tool !== 'highlighter' && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
+              <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>
               {favRow}
             </>}
             {panel === 'eraser' && <>
