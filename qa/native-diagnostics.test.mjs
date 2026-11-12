@@ -16,10 +16,10 @@ const javaCrash = [
 ].join('\n');
 fs.mkdirSync(path.resolve('qa/build'), { recursive: true });
 const work = fs.mkdtempSync(path.resolve('qa/build/diagnostics-test-'));
-function sanitize(text, name = 'sample') {
+function sanitize(text, name = 'sample', platform = 'android') {
   const input = path.join(work, name + '.raw'), output = path.join(work, name + '.jsonl');
   fs.writeFileSync(input, text);
-  const result = spawnSync(process.execPath, ['scripts/native-sanitize.mjs', input, output, 'android'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, ['scripts/native-sanitize.mjs', input, output, platform], { encoding: 'utf8' });
   return { status: result.status, output: fs.readFileSync(output, 'utf8') };
 }
 test('worker exception class, Java class/method/line survive, no message or process ID survives', () => {
@@ -75,6 +75,21 @@ test('iOS failure diagnostics are enums only', () => {
   assert(report.crash);
   assert.deepEqual(new Set(report.diagnostics.map(r => r.iosException)), new Set(['EXC_BAD_ACCESS', 'SIGSEGV', 'NS_EXCEPTION', 'CPP_TERMINATE']));
   assert(!JSON.stringify(report).includes(canary));
+});
+test('iOS driver status is sanitized, capped, failure-only, and cannot be overridden by app pass', () => {
+  const raw = [
+    { event: 'ios_driver_status', stage: 'xctest', reason: 'runner_launch_failure', appValidated: true, exitCode: 65, driverFailure: false, testsRun: 1, testsFailed: 1, message: canary, path: canary },
+    { event: 'ios_driver_status', stage: 'launch_probe', reason: 'invalid_option', exitCode: 2, errorDomain: 'CoreSimulatorErrorDomain', errorCode: 405, secret: canary },
+    { event: 'ios_driver_status', stage: 'xctest', reason: canary, exitCode: 1, label: canary },
+    { event: 'suite_result', platform: 'ios', result: 'pass' },
+  ].map(row => 'QA_JSON ' + JSON.stringify(row)).join('\n');
+  const result = sanitize(raw, 'ios-driver-status', 'ios');
+  assert.equal(result.status, 1); assert(!result.output.includes(canary));
+  const rows = result.output.trim().split('\n').map(JSON.parse), status = rows.filter(row => row.event === 'ios_driver_status');
+  assert.equal(status.length, 2); assert.equal(status[0].driverFailure, true); assert.equal(status[0].appValidated, false);
+  assert(rows.some(row => row.event === 'suite_result' && row.result === 'fail'));
+  const passing = sanitize('QA_JSON ' + JSON.stringify({ event: 'ios_driver_status', stage: 'xctest', reason: 'unknown', exitCode: 0, driverFailure: true }) + '\nQA_JSON {"event":"suite_result","platform":"ios","result":"pass"}', 'ios-driver-success', 'ios');
+  assert.equal(passing.status, 0); assert(!passing.output.includes('ios_driver_status'));
 });
 test('missing main PID snapshots last logcat and emits sanitized worker frames before failure', () => {
   const bin = path.join(work, 'bin'); fs.mkdirSync(bin);
@@ -323,7 +338,7 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
   ];
   for(const scenario of scenarios) {
     const dir=fs.mkdtempSync(path.join(work,'screenshot-'));fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'bin'));
-    for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
+    for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs','native-ios-test-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
     fs.writeFileSync(path.join(dir,'scripts/native-android-preflight.mjs'), 'console.log("QA_JSON "+JSON.stringify({event:"emulator_preflight",phase:process.argv[2],result:"pass",reason:"ready"}));');
     fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
     if(scenario.sanitizerFail)fs.writeFileSync(path.join(dir,'scripts/native-sanitize.mjs'),'process.exitCode=1;');

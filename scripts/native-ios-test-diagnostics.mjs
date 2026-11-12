@@ -1,0 +1,68 @@
+/** Bounded public diagnostics for xcodebuild/UI-test driver output. */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const IOS_TEST_STAGES = Object.freeze(['launch_probe', 'xctest']);
+export const IOS_TEST_REASONS = Object.freeze([
+  'missing_scheme', 'missing_destination', 'invalid_option', 'compile_failure', 'link_failure',
+  'runner_launch_failure', 'target_launch_failure', 'signing_failure', 'simulator_failure',
+  'assertion_failure', 'unknown',
+]);
+const STAGES = new Set(IOS_TEST_STAGES), REASONS = new Set(IOS_TEST_REASONS), MAX_TEXT = 1024 * 1024, MAX_TESTS = 100000;
+const ERROR_CODES = Object.freeze({
+  NSPOSIXErrorDomain: new Set([3, 13, 60, 61, 111]), CoreSimulatorErrorDomain: new Set([4, 405]),
+  DTXMessageErrorDomain: new Set([1]), IDETestOperationsObserverErrorDomain: new Set([4]), XCTestErrorDomain: new Set([1]),
+});
+function safeText(value) { return typeof value === 'string' ? value.slice(-MAX_TEXT) : ''; }
+function safeStage(value) { return STAGES.has(value) ? value : 'xctest'; }
+function safeExitCode(value) { return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined; }
+function allowedNSError(domain, code) { return typeof domain === 'string' && Number.isInteger(code) && ERROR_CODES[domain]?.has(code); }
+function has(text, pattern) { return pattern.test(text); }
+
+export function classifyReason(text) {
+  const value = safeText(text);
+  if (/failed to (?:launch|activate) (?:the )?(?:application|target app|com\.paperly\.study)\b/i.test(value)) return 'target_launch_failure';
+  if (/failed to (?:establish communication with|launch) (?:the )?(?:test runner|xctest runner)|test runner never began/i.test(value)) return 'runner_launch_failure';
+  if (has(value, /\bxcodebuild\b[^\n]{0,160}\b(?:invalid|unrecognized|unknown) option\b|\b(?:invalid|unrecognized|unknown) option\b[^\n]{0,160}\bxcodebuild\b/i)) return 'invalid_option';
+  if (has(value, /scheme[^\n]{0,120}(?:not found|does not exist|does not contain a scheme|is not currently configured)|unable to find (?:a )?scheme/i)) return 'missing_scheme';
+  if (has(value, /(?:unable to find|no matching|failed to find)[^\n]{0,120}destination|destination[^\n]{0,120}(?:not found|not available|is invalid)/i)) return 'missing_destination';
+  if (has(value, /\b(?:code ?sign|provisioning profile|signing certificate|development team|errsecinternalcomponent)\b[^\n]{0,160}\b(?:error|failed|failure|required|requires|not found|does not|doesn't|invalid|missing)\b|\b(?:error|failed|failure)\b[^\n]{0,160}\b(?:code ?sign|provisioning profile|signing certificate|development team|errsecinternalcomponent)\b/i)) return 'signing_failure';
+  if (has(value, /\b(?:linker command failed|ld: |undefined symbols for architecture|framework not found)\b/i)) return 'link_failure';
+  if (has(value, /\b(?:compilec|swiftcompile|swiftc|clang)\b[^\n]{0,160}\berror:|\bcompile failed\b/i)) return 'compile_failure';
+  if (has(value, /\b(?:coresimulator|simctl|simulator)\b[^\n]{0,160}\b(?:unavailable|failed|not booted|cannot boot|shutdown|service)\b|unable to boot (?:the )?simulator/i)) return 'simulator_failure';
+  if (has(value, /\b(?:test runner|xctest runner|runner)\b[^\n]{0,160}\b(?:failed to launch|could not launch|terminated|crashed)\b/i)) return 'runner_launch_failure';
+  if (has(value, /\b(?:application|target app|tested application)\b[^\n]{0,160}\b(?:failed to launch|could not launch|terminated|crashed)\b/i)) return 'target_launch_failure';
+  if (has(value, /\b(?:assertion failed|xctassert\w*|failed \([^)]+\)|test case .* failed)\b/i)) return 'assertion_failure';
+  return 'unknown';
+}
+function testCounts(text) {
+  const match = /executed\s+(\d{1,6})\s+tests?(?:,?\s+with\s+(\d{1,6})\s+failures?)?/i.exec(safeText(text));
+  if (!match) return {}; const testsRun = Number(match[1]), testsFailed = Number(match[2] || 0);
+  return testsRun <= MAX_TESTS && testsFailed <= testsRun ? { testsRun, testsFailed } : {};
+}
+function knownNSError(text) {
+  const match = /(?:domain\s*=\s*|error\s+domain\s+)(NSPOSIXErrorDomain|CoreSimulatorErrorDomain|DTXMessageErrorDomain|IDETestOperationsObserverErrorDomain|XCTestErrorDomain)\s*(?:,?\s*code\s*=\s*|\s+code\s+)(-?\d{1,6})\b/i.exec(safeText(text));
+  const errorCode = Number(match?.[2]); return match && allowedNSError(match[1], errorCode) ? { errorDomain: match[1], errorCode } : {};
+}
+/** Sanitizes any row to the fixed public schema. Never preserves caller strings. */
+export function sanitizeIosDriverStatus(row) {
+  const input = row && typeof row === 'object' ? row : {};
+  const output = { event: 'ios_driver_status', stage: safeStage(input.stage), reason: REASONS.has(input.reason) ? input.reason : 'unknown', appValidated: false };
+  const exitCode = safeExitCode(input.exitCode);
+  if (exitCode !== undefined) { output.exitCode = exitCode; output.driverFailure = exitCode !== 0; }
+  if (Number.isInteger(input.testsRun) && Number.isInteger(input.testsFailed) && input.testsRun >= 0 && input.testsRun <= MAX_TESTS && input.testsFailed >= 0 && input.testsFailed <= input.testsRun) Object.assign(output, { testsRun: input.testsRun, testsFailed: input.testsFailed });
+  if (allowedNSError(input.errorDomain, input.errorCode)) Object.assign(output, { errorDomain: input.errorDomain, errorCode: input.errorCode });
+  return output;
+}
+/** Returns a fixed-schema-safe row. appValidated is deliberately always false. */
+export function classifyIosTestDiagnostics({ text, stage, exitCode } = {}) {
+  return sanitizeIosDriverStatus({ event: 'ios_driver_status', stage, reason: classifyReason(text), exitCode, ...testCounts(text), ...knownNSError(text) });
+}
+function cli() {
+  const [file, stage, rawExitCode] = process.argv.slice(2); let text = '';
+  try { if (typeof file === 'string' && fs.existsSync(file)) text = fs.readFileSync(file, 'utf8'); } catch { /* bounded unknown */ }
+  const exitCode = /^\d{1,3}$/.test(rawExitCode || '') ? Number(rawExitCode) : undefined;
+  console.log('QA_JSON ' + JSON.stringify(classifyIosTestDiagnostics({ text, stage, exitCode })));
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) cli();

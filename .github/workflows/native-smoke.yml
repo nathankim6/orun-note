@@ -1,4 +1,4 @@
-name: Native simulator smoke (QA only)
+name: iOS full app failure diagnostic (not release)
 on:
   workflow_dispatch:
     inputs:
@@ -84,6 +84,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
   ios:
+    name: ios-diagnostic-full-app
     if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}
     runs-on: macos-15
     timeout-minutes: 90
