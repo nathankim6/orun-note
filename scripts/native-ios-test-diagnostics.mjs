@@ -18,6 +18,27 @@ function safeText(value) { return typeof value === 'string' ? value.slice(-MAX_T
 function safeStage(value) { return STAGES.has(value) ? value : 'xctest'; }
 function safeExitCode(value) { return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined; }
 function allowedNSError(domain, code) { return typeof domain === 'string' && Number.isInteger(code) && ERROR_CODES[domain]?.has(code); }
+// Only fixed Apple domains plus bounded numeric codes. No NSError descriptions, paths or URLs.
+const CHAIN_DOMAINS = new Set(['NSPOSIXErrorDomain', 'CoreSimulatorErrorDomain', 'DTXMessageErrorDomain', 'IDETestOperationsObserverErrorDomain', 'XCTestErrorDomain', 'FBSOpenApplicationServiceErrorDomain', 'FBSOpenApplicationErrorDomain', 'FBProcessExit', 'RBSRequestErrorDomain', 'RBSServiceErrorDomain', 'NSOSStatusErrorDomain', 'NSCocoaErrorDomain', 'NSMachErrorDomain', 'NSLaunchdErrorDomain']);
+function sanitizeErrorChain(input) {
+  if (!Array.isArray(input)) return [];
+  const output = [], seen = new Set();
+  for (const row of input.slice(0, 64)) {
+    if (!row || !CHAIN_DOMAINS.has(row.domain) || !Number.isInteger(row.code) || Math.abs(row.code) > 65535) continue;
+    const key = row.domain + ':' + row.code;
+    if (!seen.has(key)) { output.push({ domain: row.domain, code: row.code }); seen.add(key); }
+    if (output.length === 8) break;
+  }
+  return output;
+}
+export function extractErrorChain(text) {
+  const rows = [];
+  for (const match of safeText(text).matchAll(/(?:domain\s*=\s*|error\s+domain\s+)([A-Za-z][A-Za-z0-9]{0,63})\s*(?:,?\s*code\s*=\s*|\s+code\s+)(-?\d{1,6})\b/gi)) {
+    rows.push({ domain: match[1], code: Number(match[2]) });
+    if (rows.length === 64) break;
+  }
+  return sanitizeErrorChain(rows);
+}
 function has(text, pattern) { return pattern.test(text); }
 
 export function classifyReason(text) {
@@ -53,11 +74,13 @@ export function sanitizeIosDriverStatus(row) {
   if (exitCode !== undefined) { output.exitCode = exitCode; output.driverFailure = exitCode !== 0; }
   if (Number.isInteger(input.testsRun) && Number.isInteger(input.testsFailed) && input.testsRun >= 0 && input.testsRun <= MAX_TESTS && input.testsFailed >= 0 && input.testsFailed <= input.testsRun) Object.assign(output, { testsRun: input.testsRun, testsFailed: input.testsFailed });
   if (allowedNSError(input.errorDomain, input.errorCode)) Object.assign(output, { errorDomain: input.errorDomain, errorCode: input.errorCode });
+  const errorChain = sanitizeErrorChain(input.errorChain);
+  if (errorChain.length) output.errorChain = errorChain;
   return output;
 }
 /** Returns a fixed-schema-safe row. appValidated is deliberately always false. */
 export function classifyIosTestDiagnostics({ text, stage, exitCode } = {}) {
-  return sanitizeIosDriverStatus({ event: 'ios_driver_status', stage, reason: classifyReason(text), exitCode, ...testCounts(text), ...knownNSError(text) });
+  return sanitizeIosDriverStatus({ event: 'ios_driver_status', stage, reason: classifyReason(text), exitCode, ...testCounts(text), ...knownNSError(text), errorChain: extractErrorChain(text) });
 }
 function cli() {
   const [file, stage, rawExitCode] = process.argv.slice(2); let text = '';

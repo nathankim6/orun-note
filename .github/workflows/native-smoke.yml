@@ -83,7 +83,7 @@ jobs:
           path: qa/output/android-synthetic-qa-failure.png
           if-no-files-found: ignore
           retention-days: 1
-  ios:
+  ios-diagnostic-launch-chain:
     if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}
     runs-on: macos-15
     timeout-minutes: 90
