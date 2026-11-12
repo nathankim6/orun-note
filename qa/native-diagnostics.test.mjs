@@ -245,7 +245,7 @@ test('failure collection keeps cached telemetry if XML fails and can capture XML
   const xml = '<hierarchy><node resource-id="qa-telemetry" content-desc="' + JSON.stringify(rows).replaceAll('"', '&quot;') + '" /></hierarchy>';
   for (const brokenXML of [true, false]) {
     const printed = [];
-    const context = { emit:()=>{}, telemetrySource:'unavailable', freshXML:()=>{if(brokenXML)throw Error('gone');return xml;}, lastUINodes: [], lastXMLState: 'unavailable', lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
+    const context = { emit:()=>{}, telemetrySource:'unavailable', telemetrySeen: new Map(), telemetryClipped: 0, freshXML:()=>{if(brokenXML)throw Error('gone');return xml;}, lastUINodes: [], lastXMLState: 'unavailable', lastTelemetry: brokenXML ? rows : [], decode: s => s.replaceAll('&quot;', '"'), console: { log: s => printed.push(s) }, read: () => { throw Error('fatal recheck must not run'); }, adb: (...args) => { if (brokenXML) throw Error('app UI gone'); return args[1] === 'cat' ? xml : ''; } };
     const run = runInNewContext(parse + '\n' + collect + '\ncollect;', context); run();
     assert.equal(printed.length, 3); assert(printed.some(s => s.includes('"errorCode":153')));
   }
