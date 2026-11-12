@@ -40,7 +40,8 @@ function QA() {
     for (const event of events) if (!observed.current.has(event)) {
       observed.current.add(event); marker(event === 'progressing' ? 'player_progress' : 'player_' + event, { cycle, ...(event === 'progressing' ? { timeSeconds: s.time, durationSeconds: s.duration } : {}), ...(event === 'unavailable' ? { errorCode: playerErrorCode((s as StageStatus & { errorCode?: unknown }).errorCode) } : {}) });
     }
-    setFlags([...observed.current].map(v => `qa-${v}-${cycle}`).join(' ') + ` qa-state-${s.playing ? 'playing' : s.ready ? 'paused' : 'loading'}-${cycle}`);
+    const publicError = s.error ? playerErrorCode((s as StageStatus & { errorCode?: unknown }).errorCode) : undefined;
+    setFlags([...observed.current].map(v => `qa-${v}-${cycle}`).join(' ') + ` qa-state-${s.playing ? 'playing' : s.ready ? 'paused' : 'loading'}-${cycle}` + (publicError !== undefined ? ` qa-errorcode-${publicError}` : ''));
   }, [cycle]);
   return <SafeAreaView onLayout={onQaLayout} style={{ flex: 1 }}>
     {open ? <ReviewVideosScreen loadVideos={loadVideos} onPlaybackStatus={status} onClose={() => { setOpen(false); marker('list_close', { cycle }); }} /> :

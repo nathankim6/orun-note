@@ -16,10 +16,10 @@ const javaCrash = [
 ].join('\n');
 fs.mkdirSync(path.resolve('qa/build'), { recursive: true });
 const work = fs.mkdtempSync(path.resolve('qa/build/diagnostics-test-'));
-function sanitize(text, name = 'sample') {
+function sanitize(text, name = 'sample', platform = 'android') {
   const input = path.join(work, name + '.raw'), output = path.join(work, name + '.jsonl');
   fs.writeFileSync(input, text);
-  const result = spawnSync(process.execPath, ['scripts/native-sanitize.mjs', input, output, 'android'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, ['scripts/native-sanitize.mjs', input, output, platform], { encoding: 'utf8' });
   return { status: result.status, output: fs.readFileSync(output, 'utf8') };
 }
 test('worker exception class, Java class/method/line survive, no message or process ID survives', () => {
@@ -75,6 +75,21 @@ test('iOS failure diagnostics are enums only', () => {
   assert(report.crash);
   assert.deepEqual(new Set(report.diagnostics.map(r => r.iosException)), new Set(['EXC_BAD_ACCESS', 'SIGSEGV', 'NS_EXCEPTION', 'CPP_TERMINATE']));
   assert(!JSON.stringify(report).includes(canary));
+});
+test('iOS driver status is sanitized, capped, failure-only, and cannot be overridden by app pass', () => {
+  const raw = [
+    { event: 'ios_driver_status', stage: 'xctest', reason: 'runner_launch_failure', appValidated: true, exitCode: 65, driverFailure: false, testsRun: 1, testsFailed: 1, message: canary, path: canary },
+    { event: 'ios_driver_status', stage: 'launch_probe', reason: 'invalid_option', exitCode: 2, errorDomain: 'CoreSimulatorErrorDomain', errorCode: 405, secret: canary },
+    { event: 'ios_driver_status', stage: 'xctest', reason: canary, exitCode: 1, label: canary },
+    { event: 'suite_result', platform: 'ios', result: 'pass' },
+  ].map(row => 'QA_JSON ' + JSON.stringify(row)).join('\n');
+  const result = sanitize(raw, 'ios-driver-status', 'ios');
+  assert.equal(result.status, 1); assert(!result.output.includes(canary));
+  const rows = result.output.trim().split('\n').map(JSON.parse), status = rows.filter(row => row.event === 'ios_driver_status');
+  assert.equal(status.length, 2); assert.equal(status[0].driverFailure, true); assert.equal(status[0].appValidated, false);
+  assert(rows.some(row => row.event === 'suite_result' && row.result === 'fail'));
+  const passing = sanitize('QA_JSON ' + JSON.stringify({ event: 'ios_driver_status', stage: 'xctest', reason: 'unknown', exitCode: 0, driverFailure: true }) + '\nQA_JSON {"event":"suite_result","platform":"ios","result":"pass"}', 'ios-driver-success', 'ios');
+  assert.equal(passing.status, 0); assert(!passing.output.includes('ios_driver_status'));
 });
 test('missing main PID snapshots last logcat and emits sanitized worker frames before failure', () => {
   const bin = path.join(work, 'bin'); fs.mkdirSync(bin);
@@ -323,7 +338,7 @@ test('synthetic screenshot wrapper captures only authorized failed CI emulator r
   ];
   for(const scenario of scenarios) {
     const dir=fs.mkdtempSync(path.join(work,'screenshot-'));fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'bin'));
-    for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
+    for(const file of ['native-android-ci.sh','native-sanitize.mjs','native-diagnostics.mjs','native-ios-test-diagnostics.mjs'])fs.copyFileSync('scripts/'+file,path.join(dir,'scripts',file));
     fs.writeFileSync(path.join(dir,'scripts/native-android-preflight.mjs'), 'console.log("QA_JSON "+JSON.stringify({event:"emulator_preflight",phase:process.argv[2],result:"pass",reason:"ready"}));');
     fs.writeFileSync(path.join(dir,'scripts/native-android-smoke.mjs'), 'const code=Number(process.env.QA_MOCK_DRIVER);console.log("QA_JSON "+JSON.stringify({event:"suite_result",platform:"android",result:code?"fail":"pass",reason:code?"ui_timeout":undefined}));process.exitCode=code;');
     if(scenario.sanitizerFail)fs.writeFileSync(path.join(dir,'scripts/native-sanitize.mjs'),'process.exitCode=1;');
@@ -681,7 +696,7 @@ if(a[1]==='cat'){const n=Number(fs.readFileSync(path.join(dir,'dumps'))),labels=
   const result=spawnSync(process.execPath,['scripts/native-android-smoke.mjs'],{encoding:'utf8',timeout:20000,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,QA_POST_DIR:dir}});
   assert.equal(result.status,1);assert(result.stdout.includes('"step":"ready_controls"'),result.stdout);assert(result.stdout.includes('"pdfPass":true'));assert(result.stdout.includes('"ready":true'));
   const rows=result.stdout.split('\n').filter(s=>s.startsWith('QA_JSON ')).map(s=>JSON.parse(s.slice(8)));
-  assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='collection').category,'javascript');assert(!rows.some(r=>r.event==='crash_js_exception'));
+  assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='collection').category,'javascript');const late=rows.filter(r=>r.event==='crash_js_exception');assert(late.length>0);assert(late.every(r=>r.origin==='collection'));assert(!rows.some(r=>r.event==='crash_js_exception'&&r.origin==='trigger'));assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');
   assert(!result.stdout.includes(canary));assert.equal(sanitize(result.stdout,'post-ready').status,1);
 });
 
@@ -698,3 +713,18 @@ test('unowned current-PID fatal remains uncertain and the driver never silently 
  const source=fs.readFileSync('scripts/native-android-smoke.mjs','utf8');assert(source.includes("throw fail('native_evidence_uncertain', report)"));
  const result=sanitize('QA_JSON {"event":"suite_result","result":"fail","reason":"native_evidence_uncertain","platform":"android"}','uncertain');assert.equal(result.status,1);assert(result.output.includes('native_evidence_uncertain'));
 });
+
+test('uncertain candidate category/signal is not ownership or a proven crash',()=>{
+ const r=extractCrashDiagnostics('01-01 00:00:01.000 42 42 F libc: Fatal signal 6 (SIGABRT) private-canary',{platform:'android',pids:['42']});
+ assert.equal(r.crash,false);assert.equal(r.evidence.attribution,'uncertain');assert.equal(r.evidence.candidateCategory,'native');assert.equal(r.evidence.candidateSignal,6);assert(!JSON.stringify(r).includes('private-canary'));
+});
+
+test('candidate metadata remains strict and cannot disclose unknown signal/message',async()=>{const {sanitizeEvidence}=await import('../scripts/native-diagnostics.mjs');const r=sanitizeEvidence({event:'driver_evidence',candidateCategory:'native',candidateSignal:6,nativeCause:'jni',message:'private-canary'});assert.equal(r.candidateCategory,'native');assert.equal(r.candidateSignal,6);assert.equal(r.nativeCause,'jni');assert(!JSON.stringify(r).includes('private-canary'));const u=sanitizeEvidence({event:'driver_evidence',candidateCategory:'private-canary',candidateSignal:12345,nativeCause:'private-canary'});assert(!JSON.stringify(u).includes('private-canary'));assert(!('candidateSignal'in u));});
+
+test('post-trigger frame provenance is bounded and cannot replace trigger evidence',async()=>{const {sanitizeDiagnostic}=await import('../scripts/native-diagnostics.mjs');const f=sanitizeDiagnostic({event:'crash_native_frame',nativeLibrary:'libhermes.so',nativePc:'0x123',origin:'collection',record:11,message:'private-canary'});assert.equal(f.origin,'collection');assert.equal(f.record,11);assert(!JSON.stringify(f).includes('private-canary'));const u=sanitizeDiagnostic({...f,origin:'private-canary',record:123456});assert(!('origin'in u));assert(!('record'in u));});
+
+test('APK embedded library frames preserve only basename and PC',()=>{const r=extractCrashDiagnostics('11-01 10:00:00.001 900 900 F DEBUG: Cmdline: com.paperly.study\n11-01 10:00:00.002 900 900 F DEBUG: signal 11 (SIGSEGV)\n11-01 10:00:00.003 900 900 F DEBUG: #00 pc 00000123 /data/private-canary/base.apk!libhermes.so (private-canary)\n11-01 10:00:00.004 900 900 F DEBUG: #01 pc 00000456 /data/private-canary/base.apk!lib/x86_64/libreactnative.so (private-canary)',{platform:'android'});assert.equal(r.crash,true);assert.deepEqual(r.diagnostics.map(x=>x.nativeLibrary),['libhermes.so','libreactnative.so']);assert(!JSON.stringify(r).includes('private-canary'));});
+
+test('native component/operation is an enum, never a full symbol or arbitrary name',()=>{const r=extractCrashDiagnostics('11-01 10:00:00.001 900 900 F DEBUG: Cmdline: com.paperly.study\n11-01 10:00:00.002 900 900 F DEBUG: signal 11 (SIGSEGV)\n11-01 10:00:00.003 900 900 F DEBUG: #00 pc 123 /private-canary/base.apk!libappmodules.so (void facebook::react::RawPropsParser::prepare<RNCWebViewProps>()+10)',{platform:'android'});assert.equal(r.diagnostics[0].nativeComponent,'webview');assert.equal(r.diagnostics[0].nativeOperation,'props_parse');assert(!JSON.stringify(r).includes('private-canary'));assert(!JSON.stringify(r).includes('prepare'));});
+
+test('private logcat can supply public QA error codes without raw content escaping',()=>{const result=sanitize('11-12 03:00:00.000 42 42 I ReactNativeJS: QA_JSON '+JSON.stringify({event:'player_unavailable',cycle:1,errorCode:'process',message:canary})+'\nprivate-log-'+canary,'private-logcat');assert.equal(result.status,1);assert(result.output.includes('"errorCode":"process"'));assert(!result.output.includes(canary));const wrapper=fs.readFileSync('scripts/native-android-ci.sh','utf8');assert(wrapper.includes('adb logcat -d -v threadtime -t 8000 >> qa/build/android.raw'));assert(!wrapper.includes('cat qa/build/android.raw'));const entry=fs.readFileSync('qa/entry.tsx','utf8');assert(entry.includes('qa-errorcode-'));assert(entry.includes('playerErrorCode'));});

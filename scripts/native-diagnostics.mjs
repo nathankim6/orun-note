@@ -23,6 +23,8 @@ export function sanitizeDiagnostic(row) {
   } else if (row.event === 'crash_native_frame') {
     if (typeof row.nativeLibrary !== 'string' || !library.test(row.nativeLibrary) || typeof row.nativePc !== 'string' || !/^0x[0-9a-f]{1,16}$/.test(row.nativePc)) return null;
     out.nativeLibrary = row.nativeLibrary; out.nativePc = row.nativePc;
+    if(['webview','safe_area','svg','screens','gesture_handler','slider'].includes(row.nativeComponent))out.nativeComponent=row.nativeComponent;
+    if(['props_parse','props_constructor','event_dispatch','component_registration','jsi_string','jsi_property','jsi_call'].includes(row.nativeOperation))out.nativeOperation=row.nativeOperation;
   } else if (row.event === 'crash_js_exception') {
     if (!jsEnums.has(row.jsException)) return null;
     out.jsException = row.jsException;
@@ -33,15 +35,22 @@ export function sanitizeDiagnostic(row) {
     if (!iosEnums.has(row.iosException)) return null;
     out.iosException = row.iosException;
   }
+  if (['trigger','collection'].includes(row.origin)) out.origin=row.origin;
+  if (Number.isInteger(row.record)&&row.record>=0&&row.record<=10000) out.record=row.record;
   return out;
 }
 function appProcess(name) { return /^com\.paperly\.study(?::[A-Za-z0-9_.:-]+)?$/.test(name); }
 function androidScope(text, pids) {
   const lines = text.split('\n').slice(-8000), owned = new Map(), scoped = [];
   const current = new Set(pids.map(String));
-  let pending = null, tombstone = null, uncertain = false;
+  let pending = null, tombstone = null, uncertain = false; const uncertainKinds = new Set(), uncertainSignals = new Set();
   const role = name => name === 'com.paperly.study' ? 'main' : appProcess(name) ? 'worker' : 'webview';
   const add = (value, processRole, attribution) => scoped.push({ text: value, role: processRole, attribution });
+  const uncertainCandidate = body => {
+    uncertain = true;
+    uncertainKinds.add(/FATAL EXCEPTION/.test(body) ? 'java' : /JavascriptException|ReactNativeJS|Unhandled JS Exception/.test(body) ? 'javascript' : /Render(?:er)? process/i.test(body) ? 'renderer' : 'native');
+    const signal = body.match(/(?:Fatal signal|signal)\s+(4|5|6|7|11)\b/)?.[1]; if (signal) uncertainSignals.add(Number(signal));
+  };
   for (const line of lines) {
     const prefix = line.match(/^\s*\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+([^:]+):\s?(.*)$/);
     const pid = prefix?.[1], tag = prefix?.[2].trim(), body = prefix?.[3] ?? line;
@@ -85,25 +94,26 @@ function androidScope(text, pids) {
       pending = null;
     } else if (pending && pending.pid === pid) {
       if (pending.role) add(pending.text, pending.role, 'temporal_process');
-      else if (current.has(pid)) uncertain = true;
+      else if (current.has(pid)) uncertainCandidate(pending.text);
       pending = null;
     }
     if (pid && owned.has(pid)) add(tag + ': ' + body, owned.get(pid), 'temporal_process');
-    else if (pid && current.has(pid) && CRASH_PATTERN.test(body)) uncertain = true;
+    else if (pid && current.has(pid) && CRASH_PATTERN.test(body)) uncertainCandidate(body);
   }
   if (pending?.role) add(pending.text, pending.role, 'temporal_process');
-  else if (pending && current.has(pending.pid)) uncertain = true;
-  return { entries: scoped, uncertain };
+  else if (pending && current.has(pending.pid)) uncertainCandidate(pending.text);
+  return { entries: scoped, uncertain, candidateCategory: uncertainKinds.size > 1 ? 'mixed' : [...uncertainKinds][0] ?? 'none', candidateSignal: uncertainSignals.size === 1 ? [...uncertainSignals][0] : 0 };
 }
 
 // New provenance records contain only enums, booleans and bounded numeric metadata.
 export function sanitizeEvidence(row) {
   if (!row || !['driver_evidence', 'driver_milestones', 'driver_telemetry'].includes(row.event)) return null;
   const out = { event: row.event };
-  const enums = { origin: ['trigger', 'collection'], category: ['none', 'java', 'javascript', 'native', 'renderer', 'uncertain', 'process_loss', 'ui', 'timeout', 'driver'], role: ['main', 'worker', 'webview', 'mixed', 'unknown'], attribution: ['explicit', 'uncertain', 'none'], xmlSource: ['fresh', 'cached', 'unavailable'] };
+  const enums = { candidateCategory: ['none', 'java', 'javascript', 'native', 'renderer', 'mixed'], nativeCause: ['none','jni','jni_pending_exception','jni_invalid_reference','jni_thread','art_assertion','oom','other'], origin: ['trigger', 'collection'], category: ['none', 'java', 'javascript', 'native', 'renderer', 'uncertain', 'process_loss', 'ui', 'timeout', 'driver'], role: ['main', 'worker', 'webview', 'mixed', 'unknown'], attribution: ['explicit', 'uncertain', 'none'], xmlSource: ['fresh', 'cached', 'unavailable'] };
   for (const [key, values] of Object.entries(enums)) if (values.includes(row[key])) out[key] = row[key];
   for (const key of ['crash', 'logReadSucceeded', 'cached', 'initialPid', 'root', 'pdfPass', 'list', 'ready', 'progress']) if (typeof row[key] === 'boolean') out[key] = row[key];
   for (const key of ['cycle', 'record']) if (Number.isInteger(row[key]) && row[key] >= 0 && row[key] <= 10000) out[key] = row[key];
+  if ([0, 4, 5, 6, 7, 11].includes(row.candidateSignal)) out.candidateSignal = row.candidateSignal;
   return out;
 }
 
@@ -142,8 +152,10 @@ export function extractCrashDiagnostics(text, { platform, pids = [], force = fal
     if (frame) add({ event: 'crash_java_frame', frameClass: frame[1].slice(0, -1), frameMethod: frame[2], sourceLine: Number(frame[3]) });
     const native = line.match(/#\d+\s+pc\s+([0-9a-fA-F]{1,16})\s+(\S+)/);
     if (native) {
-      const basename = native[2].split('/').pop();
-      add({ event: 'crash_native_frame', nativeLibrary: basename, nativePc: '0x' + native[1].toLowerCase() });
+      const basename = native[2].split('/').pop().split('!').pop();
+      const nativeComponent = /RNCWebView/.test(line)?'webview':/RNCSafeArea/.test(line)?'safe_area':/RNSVG/.test(line)?'svg':/RNSScreen/.test(line)?'screens':/RNGesture/.test(line)?'gesture_handler':/RNCSlider/.test(line)?'slider':undefined;
+      const nativeOperation = /RawPropsParser/.test(line)?'props_parse':/Props::.*Props\(|PropsC[12]E/.test(line)?'props_constructor':/EventEmitter|dispatchEvent/.test(line)?'event_dispatch':/ComponentDescriptor|DescriptorRegistry/.test(line)?'component_registration':/PropNameID|StringPrimitive|createString/.test(line)?'jsi_string':/getProperty|setProperty/.test(line)?'jsi_property':/HermesRuntimeImpl::call|jsi::Function::call/.test(line)?'jsi_call':undefined;
+      add({ event: 'crash_native_frame', nativeLibrary: basename, nativePc: '0x' + native[1].toLowerCase(), nativeComponent, nativeOperation });
     }
     if (platform === 'ios') {
       for (const name of iosEnums) if (/^(?:EXC_|SIG)/.test(name) && new RegExp('\\b' + name + '\\b').test(line)) add({ event: 'crash_ios_exception', iosException: name });
@@ -154,7 +166,7 @@ export function extractCrashDiagnostics(text, { platform, pids = [], force = fal
   const result = { crash, diagnostics: rows };
   if (scope && (crash || scope.uncertain || force)) {
     const roles = new Set(scope.entries.filter(row => CRASH_PATTERN.test(row.text)).map(row => row.role));
-    result.evidence = { category: crash ? /FATAL EXCEPTION/.test(scoped) ? 'java' : /JavascriptException|ReactNativeJS|Unhandled JS Exception/.test(scoped) ? 'javascript' : /Render(?:er)? process/i.test(scoped) ? 'renderer' : 'native' : scope.uncertain ? 'uncertain' : 'none', role: roles.size > 1 ? 'mixed' : [...roles][0] ?? 'unknown', attribution: crash ? 'explicit' : scope.uncertain ? 'uncertain' : 'none', crash };
+    result.evidence = { category: crash ? /FATAL EXCEPTION/.test(scoped) ? 'java' : /JavascriptException|ReactNativeJS|Unhandled JS Exception/.test(scoped) ? 'javascript' : /Render(?:er)? process/i.test(scoped) ? 'renderer' : 'native' : scope.uncertain ? 'uncertain' : 'none', role: roles.size > 1 ? 'mixed' : [...roles][0] ?? 'unknown', attribution: crash ? 'explicit' : scope.uncertain ? 'uncertain' : 'none', crash, candidateCategory: scope.candidateCategory, candidateSignal: scope.candidateSignal, nativeCause: /JNI DETECTED ERROR/.test(scoped) ? /pending exception/i.test(scoped) ? 'jni_pending_exception' : /invalid (?:local|global|jobject|reference)/i.test(scoped) ? 'jni_invalid_reference' : /wrong thread|thread.*JNIEnv/i.test(scoped) ? 'jni_thread' : 'jni' : /Check failed:.*art::|art::.*Check failed:/.test(scoped) ? 'art_assertion' : /OutOfMemory|out of memory|Failed to allocate/i.test(scoped) ? 'oom' : crash ? 'other' : 'none' };
   }
   return result;
 }

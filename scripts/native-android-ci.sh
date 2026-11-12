@@ -31,6 +31,9 @@ if [[ "$DRIVER_STATUS" != 0 && "${GITHUB_ACTIONS:-}" == true && "${NATIVE_SMOKE_
   fi
 fi
 rm -f "$IMAGE.tmp"
+# Native release console markers can survive when accessibility telemetry is
+# truncated/unavailable. Keep raw logcat local; only the sanitizer output uploads.
+timeout 15s adb logcat -d -v threadtime -t 8000 >> qa/build/android.raw 2>/dev/null || true
 node scripts/native-sanitize.mjs qa/build/android.raw qa/output/android.jsonl android
 SANITIZER_STATUS=$?
 # Never turn a failed driver or sanitizer into a pass because diagnostic capture worked.

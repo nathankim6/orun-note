@@ -86,7 +86,11 @@ async function wait(label, seconds = 25, contains = false) {
   const until = Date.now() + seconds * 1000;
   do {
     read();
-    if (nodes.some(n => n['content-desc']?.includes('qa-unavailable-'))) throw fail('network_or_player_unavailable');
+    if (nodes.some(n => n['content-desc']?.includes('qa-unavailable-'))) {
+      const labels=nodes.map(n=>n['content-desc']??'').join(' '), code=labels.match(/(?:^| )qa-errorcode-(2|5|100|101|150|152|153|load|http|process|timeout|network)(?: |$)/)?.[1];
+      if(code)emit('player_unavailable',{cycle:cycleNumber,errorCode:/^\d+$/.test(code)?Number(code):code});
+      throw fail('network_or_player_unavailable');
+    }
     const node = contains ? nodes.find(n => n.text?.includes(label) || n['content-desc']?.includes(label)) : find(label);
     if (node) return node;
     await sleep(300);
@@ -151,10 +155,13 @@ try {
   emit('driver_milestones', { ...milestones, cycle: cycleNumber });
   const evidence = (origin, record, report) => emit('driver_evidence', { origin, record: record?.record ?? 0, logReadSucceeded: record?.logReadSucceeded ?? false, cached: record?.cached ?? false, ...(report?.evidence ?? { crash: false, category: trigger.reason === 'process_crash' ? 'process_loss' : 'driver', role: 'unknown', attribution: 'none' }) });
   evidence('trigger', trigger.record, trigger.report);
-  // Collection cannot replace the exact trigger's snapshot or attach later frames.
-  for (const row of trigger.report?.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify(row));
+  // Separate provenance prevents later frames from becoming the triggering evidence.
+  for (const row of trigger.report?.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify({...row,origin:'trigger',record:trigger.record?.record??0}));
+  collect(); captureSurface();
+  // Keep the trigger immutable; gather supplementary crash dump only after existing UI collection.
   const later = crashLogs(); evidence('collection', logRecord, later);
-  collect(); captureSurface(); const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
+  for (const row of later.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify({...row,origin:'collection',record:logRecord?.record??0}));
+  const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
   emit('suite_result', { platform: 'android', result: 'fail', reason }); process.exitCode = 1;
 }
 

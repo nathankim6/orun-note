@@ -163,6 +163,10 @@ let statuses = [], latest = [];
 const props = { videoId: validId, onStatus: s => statuses.push(s) };
 const handle = { current: null }; const r = runner(stage, props, handle);
 let tree = r.render(); let web = all(tree, n => n.type === 'WebView')[0]; const source = web.props.source, message = web.props.onMessage;
+// Android forwards this value directly into the shared Fabric array spec.
+assert.ok(Array.isArray(web.props.dataDetectorTypes));
+assert.deepEqual(Array.from(web.props.dataDetectorTypes), ['none']);
+assert.match(fs.readFileSync('node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts','utf8'), /dataDetectorTypes\?: WithDefault<\s*ReadonlyArray</);
 assert.equal(source.uri, undefined); assert.equal(typeof source.html, 'string'); assert.equal(source.baseUrl, safety.PLAYER_BASE);
 assert.equal(tree.props.accessibilityElementsHidden, true); assert.equal(tree.props.importantForAccessibility, 'no-hide-descendants');
 assert.equal(web.props.allowsPictureInPictureMediaPlayback, false); assert.equal(web.props.allowsAirPlayForMediaPlayback, false);
