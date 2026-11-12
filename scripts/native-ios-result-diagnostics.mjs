@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { classifyIosTestDiagnostics, sanitizeIosDriverStatus } from './native-ios-test-diagnostics.mjs';
+import { classifyIosTestDiagnostics, isPublicErrorDomain, sanitizeErrorChain, sanitizeIosDriverStatus } from './native-ios-test-diagnostics.mjs';
 const MAX_OBJECTS = 8, MAX_BYTES = 8 * 1024 * 1024, MAX_NODES = 100000, MAX_TEXT = 1024 * 1024;
 const REF_KEYS = new Set(['testsRef', 'summaryRef', 'testSummaryRef']);
 // Legacy XCResult IDs are version~URL-safe-base64 with optional trailing padding.
@@ -11,8 +11,17 @@ const REF_KEYS = new Set(['testsRef', 'summaryRef', 'testSummaryRef']);
 function validReference(id) {
   return typeof id === 'string' && id.length <= 256 && !/\s/.test(id) && /^(?:[A-Za-z0-9][A-Za-z0-9_-]*|[0-9]+~[A-Za-z0-9_-]+={0,2})$/.test(id);
 }
+// Legacy TestAssociatedError keeps domain/code as typed leaves: {domain:{_value:String}, code:{_value:"Int"}}.
+// The numeric code never matches the text keyword filter, so read the pair structurally. Raw domains stay private.
+const MAX_ERRORS = 64;
+function associatedError(value) {
+  if (value?._type?._name !== 'TestAssociatedError') return undefined;
+  const domain = value.domain?._value, rawCode = value.code?._value;
+  const code = typeof rawCode === 'string' && /^-?\d{1,6}$/.test(rawCode) ? Number(rawCode) : (Number.isInteger(rawCode) ? rawCode : undefined);
+  return { domain: typeof domain === 'string' && domain.length <= 128 ? domain : undefined, code };
+}
 export function inspectResultObject(root) {
-  const stack = [root], refs = [], texts = [], refSeen = new Set(); let nodes = 0, size = 0, clipped = false;
+  const stack = [root], refs = [], texts = [], errors = [], refSeen = new Set(); let nodes = 0, size = 0, clipped = false;
   while (stack.length && nodes++ < MAX_NODES) {
     const value = stack.pop();
     if (typeof value === 'string') {
@@ -20,6 +29,8 @@ export function inspectResultObject(root) {
         if (value.length + 1 <= MAX_TEXT - size) { texts.push(value); size += value.length + 1; } else clipped = true;
       }
     } else if (value && typeof value === 'object') {
+      const error = associatedError(value);
+      if (error) { if (errors.length < MAX_ERRORS) errors.push(error); else clipped = true; }
       for (const [key, child] of Object.entries(value)) {
         const id = REF_KEYS.has(key) ? child?.id?._value : undefined;
         if (REF_KEYS.has(key) && !validReference(id)) clipped = true;
@@ -30,10 +41,11 @@ export function inspectResultObject(root) {
       }
     }
   }
-  return { refs, text: texts.join('\n'), clipped: clipped || stack.length > 0 };
+  return { refs, text: texts.join('\n'), errors, clipped: clipped || stack.length > 0 };
 }
 export function collectResultDiagnostics({ bundle, exitCode, readObject } = {}) {
   let objectsRead = 0, clipped = false, failed = false, invalid = false, text = '';
+  const errors = [];
   const queue = [undefined], seen = new Set();
   while (queue.length && objectsRead < MAX_OBJECTS) {
     const id = queue.shift(), key = id ?? '<root>'; if (seen.has(key)) continue; seen.add(key);
@@ -43,12 +55,17 @@ export function collectResultDiagnostics({ bundle, exitCode, readObject } = {}) 
     objectsRead++;
     const found = inspectResultObject(object); clipped ||= found.clipped;
     if (found.text.length + 1 <= MAX_TEXT - text.length) text += '\n' + found.text; else clipped = true;
+    for (const error of found.errors) { if (errors.length < MAX_ERRORS) errors.push(error); else clipped = true; }
     for (const ref of found.refs) if (!seen.has(ref) && !queue.includes(ref)) {
       if (queue.length < 32) queue.push(ref); else clipped = true;
     }
   }
   const collection = objectsRead ? ((failed || invalid || queue.length || clipped) ? 'partial' : 'observed') : (invalid ? 'invalid' : 'unavailable');
-  return sanitizeIosDriverStatus({ ...classifyIosTestDiagnostics({ text, stage: 'xctest', exitCode }), source: 'xcresult', collection, objectsRead, textClipped: clipped });
+  const classified = classifyIosTestDiagnostics({ text, stage: 'xctest', exitCode });
+  const structured = errors.filter((e) => isPublicErrorDomain(e.domain) && Number.isInteger(e.code));
+  const errorChain = sanitizeErrorChain([...structured, ...(classified.errorChain || [])]);
+  const unlistedErrorDomains = errors.filter((e) => !isPublicErrorDomain(e.domain)).length;
+  return sanitizeIosDriverStatus({ ...classified, errorChain, source: 'xcresult', collection, objectsRead, textClipped: clipped, associatedErrors: errors.length, unlistedErrorDomains });
 }
 function cli() {
   const [bundle, rawExitCode] = process.argv.slice(2);

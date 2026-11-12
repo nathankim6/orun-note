@@ -20,7 +20,8 @@ function safeExitCode(value) { return Number.isInteger(value) && value >= 0 && v
 function allowedNSError(domain, code) { return typeof domain === 'string' && Number.isInteger(code) && ERROR_CODES[domain]?.has(code); }
 // Only fixed Apple domains plus bounded numeric codes. No NSError descriptions, paths or URLs.
 const CHAIN_DOMAINS = new Set(['NSPOSIXErrorDomain', 'CoreSimulatorErrorDomain', 'DTXMessageErrorDomain', 'IDETestOperationsObserverErrorDomain', 'XCTestErrorDomain', 'FBSOpenApplicationServiceErrorDomain', 'FBSOpenApplicationErrorDomain', 'FBProcessExit', 'RBSRequestErrorDomain', 'RBSServiceErrorDomain', 'NSOSStatusErrorDomain', 'NSCocoaErrorDomain', 'NSMachErrorDomain', 'NSLaunchdErrorDomain']);
-function sanitizeErrorChain(input) {
+export function isPublicErrorDomain(domain) { return CHAIN_DOMAINS.has(domain); }
+export function sanitizeErrorChain(input) {
   if (!Array.isArray(input)) return [];
   const output = [], seen = new Set();
   for (const row of input.slice(0, 64)) {
@@ -79,6 +80,8 @@ export function sanitizeIosDriverStatus(row) {
     if (['observed', 'partial', 'unavailable', 'invalid', 'not_ci'].includes(input.collection)) output.collection = input.collection;
     if (Number.isInteger(input.objectsRead) && input.objectsRead >= 0 && input.objectsRead <= 8) output.objectsRead = input.objectsRead;
     if (typeof input.textClipped === 'boolean') output.textClipped = input.textClipped;
+    // Counts only: structured TestAssociatedError objects seen, and those whose domain is not public-allowlisted.
+    for (const key of ['associatedErrors', 'unlistedErrorDomains']) if (Number.isInteger(input[key]) && input[key] >= 0 && input[key] <= 64) output[key] = input[key];
   }
   const errorChain = sanitizeErrorChain(input.errorChain);
   if (errorChain.length) output.errorChain = errorChain;

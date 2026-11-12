@@ -80,3 +80,25 @@ test('malformed legacy references remain private and mark incomplete collection'
     assert.equal(row.appValidated, false); assert(!JSON.stringify(row).includes(id));
   }
 });
+
+// Legacy schema (xcresulttool formatDescription --legacy): ActionTestFailureSummary.associatedError is
+// TestAssociatedError{domain:String?, code:Int?, userInfo}; typed leaves carry string _value, so Int code is "1".
+test('extracts structured TestAssociatedError domain/code pairs, counts unlisted domains without exporting them', () => {
+  const typed = (name, v) => ({ _type: { _name: name }, _value: v });
+  const assoc = (domain, code) => ({ _type: { _name: 'TestAssociatedError' }, domain: typed('String', domain), code: typed('Int', code) });
+  const summary = { _type: { _name: 'ActionTestSummary' }, failureSummaries: { _type: { _name: 'Array' }, _values: [{
+    _type: { _name: 'ActionTestFailureSummary' }, message: typed('String', 'Failed to launch com.paperly.study ' + secret),
+    associatedError: { ...assoc('FBSOpenApplicationServiceErrorDomain', '1'), userInfo: { _type: { _name: 'SortedKeyValueArray' }, storage: { _values: [
+      { _type: { _name: 'SortedKeyValueArrayPair' }, key: typed('String', 'NSUnderlyingError'), value: assoc('FBSOpenApplicationErrorDomain', '3') },
+      { _type: { _name: 'SortedKeyValueArrayPair' }, key: typed('String', 'x'), value: assoc('com.private.' + secret, '9') },
+      { _type: { _name: 'SortedKeyValueArrayPair' }, key: typed('String', 'y'), value: assoc('NSPOSIXErrorDomain', secret) },
+    ] } } } }] } };
+  const row = collectResultDiagnostics({ exitCode: 65, readObject: (_b, id) => JSON.stringify(id ? {} : summary) });
+  assert.equal(row.reason, 'target_launch_failure'); assert.equal(row.appValidated, false);
+  assert.deepEqual(row.errorChain, [{ domain: 'FBSOpenApplicationServiceErrorDomain', code: 1 }, { domain: 'FBSOpenApplicationErrorDomain', code: 3 }]);
+  assert.equal(row.associatedErrors, 4); assert.equal(row.unlistedErrorDomains, 1);
+  assert(!JSON.stringify(row).includes(secret)); assert(!JSON.stringify(row).includes('com.private'));
+  const none = collectResultDiagnostics({ exitCode: 65, readObject: () => JSON.stringify({ message: typed('String', 'Failed to launch app') }) });
+  assert.equal(none.associatedErrors, 0); assert.equal(none.unlistedErrorDomains, 0); assert.equal(none.errorChain, undefined);
+  assert.deepEqual(sanitizeIosDriverStatus({ source: 'xcresult', associatedErrors: 65, unlistedErrorDomains: -1 }).associatedErrors, undefined);
+});
