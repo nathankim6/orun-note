@@ -29,7 +29,7 @@ function freshXML() {
 function parseXML(xml) {
   const parsed = [...xml.matchAll(/<node\b[^>]*>/g)].map(([node]) => Object.fromEntries([...node.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, decode(v)])));
   const node = parsed.find(n => n['resource-id'] === 'qa-telemetry' || n['resource-id']?.endsWith(':id/qa-telemetry'));
-  try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 180) { lastTelemetry = data; telemetrySource = 'fresh'; } } catch { /* Keep last valid telemetry. */ }
+  try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 900) { lastTelemetry = data; telemetrySource = 'fresh'; } } catch { /* Keep last valid telemetry. */ }
   lastUINodes = parsed; lastXMLState = 'fresh';
   return parsed;
 }
