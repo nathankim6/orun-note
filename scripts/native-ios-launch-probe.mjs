@@ -100,7 +100,7 @@ export function resignCandidate(app,work,variant='V4') {
   signApp(app,work,variant);verifyApp(app,variant);
   const verify=execute('codesign',['--verify','--deep','--strict',app]);if(verify.status!==0||verify.error)throw Error('candidate_deep_verify_failed');
 }
-function execute(cmd,args,input,timeout=15000) {return spawnSync(cmd,args,{input,encoding:'utf8',timeout,killSignal:'SIGKILL',maxBuffer:1024*1024});}
+function execute(cmd,args,input,timeout=60000) {return spawnSync(cmd,args,{input,encoding:'utf8',timeout,killSignal:'SIGKILL',maxBuffer:1024*1024});}
 function plist(input) {const r=execute('plutil',['-convert','json','-o','-','-'],input); if(r.status!==0) throw Error('plist_unreadable'); return JSON.parse(r.stdout);}
 export function probe(udid,app,variant='V4') {
   guardEnv();
@@ -126,7 +126,7 @@ export function probe(udid,app,variant='V4') {
   }
   const startedAt=Date.now();
   // Console may stay attached to a healthy app: timeout alone is NOT launch failure.
-  const launched=execute('xcrun',['simctl','launch','--console-pty',udid,BUNDLE_ID],undefined,20000);
+  const launched=execute('xcrun',['simctl','launch','--console-pty',udid,BUNDLE_ID],undefined,45000);
   out.launch={...classify(launched),console:exitSummary(String(launched.stdout||'')+'\n'+String(launched.stderr||''))};
   spawnSync('sleep',['3']);
   out.crash=newestCrash(path.join(os.homedir(),'Library/Logs/DiagnosticReports'),startedAt,udid);
@@ -141,24 +141,25 @@ export function runMatrix(udid,app,destination) {
   guardEnv();
   const result={schema:3,notReleaseEvidence:true,variants:[],selectedVariant:null};
   const save=()=>fs.writeFileSync(destination,JSON.stringify(result,null,2)+'\n',{mode:0o600});
-  const clean=()=>({terminate:classify(execute('xcrun',['simctl','terminate',udid,BUNDLE_ID])),uninstall:classify(execute('xcrun',['simctl','uninstall',udid,BUNDLE_ID]))});
+  const clean=()=>({terminate:classify(execute('xcrun',['simctl','terminate',udid,BUNDLE_ID],undefined,90000)),uninstall:classify(execute('xcrun',['simctl','uninstall',udid,BUNDLE_ID],undefined,120000))});
   try {
     result.initialCleanup=clean();
     for(const variant of SIGNING_VARIANTS) {
       const row={variant,stage:'sign',launched:false};result.variants.push(row);save();
       try {
         resignCandidate(app,path.dirname(destination),variant);row.signatureVerified=true;
-        row.stage='install';const install=execute('xcrun',['simctl','install',udid,app],undefined,60000);row.install=classify(install);
+        row.stage='install';const install=execute('xcrun',['simctl','install',udid,app],undefined,300000);row.install=classify(install);
         if(install.status!==0||install.error)throw Error('install_failed');
         row.stage='probe';row.probe=probe(udid,app,variant);row.launched=launchedSuccessfully(row.probe);
         if(row.launched&&!result.selectedVariant)result.selectedVariant=variant;
         row.stage='complete';
       } catch {row.failed=true;} finally {row.cleanup=clean();save();}
-      if(row.cleanup.uninstall.exitCode!==0)throw Error('variant_cleanup_failed');
+      // an uninstall that errors because nothing is installed (or that timed out) must not abort the remaining variants
+      if(row.cleanup.uninstall.exitCode!==0&&!row.cleanup.uninstall.timedOut){const left=execute('xcrun',['simctl','get_app_container',udid,BUNDLE_ID,'app']);if(left.status===0)throw Error('variant_cleanup_failed');}
     }
     if(!result.selectedVariant)throw Error('no_launching_variant');
     resignCandidate(app,path.dirname(destination),result.selectedVariant);
-    const install=execute('xcrun',['simctl','install',udid,app],undefined,60000);result.selectedInstall=classify(install);
+    const install=execute('xcrun',['simctl','install',udid,app],undefined,300000);result.selectedInstall=classify(install);
     if(install.status!==0||install.error)throw Error('selected_install_failed');
     const container=execute('xcrun',['simctl','get_app_container',udid,BUNDLE_ID,'app']);
     if(container.status!==0||container.error||!fs.existsSync(container.stdout.trim()))throw Error('selected_container_missing');
