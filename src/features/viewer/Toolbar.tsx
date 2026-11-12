@@ -7,7 +7,9 @@ import { Tool, ShapeKind } from '@/data/types';
 import { ToolConfig } from './ink';
 import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
-import { hsvToHex, hexToHsv } from '@/components/ColorPicker';
+import Svg, { Path } from 'react-native-svg';
+import { GradientPalette } from './GradientPalette';
+import { penOutline } from './ink';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
 import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
@@ -44,16 +46,6 @@ export function DragSlider({ value, min, max, step = 0, onChange, height = 32, w
     </GestureDetector>
   );
 }
-/** Rainbow hue strip + brightness strip for fine tuning the current color (no numbers). */
-function HueRow({ color, onChange }: { color: string; onChange: (hex: string) => void }) {
-  const hsv = hexToHsv(color); const hueHex = hsvToHex(hsv.h, 1, 1);
-  return (
-    <View style={{ width: 170, gap: 2 }}>
-      <DragSlider height={22} min={0} max={359} step={1} value={hsv.h} onChange={(h) => onChange(hsvToHex(h, Math.max(hsv.s, 0.6), Math.max(hsv.v, 0.75)))} fill={null} thumb={hueHex} track={<View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{['#FF0000', '#FF8000', '#FFFF00', '#00FF00', '#00FFFF', '#0000FF', '#8000FF', '#FF00FF', '#FF0000'].map((c, i) => <View key={i} style={{ flex: 1, backgroundColor: c }} />)}</View>} />
-      <DragSlider height={22} min={0.12} max={1} step={0.01} value={hsv.v} onChange={(v) => onChange(hsvToHex(hsv.h, hsv.s, v))} fill={null} thumb={color} track={<View style={{ position: 'absolute', left: 10, right: 10, height: 10, borderRadius: 5, overflow: 'hidden', flexDirection: 'row' }}>{[0.15, 0.35, 0.55, 0.75, 0.95].map((v, i) => <View key={i} style={{ flex: 1, backgroundColor: hsvToHex(hsv.h, Math.max(hsv.s, 0.5), v) }} />)}</View>} />
-    </View>
-  );
-}
 const SHAPES: { k: ShapeKind; icon: any; label: string }[] = [{ k: 'line', icon: 'minus', label: '직선' }, { k: 'arrow', icon: 'arrow-top-right', label: '화살표' }, { k: 'rectangle', icon: 'rectangle-outline', label: '사각형' }, { k: 'ellipse', icon: 'ellipse-outline', label: '원' }, { k: 'triangle', icon: 'triangle-outline', label: '삼각형' }, { k: 'diamond', icon: 'rhombus-outline', label: '마름모' }];
 const RANGE: Record<string, { min: number; max: number }> = { pen: { min: 0.5, max: 12 }, pencil: { min: 0.5, max: 12 }, highlighter: { min: 6, max: 40 }, eraser: { min: 2, max: 40 }, vectorEraser: { min: 2, max: 40 }, shape: { min: 0.5, max: 12 }, text: { min: 8, max: 48 } };
 
@@ -69,8 +61,8 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
   // pen / highlighter card: favorites edit mode (tap a pen to delete it) and the fine color tuner
-  const [favEdit, setFavEdit] = useState(false); const [fineColor, setFineColor] = useState(false);
-  useEffect(() => { if (!panel) { setFavEdit(false); setFineColor(false); } }, [panel]);
+  const [favEdit, setFavEdit] = useState(false);
+  useEffect(() => { if (!panel) setFavEdit(false); }, [panel]);
   useEffect(() => { if (dismissKey) setPanel(null); }, [dismissKey]);
   useEffect(() => { onPanelChange?.(!!panel); }, [panel]);
   const snap = React.useRef<{ cfg: ToolConfig; viewer: typeof viewer } | null>(null);
@@ -120,18 +112,33 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
     </View>
   );
   // color choice inside the pen / highlighter card (same live preview as the toolbar palette; 취소 restores it)
-  const colorRow = (list: string[]) => (
-    <View style={[styles.cardRow, { alignItems: 'flex-start' }]}>
-      <Text style={[styles.rowLbl, { lineHeight: 26 }]}>색상</Text>
-      <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
-        {list.map((c) => { const sel = c.toUpperCase() === cfg.color.toUpperCase(); return <Pressable key={c} accessibilityLabel={`색상 ${c}`} accessibilityState={{ selected: sel }} hitSlop={2} onPress={() => onCfg({ color: c })} style={({ pressed }) => [styles.cSw, { backgroundColor: c, borderWidth: sel ? 3 : 1, borderColor: sel ? '#007AFF' : 'rgba(0,0,0,0.14)' }, pressed && { transform: [{ scale: 0.88 }] }]} />; })}
-        <Pressable accessibilityLabel="색상 직접 고르기" accessibilityState={{ expanded: fineColor }} hitSlop={2} onPress={() => setFineColor((v) => !v)} style={({ pressed }) => [styles.cSw, { alignItems: 'center', justifyContent: 'center', borderWidth: fineColor ? 3 : 0, borderColor: '#007AFF' }, pressed && { transform: [{ scale: 0.88 }] }]}><ColorWheel size={22} /></Pressable>
+  // colour: a row of ready-made swatches (favourites first) and a gradient sheet to pick any colour by tap or drag
+  const colorRow = (list: string[]) => {
+    const swatches = Array.from(new Set([...(viewer.favoriteColors ?? []), ...list].map((c) => c.toUpperCase()))).slice(0, 14);
+    return (
+      <View style={[styles.cardRow, { alignItems: 'flex-start' }]}>
+        <Text style={[styles.rowLbl, { lineHeight: 26 }]}>색상</Text>
+        <View style={{ flex: 1, gap: 8 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
+            {swatches.map((c) => { const sel = c === cfg.color.toUpperCase(); return <Pressable key={c} accessibilityLabel={`색상 ${c}`} accessibilityState={{ selected: sel }} hitSlop={2} onPress={() => onCfg({ color: c })} style={({ pressed }) => [styles.cSw, { backgroundColor: c, borderWidth: sel ? 3 : 1, borderColor: sel ? '#007AFF' : 'rgba(0,0,0,0.14)' }, pressed && { transform: [{ scale: 0.88 }] }]} />; })}
+          </View>
+          <GradientPalette color={cfg.color} onChange={(c) => onCfg({ color: c })} width={Math.min(cardW - 32 - 62, 440)} height={cfg.tool === 'highlighter' ? 64 : 104} pastelOnly={cfg.tool === 'highlighter'} />
+        </View>
       </View>
-    </View>
-  );
-  const fineRow = fineColor ? <View style={styles.cardRow}><View style={{ width: 52 }} /><View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 }} /><HueRow color={cfg.color} onChange={(c) => onCfg({ color: c })} /></View> : null;
+    );
+  };
   const toggleRow = (label: string, value: boolean, onChange: (v: boolean) => void) => <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined, flex: 1 }]}>{label}</Text><Toggle value={value} onChange={onChange} /></View>;
   const sizeRow = (label: string) => <View style={styles.cardRow}><Text style={styles.rowLbl}>{label}</Text>{widthSlider}</View>;
+  // live sample of the current tool (a short wave drawn exactly like the page stroke: outline for pens, band for highlighter)
+  const strokePreview = () => {
+    const W_ = Math.min(cardW - 32, 420), H_ = 46; const pts = Array.from({ length: 24 }, (_, i) => ({ x: 10 + (i / 23) * (W_ - 20), y: H_ / 2 + Math.sin(i / 23 * Math.PI * 2) * 11, p: 0.35 + 0.65 * Math.sin((i / 23) * Math.PI) }));
+    const k = 2.2; // screen px per page unit in the sample (matches a typical zoom)
+    const ink = cfg.tool === 'highlighter'
+      ? <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke={cfg.color} strokeOpacity={cfg.opacity} strokeWidth={cfg.width * k} strokeLinecap="butt" strokeLinejoin="round" fill="none" />
+      : isEraser ? <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="rgba(0,0,0,0.18)" strokeWidth={cfg.width * k} strokeLinecap="round" strokeLinejoin="round" fill="none" strokeDasharray="1 0" />
+      : <Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity} />;
+    return <View style={styles.previewBox}><Svg width={W_} height={H_}>{isEraser && <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y + 8}`).join(' ')} stroke="#C7C7CC" strokeWidth={1.6} fill="none" strokeLinecap="round" />}{ink}</Svg></View>;
+  };
   const cardW = Math.min(560, winW - 24);
 
   return (
@@ -177,15 +184,16 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
         <View pointerEvents="box-none" style={{ paddingHorizontal: 12, paddingTop: 8, alignItems: 'flex-start' }}>
           <View style={[styles.card, { width: cardW }]}>
             {(panel === 'pen' || panel === 'highlighter') && <>
+              {strokePreview()}
               <View style={styles.cardRow}><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'pencil', label: '연필', icon: 'pencil' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k === 'highlighter' ? 'highlighter' : 'pen'); }} /><View style={{ flex: 1 }} />
                 {cfg.tool === 'highlighter' && <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}</View>
               {colorRow(cfg.tool === 'highlighter' ? HL_PALETTE : PALETTE)}
-              {fineRow}
               {sizeRow('굵기')}
               {cfg.tool !== 'highlighter' && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
               {favRow}
             </>}
             {panel === 'eraser' && <>
+              {strokePreview()}
               <View style={styles.cardRow}><Seg items={[{ k: 'eraser', label: '획 지우개', icon: 'eraser' }, { k: 'vectorEraser', label: '영역 지우개', icon: 'eraser-variant' }]} value={cfg.tool} onChange={(k) => onCfg({ tool: k as Tool })} /></View>
               {sizeRow('크기')}
               {toggleRow('형광펜만 지우기', !!viewer.eraseHighlighterOnly, (v) => settings.setViewer({ eraseHighlighterOnly: v }))}
@@ -202,7 +210,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
             </>}
             {panel === 'color' && <>
               <View style={[styles.cardRow, { flexWrap: 'wrap', gap: 7 }]}>{PALETTE.map((c) => <Pressable key={c} accessibilityLabel={`색상 ${c}`} onPress={() => onCfg({ color: c })} style={({ pressed }) => ({ width: 28, height: 28, borderRadius: 14, backgroundColor: c, borderWidth: c.toUpperCase() === cfg.color.toUpperCase() ? 3 : 1, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? '#007AFF' : 'rgba(0,0,0,0.12)', transform: [{ scale: pressed ? 0.88 : 1 }] })} />)}</View>
-              <View style={styles.cardRow}><View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } }} /><HueRow color={cfg.color} onChange={(c) => onCfg({ color: c })} /></View>
+              <View style={[styles.cardRow, { alignItems: 'flex-start' }]}><View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: cfg.color, borderWidth: 3, borderColor: '#fff', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 }} /><GradientPalette color={cfg.color} onChange={(c) => onCfg({ color: c })} width={Math.min(cardW - 32 - 44, 460)} height={104} /></View>
               <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined }]}>대표색에 저장</Text><Row gap={6}>{quick.map((c, i) => <Pressable key={i} accessibilityLabel={`대표색 ${i + 1}에 저장`} onPress={() => setFav(i, cfg.color)} style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: c, borderWidth: 2, borderColor: c.toUpperCase() === cfg.color.toUpperCase() ? '#007AFF' : '#fff', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } }} />)}</Row></View>
               {!isEraser && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>}
             </>}
@@ -244,9 +252,10 @@ const styles = StyleSheet.create({
   chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 30, borderRadius: 15, backgroundColor: '#EFEFF4', marginBottom: 17 },
   chipActive: { backgroundColor: 'rgba(0,122,255,0.14)' },
   chipText: { fontSize: 12, fontWeight: '600', color: '#3A3A3C' },
-  card: { backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10, gap: 8, shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.15)' },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 20, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, gap: 10, shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.15)' },
   cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 34 },
   rowLbl: { width: 52, fontSize: 13, fontWeight: '600', color: '#3C3C43' },
+  previewBox: { alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#F6F7FB', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.12)', paddingVertical: 2 },
   cardFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(60,60,67,0.18)', paddingTop: 10, marginTop: 2 },
   cancelBtn: { paddingHorizontal: 16, height: 34, borderRadius: 10, backgroundColor: '#EFEFF4', alignItems: 'center', justifyContent: 'center' },
   cancelText: { fontSize: 14, fontWeight: '600', color: '#1C1C1E' },

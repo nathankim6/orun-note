@@ -24,10 +24,11 @@ export type DocMode = 'vertical' | 'horizontal' | 'twoPage';
 import type { PageTile } from './pdfTileGeometry';
 export type { PageTile } from './pdfTileGeometry';
 export type PageBox = { x: number; y: number; w: number; h: number; s: number }; // content coords at zoom 1; s = PDF pt → px at zoom 1
-export type DocHandle = { goto: (i: number, animated?: boolean) => void; zoomTo: (z: number, fx?: number, fy?: number) => void; zoomBy: (f: number) => void; fit: () => void; fitPage: () => void; getZoom: () => number };
+export type DocView = { page: number; frac: number; zoom: number };
+export type DocHandle = { getView: () => DocView; goto: (i: number, animated?: boolean) => void; zoomTo: (z: number, fx?: number, fy?: number) => void; zoomBy: (f: number) => void; fit: () => void; fitPage: () => void; getZoom: () => number };
 type Props = {
   /** Stop background preparation/refinement when a different app screen covers this document. */ active?: boolean;
-  width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number;
+  width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number; /** exact spot (page + fraction + zoom) to restore on first layout; must match initialPage */ initialView?: DocView | null;
   renderPage: (i: number, box: PageBox, rs: number, tile?: PageTile) => React.ReactNode;
   /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox, rank?: number) => void;
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
@@ -63,7 +64,7 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, initialView, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
@@ -173,10 +174,18 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   useEffect(() => {
     const key = `${W}x${H}:${mode}`; if (!L.boxes.length) return;
     if (placedFor.current === key) { if (pages.length > placedLen.current && placedLen.current > 0) { const last = pages.length - 1; placedLen.current = pages.length; place(last, mode === 'vertical' ? z.value : 1, true); } placedLen.current = pages.length; return; }
-    const first = !placedFor.current; placedFor.current = key; placedLen.current = pages.length; place(first ? initialPage : curRef.current, 1, false); setRs(1); onZoomSettled?.(1);
+    const first = !placedFor.current; placedFor.current = key; placedLen.current = pages.length;
+    const v = first && initialView && initialView.page === initialPage && mode === 'vertical' ? initialView : null;
+    if (v) {
+      // resume exactly where the user stopped: same zoom, same spot inside the page
+      const bx = L.boxes[Math.max(0, Math.min(L.boxes.length - 1, v.page))]; const zz = clamp(Number.isFinite(v.zoom) ? v.zoom : 1, minZ, MAX_Z); const b = bounds(zz);
+      z.value = zz; tx.value = zz === 1 ? (b.minX + b.maxX) / 2 : clamp(tx.value, b.minX, b.maxX); ty.value = clamp(M - (bx.y + clamp(v.frac, 0, 1) * bx.h) * zz, b.minY, b.maxY);
+      setRs(1); onZoomSettled?.(zz);
+    } else { place(first ? initialPage : curRef.current, 1, false); setRs(1); onZoomSettled?.(1); }
   }, [L, W, H, mode, pages.length]);
 
   useImperativeHandle(ref, () => ({
+    getView: () => { const i = curRef.current; const bx = L.boxes[i]; const zz = z.value; if (!bx || mode !== 'vertical' || !bx.h) return { page: i, frac: 0, zoom: 1 }; return { page: i, frac: clamp((M - bx.y * zz - ty.value) / (bx.h * zz), 0, 1), zoom: zz }; },
     goto: (i, animated = true) => { detailActivityRef.current(); const zz = mode === 'vertical' ? z.value : 1; place(i, zz, animated); if (mode !== 'vertical' && z.value !== 1) { setRs(1); onZoomSettled?.(1); } },
     zoomTo: (zz, fx = W / 2, fy = H / 2) => zoomJS(zz, fx, fy),
     zoomBy: (f) => zoomJS(z.value * f, W / 2, H / 2),

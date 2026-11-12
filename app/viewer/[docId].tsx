@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
+import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
 import { useLocalSearchParams, usePathname, useRouter, router as rootRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -77,6 +77,12 @@ export default function Viewer() {
     return next; }), []);
 
   useEffect(() => { if (doc) store.touch(doc.id, pageIndex); }, [pageIndex, doc?.id]);
+  // remember the exact reading spot (page + position inside it + zoom): on page change, when the app goes to the
+  // background and when the viewer closes, so the next open resumes right there
+  const saveView = useCallback(() => { const v = docRef.current?.getView(); if (!doc || !v) return; const d = useDocsStore.getState().docs[doc.id]; if (!d) return; if (d.lastView && d.lastView.page === v.page && Math.abs(d.lastView.frac - v.frac) < 0.002 && Math.abs(d.lastView.zoom - v.zoom) < 0.01) return; store.update(doc.id, { lastView: v }); }, [doc?.id]);
+  useEffect(() => { saveView(); }, [pageIndex, saveView]);
+  useEffect(() => { const sub = AppState.addEventListener('change', (st) => { if (st !== 'active') saveView(); }); const t = setInterval(saveView, 15000); return () => { sub.remove(); clearInterval(t); saveView(); }; }, [saveView]);
+  const initialView = useMemo(() => (doc?.lastView && doc.lastView.page === (doc.lastPage ?? 0) ? doc.lastView : null), [doc?.id]);
   const prevPage = useRef(pageIndex);
   useEffect(() => { if (doc && prevPage.current !== pageIndex) { ink.snapshot(inkKey(doc.id, cycle, String(prevPage.current))); prevPage.current = pageIndex; } }, [pageIndex]);
 
@@ -160,7 +166,7 @@ export default function Viewer() {
         <View style={{ flex: 1, flexDirection: splitOn && splitHoriz ? 'row' : 'column' }} collapsable={false}>
           <View style={{ width: mainW, height: mainH }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
-            : <DocumentView active={viewerActive} ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} renderPage={renderPage} dark={dark}
+            : <DocumentView active={viewerActive} ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} initialView={initialView} renderPage={renderPage} dark={dark}
                 mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled} onPrefetch={(i, box, rank) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w, rank); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct}
                 onPullAddPage={doc.kind === 'blank' ? () => { addBlankPages(doc, 1); toast('새 페이지를 추가했어요'); } : undefined} />}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}

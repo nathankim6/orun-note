@@ -8,8 +8,8 @@ export type ToolConfig = { tool: Tool; color: string; width: number; shape: Shap
 export const toolDefaults = (tool: Tool, base: ToolConfig): Partial<ToolConfig> => {
   switch (tool) {
     case 'pen': return { width: 1, opacity: 1 };
-    case 'eraser': return { width: 6, opacity: 1 };
-    case 'vectorEraser': return { width: 5, opacity: 1 };
+    case 'eraser': return { width: 3, opacity: 1 };
+    case 'vectorEraser': return { width: 3, opacity: 1 };
     case 'highlighter': return { width: 6, opacity: 0.35, color: HIGHLIGHTER_COLORS.includes(base.color) ? base.color : HIGHLIGHTER_COLORS[0] };
     case 'pencil': return { width: 1.2, opacity: 0.8, color: '#3A3A3C' };
     case 'brush': return { opacity: 0.9 };

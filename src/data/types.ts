@@ -11,7 +11,9 @@ export type InkVersion = { id: string; createdAt: string; strokes: Stroke[]; tex
 export type PdfPage = { index: number; width: number; height: number }; // PDF points
 export type Doc = {
   id: string; title: string; fileName: string; uri: string; size: number; pageCount: number; pages: PdfPage[];
-  createdAt: string; updatedAt: string; lastOpenedAt?: string; lastPage: number; bookmarks: number[]; folderId?: string; coverColor: string;
+  createdAt: string; updatedAt: string; lastOpenedAt?: string; lastPage: number;
+  /** where reading/writing stopped: page, scroll fraction inside that page (0..1) and zoom; restored on the next open */
+  lastView?: { page: number; frac: number; zoom: number }; bookmarks: number[]; folderId?: string; coverColor: string;
   cycle: number; maxCycle: number; subject?: string; tags: string[]; favorite?: boolean; materialId?: string;
   // 'pdf' (default) renders pages from the file; 'blank' is a free-drawing notebook (no file) with a paper template per page.
   kind?: 'pdf' | 'blank'; template?: PaperTemplate;

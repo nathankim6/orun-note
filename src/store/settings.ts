@@ -19,7 +19,7 @@ export type ViewerPrefs = {
   subDocSplitRatio?: number;      // 2분할에서 서브교재가 차지하는 비율 (0.25–0.75)
   pagesPanelOpen?: boolean;       // 태블릿: 좌측 "페이지" 패널을 열어 둔 채로 시작 (기본 열림)
 };
-export const defaultViewerPrefs: ViewerPrefs = { defaultLayoutMode: 'vertical', doubleTapZoomEnabled: true, keepAnswersOnReset: true, preserveInkOnRegionTap: true, showChoiceRegions: true, showCorrectAnswer: false, showIncorrectMark: true, showQuizRegions: true, showSolutionBlur: true, twoPageStartOdd: true, fingerDraw: false, eraserReturnToPen: false, penAutoReturn: false, strokeSmoothing: true, lineSnap: true, shapeSnap: false, paletteDock: 'top', favoriteColors: ['#172033', '#DC2626', '#2F6FED', '#22C55E', '#F59E0B'], favoritePens: [{ tool: 'pen', color: '#172033', width: 2, opacity: 1 }, { tool: 'pen', color: '#DC2626', width: 2, opacity: 1 }, { tool: 'pen', color: '#2F6FED', width: 3, opacity: 1 }, { tool: 'highlighter', color: '#FDE68A', width: 14, opacity: 0.35 }], fixedWidth: true, straightHighlighter: true, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, toolPresets: { pen: { color: '#172033', width: 1, opacity: 1 }, pencil: { color: '#3A3A3C', width: 1.2, opacity: 0.8 }, highlighter: { color: '#FDE68A', width: 6, opacity: 0.35 }, eraser: { color: '#000000', width: 6, opacity: 1 }, vectorEraser: { color: '#000000', width: 5, opacity: 1 }, shape: { color: '#172033', width: 2, opacity: 1 }, text: { color: '#172033', width: 16, opacity: 1 } }, lastTool: 'pen', pagesPanelOpen: true };
+export const defaultViewerPrefs: ViewerPrefs = { defaultLayoutMode: 'vertical', doubleTapZoomEnabled: true, keepAnswersOnReset: true, preserveInkOnRegionTap: true, showChoiceRegions: true, showCorrectAnswer: false, showIncorrectMark: true, showQuizRegions: true, showSolutionBlur: true, twoPageStartOdd: true, fingerDraw: false, eraserReturnToPen: false, penAutoReturn: false, strokeSmoothing: true, lineSnap: true, shapeSnap: false, paletteDock: 'top', favoriteColors: ['#172033', '#DC2626', '#2F6FED', '#22C55E', '#F59E0B'], favoritePens: [{ tool: 'pen', color: '#172033', width: 2, opacity: 1 }, { tool: 'pen', color: '#DC2626', width: 2, opacity: 1 }, { tool: 'pen', color: '#2F6FED', width: 3, opacity: 1 }, { tool: 'highlighter', color: '#FDE68A', width: 14, opacity: 0.35 }], fixedWidth: true, straightHighlighter: true, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, toolPresets: { pen: { color: '#172033', width: 1, opacity: 1 }, pencil: { color: '#3A3A3C', width: 1.2, opacity: 0.8 }, highlighter: { color: '#FDE68A', width: 6, opacity: 0.35 }, eraser: { color: '#000000', width: 3, opacity: 1 }, vectorEraser: { color: '#000000', width: 3, opacity: 1 }, shape: { color: '#172033', width: 2, opacity: 1 }, text: { color: '#172033', width: 16, opacity: 1 } }, lastTool: 'pen', pagesPanelOpen: true };
 
 type SettingsState = {
   theme: 'system' | 'light' | 'dark'; language: 'system' | 'ko' | 'en' | 'zh-TW'; country: 'KR' | 'TW';
@@ -55,11 +55,11 @@ if (version < 11 && state?.viewer) {
   }
   state.viewer.toolPresets = tp;
 }
-/* v12: slightly thicker pen, smaller erasers, pencil preset, pages panel open by default. Applied once; a width the
+/* v12: slightly thicker pen, small (3) erasers, pencil preset, pages panel open by default. Applied once; a width the
  * user changed away from the previous default is kept. */
 if (version < 12 && state?.viewer) {
   const tp = { ...defaultViewerPrefs.toolPresets, ...state.viewer.toolPresets };
-  for (const [tool, oldWidth, newWidth] of [['pen', 0.7, 1], ['eraser', 10, 6], ['vectorEraser', 8, 5]] as const) {
+  for (const [tool, oldWidth, newWidth] of [['pen', 0.7, 1], ['eraser', 10, 3], ['vectorEraser', 8, 3]] as const) {
     const preset = { ...defaultViewerPrefs.toolPresets[tool], ...tp[tool] };
     if (preset.width === oldWidth || !Number.isFinite(preset.width) || preset.width <= 0) preset.width = newWidth;
     tp[tool] = preset;
