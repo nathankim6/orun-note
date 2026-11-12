@@ -6,6 +6,11 @@ import { execFileSync } from 'node:child_process';
 import { classifyIosTestDiagnostics, sanitizeIosDriverStatus } from './native-ios-test-diagnostics.mjs';
 const MAX_OBJECTS = 8, MAX_BYTES = 8 * 1024 * 1024, MAX_NODES = 100000, MAX_TEXT = 1024 * 1024;
 const REF_KEYS = new Set(['testsRef', 'summaryRef', 'testSummaryRef']);
+// Legacy XCResult IDs are version~URL-safe-base64 with optional trailing padding.
+// Keep old simple opaque IDs, reject flags/control/path characters, and never export IDs.
+function validReference(id) {
+  return typeof id === 'string' && id.length <= 256 && !/\s/.test(id) && /^(?:[A-Za-z0-9][A-Za-z0-9_-]*|[0-9]+~[A-Za-z0-9_-]+={0,2})$/.test(id);
+}
 export function inspectResultObject(root) {
   const stack = [root], refs = [], texts = [], refSeen = new Set(); let nodes = 0, size = 0, clipped = false;
   while (stack.length && nodes++ < MAX_NODES) {
@@ -17,7 +22,8 @@ export function inspectResultObject(root) {
     } else if (value && typeof value === 'object') {
       for (const [key, child] of Object.entries(value)) {
         const id = REF_KEYS.has(key) ? child?.id?._value : undefined;
-        if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(id) && !refSeen.has(id)) {
+        if (REF_KEYS.has(key) && !validReference(id)) clipped = true;
+        if (validReference(id) && !refSeen.has(id)) {
           refSeen.add(id); if (refs.length < 32) refs.push(id); else clipped = true;
         }
         stack.push(child);

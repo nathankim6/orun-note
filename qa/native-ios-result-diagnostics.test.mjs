@@ -30,7 +30,7 @@ test('failed and malformed collection do not imply app validation', () => {
 test('cycles and reference fanout are bounded and invalid references not requested', () => {
   let calls=0;
   const row=collectResultDiagnostics({readObject: (_b,id) => {calls++;return JSON.stringify({testsRef:{id:{_value:'cycle'}},summaryRef:{id:{_value:'bad/path?'+secret}}});}});
-  assert.equal(calls,2);assert.equal(row.collection,'observed');assert.equal(row.appValidated,false);
+  assert.equal(calls,2);assert.equal(row.collection,'partial');assert.equal(row.appValidated,false);
   let sequence=0;const bounded=collectResultDiagnostics({readObject:()=>JSON.stringify({summaryRef:{id:{_value:'ref-'+ ++sequence}}})});assert.equal(bounded.objectsRead,8);assert.equal(bounded.collection,'partial');
 });
 test('large diagnostic leaves are clipped and private keys are never public fields', () => {
@@ -52,4 +52,31 @@ test('reference-cap truncation is explicitly partial, never complete observation
   const object=Array.from({length:40},(_,i)=>({testsRef:{id:{_value:'id-'+i}}}));
   const inspected=inspectResultObject(object);assert.equal(inspected.refs.length,32);assert.equal(inspected.clipped,true);
   const row=collectResultDiagnostics({exitCode:65,readObject:(_b,id)=>JSON.stringify(id?{}:object)});assert.equal(row.collection,'partial');assert.equal(row.textClipped,true);assert.equal(row.appValidated,false);
+});
+
+// Legacy xcresulttool testsRef IDs use a version prefix, URL-safe base64 and padding.
+// Public format evidence: Flutter xcresult_test_data.dart and fastlane-community/trainer#32.
+test('follows padded legacy XCResult IDs without exporting identifiers or raw errors', () => {
+  const ref = '0~YVEC1htpkY3jLmeu4DB8ah-sJueP7_vUdqA2rL1_R3xT_aftqqEgGUSCHZ0mmpojBSyy4mEL4LX2xyFlfr4pEQ==';
+  const summary = '0~' + 'A'.repeat(86) + '==';
+  const objects = {
+    root: { actions: { _values: [{ actionResult: { testsRef: { id: { _value: ref } } } }] } },
+    [ref]: { summaries: { _values: [{ testSummaryRef: { id: { _value: summary } } }] } },
+    [summary]: { message: { _value: 'Failed to launch com.paperly.study Error Domain=NSPOSIXErrorDomain Code=153 ' + secret } },
+  };
+  const calls = [];
+  const row = collectResultDiagnostics({ exitCode: 65, readObject: (_b, id) => { calls.push(id || 'root'); return JSON.stringify(objects[id || 'root']); } });
+  assert.deepEqual(calls, ['root', ref, summary]);
+  assert.equal(row.collection, 'observed'); assert.equal(row.objectsRead, 3);
+  assert.equal(row.reason, 'target_launch_failure'); assert.equal(row.appValidated, false);
+  assert.deepEqual(row.errorChain, [{ domain: 'NSPOSIXErrorDomain', code: 153 }]);
+  for (const privateText of [ref, summary, secret]) assert(!JSON.stringify(row).includes(privateText));
+});
+test('malformed legacy references remain private and mark incomplete collection', () => {
+  for (const id of ['0~bad/path==', '0~bad+value==', '0~bad=tail', '0~bad===', '0~bad\n==', '0~' + 'A'.repeat(257), '--option']) {
+    let calls = 0;
+    const row = collectResultDiagnostics({ exitCode: 65, readObject: () => { calls++; return JSON.stringify({ testsRef: { id: { _value: id } } }); } });
+    assert.equal(calls, 1); assert.equal(row.collection, 'partial'); assert.equal(row.textClipped, true);
+    assert.equal(row.appValidated, false); assert(!JSON.stringify(row).includes(id));
+  }
 });
