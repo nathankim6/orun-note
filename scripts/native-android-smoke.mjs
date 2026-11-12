@@ -84,9 +84,11 @@ function read() {
 }
 const find = label => nodes.find(n => n['content-desc'] === label || n.text === label || n['resource-id'] === label || n['resource-id']?.endsWith(':id/' + label));
 async function wait(label, seconds = 25, contains = false) {
-  const until = Date.now() + seconds * 1000;
+  const until = Date.now() + seconds * 1000; let dumpFailures = 0;
   do {
-    read();
+    // uiautomator dump occasionally fails ("could not get idle state") while the embedded player keeps animating; a few
+    // consecutive dump failures are retried, process crashes / JS errors / deadlines still throw at once.
+    try { read(); } catch (error) { if (/^[a-z_]+$/.test(error.message) || ++dumpFailures > 4) throw error; emit('ui_dump_retry', { attempt: dumpFailures }); await sleep(700); continue; }
     if (nodes.some(n => n['content-desc']?.includes('qa-unavailable-'))) {
       const labels=nodes.map(n=>n['content-desc']??'').join(' '), code=labels.match(/(?:^| )qa-errorcode-(2|5|100|101|150|152|153|load|http|process|timeout|network)(?: |$)/)?.[1];
       const unavailableCycle = Number(labels.match(/(?:^| )qa-unavailable-(\d+)(?: |$)/)?.[1]);
@@ -167,7 +169,7 @@ try {
   collect(); emit('suite_result', { platform: 'android', result: 'pass', cycles: 20, playerCycles: 3 });
 } catch (error) {
   if (!trigger) fail(/^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure');
-  emit('driver_failure_step', { step: currentStep });
+  emit('driver_failure_step', { step: currentStep, ...(/^[a-z_]+$/.test(error.message) ? {} : { exception: ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError'].includes(error?.name) ? error.name : 'Error' }) });
   emit('driver_milestones', { ...milestones, cycle: cycleNumber });
   const evidence = (origin, record, report) => emit('driver_evidence', { origin, record: record?.record ?? 0, logReadSucceeded: record?.logReadSucceeded ?? false, cached: record?.cached ?? false, ...(report?.evidence ?? { crash: false, category: trigger.reason === 'process_crash' ? 'process_loss' : 'driver', role: 'unknown', attribution: 'none' }) });
   evidence('trigger', trigger.record, trigger.report);
