@@ -1,0 +1,28 @@
+name: Public provider metadata (diagnostic only, not native QA)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public-metadata-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      NATIVE_SMOKE_QA: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Test metadata privacy and unchanged-fixture contract
+        run: node --test qa/native-provider-metadata.test.mjs
+      - name: Observe existing public fixture from CI without authentication
+        run: |
+          mkdir -p qa/output
+          node scripts/native-provider-metadata.mjs > qa/output/public-provider-metadata.jsonl
+          cat qa/output/public-provider-metadata.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: public-provider-metadata-not-playback-proof
+          path: qa/output/public-provider-metadata.jsonl
+          retention-days: 7
