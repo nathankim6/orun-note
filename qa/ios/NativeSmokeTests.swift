@@ -48,6 +48,12 @@ final class NativeSmokeTests: XCTestCase {
     captureTelemetry()
     for row in lastTelemetry { var values = row; let event = values.removeValue(forKey: "event") as? String ?? "invalid"; emit(event, values) }
   }
+  // Infrastructure-only control, never native app validation or a release gate.
+  func testRunnerInfrastructure() {
+    let host = XCUIApplication()
+    host.launch()
+    XCTAssertTrue(host.staticTexts["QA runner host"].waitForExistence(timeout: 30))
+  }
   func testNativeSmoke() {
     app.launch(); defer { collect() }
     currentStep = "root"; wait("open-review-videos", 60)

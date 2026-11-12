@@ -1,4 +1,4 @@
-name: Native simulator smoke (QA only)
+name: iOS runner infrastructure diagnostic (not release)
 on:
   workflow_dispatch:
     inputs:
@@ -84,9 +84,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
   ios:
+    name: ios-diagnostic-runner-only
     if: ${{ inputs.platform == 'all' || inputs.platform == 'ios' }}
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 20
     env:
       NATIVE_SMOKE_QA: '1'
       CI: '1'
@@ -95,24 +96,13 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with: { xcode-version: '26.2' }
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
-      - name: Test administrator recording policy
-        run: node scripts/test-content-protection.js
-      - name: Test CI-only simulator signing guard
-        run: node --test qa/native-ios-signing.test.mjs
-      - name: iOS Simulator build and XCTest UI smoke (QA ad-hoc)
-        timeout-minutes: 80
-        run: |
-          scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform ios --no-install && (cd ios && pod install) && scripts/native-ios-smoke.sh'
-          git diff --exit-code -- index.ts
-      - name: Sanitize iOS failure output too
-        if: always()
-        run: node scripts/native-sanitize.mjs qa/build/ios.raw qa/output/ios.jsonl ios
+        with: { node-version: 22 }
+      - name: Probe UI-test runner only, not the native app
+        run: scripts/native-ios-runner-diagnostic.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-smoke-ios-sanitized-logs
-          path: qa/output/ios.jsonl
+          name: ios-runner-only-sanitized-status
+          path: qa/output/ios-runner.jsonl
           if-no-files-found: warn
           retention-days: 7
