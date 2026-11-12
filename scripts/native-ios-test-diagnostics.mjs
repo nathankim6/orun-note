@@ -98,3 +98,17 @@ function cli() {
   console.log('QA_JSON ' + JSON.stringify(classifyIosTestDiagnostics({ text, stage, exitCode })));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) cli();
+
+// Closed schema for synchronous XCTest issues, independent of app startup/telemetry.
+export function sanitizeIosLaunchDiagnostic(input) {
+  if (!input || typeof input !== 'object') return undefined;
+  if (input.event === 'ios_launch_checkpoint') return ['before_launch', 'after_launch'].includes(input.stage) ? { event: 'ios_launch_checkpoint', stage: input.stage, appValidated: false } : undefined;
+  if (input.event !== 'ios_xctest_issue') return undefined;
+  const reasons = ['app_not_installed', 'launch_denied', 'launch_timeout', 'automation_connection', 'app_exited', 'launch_failed', 'unknown'];
+  const row = { event: 'ios_xctest_issue', appValidated: false, driverFailure: input.isFailure !== false, reason: reasons.includes(input.reason) ? input.reason : 'unknown' };
+  if (Number.isInteger(input.issueType) && input.issueType >= 0 && input.issueType <= 5) row.issueType = input.issueType;
+  if (Number.isInteger(input.sourceLine) && input.sourceLine > 0 && input.sourceLine <= 100000) row.sourceLine = input.sourceLine;
+  if (typeof input.associatedErrorPresent === 'boolean') row.associatedErrorPresent = input.associatedErrorPresent;
+  const chain = sanitizeErrorChain(input.errorChain); if (chain.length) row.errorChain = chain;
+  return row;
+}

@@ -4,9 +4,16 @@ final class NativeSmokeTests: XCTestCase {
   var currentStep = "startup"
   var lastTelemetry: [[String: Any]] = []
   override func setUp() { super.setUp(); continueAfterFailure = false }
+  override func record(_ issue: XCTIssue) {
+    defer { super.record(issue) }
+    let descriptions = String(issue.compactDescription.prefix(16384)) + "\n" + String((issue.detailedDescription ?? "").prefix(16384))
+    var row: [String: Any] = ["issueType": issue.type.rawValue, "isFailure": issue.isFailure, "associatedErrorPresent": issue.associatedError != nil, "reason": LaunchIssueDiagnostics.reason(descriptions), "errorChain": LaunchIssueDiagnostics.chain(issue.associatedError as NSError?, fallback: descriptions)]
+    if let line = issue.sourceCodeContext.location?.lineNumber, line > 0 && line <= 100000 { row["sourceLine"] = line }
+    emit("ios_xctest_issue", row)
+  }
   func emit(_ event: String, _ data: [String: Any] = [:]) {
     var row = data; row["event"] = event
-    if let bytes = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]), let text = String(data: bytes, encoding: .utf8) { print("QA_JSON " + text) }
+    if let bytes = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]), let text = String(data: bytes, encoding: .utf8) { print("QA_JSON " + text); fflush(stdout) }
   }
   func element(_ label: String) -> XCUIElement {
     app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR label == %@", label, label)).firstMatch
@@ -49,7 +56,9 @@ final class NativeSmokeTests: XCTestCase {
     for row in lastTelemetry { var values = row; let event = values.removeValue(forKey: "event") as? String ?? "invalid"; emit(event, values) }
   }
   func testNativeSmoke() {
+    emit("ios_launch_checkpoint", ["stage": "before_launch"])
     app.launch(); defer { collect() }
+    emit("ios_launch_checkpoint", ["stage": "after_launch"])
     currentStep = "root"; wait("open-review-videos", 60)
     // Collect native PDF timing evidence before external media can stop the suite.
     currentStep = "pdf"; tap("run-pdf-smoke")

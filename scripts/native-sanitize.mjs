@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import { DIAGNOSTIC_EVENTS, sanitizeDiagnostic, sanitizeEvidence, extractCrashDiagnostics } from './native-diagnostics.mjs';
-import { sanitizeIosDriverStatus } from './native-ios-test-diagnostics.mjs';
+import { sanitizeIosDriverStatus, sanitizeIosLaunchDiagnostic } from './native-ios-test-diagnostics.mjs';
 const [input, output, platform] = process.argv.slice(2);
 const text = fs.existsSync(input) ? fs.readFileSync(input, 'utf8') : '';
 const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_progress', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step', 'emulator_preflight']);
 const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'ready', 'emulator_system_ui_anr', 'emulator_app_anr', 'emulator_app_crash', 'emulator_os_blocked', 'emulator_os_not_ready', 'emulator_display_mismatch', 'emulator_capacity_unsupported', 'emulator_configuration_failed', 'apk_install_failed', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'native_evidence_uncertain', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
 const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'ready_controls', 'progress_controls', 'wait_progress', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
 const numeric = new Set(['cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'trials']);
-const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [];
+let iosIssueFailure = false;
+const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [], iosLaunchDiagnostics = [];
 function sanitizeSurface(row) {
   const clean = { event: 'driver_surface' };
   const enums = { foreground: ['app','launcher','permission','systemdialog','unknown'], dialog: ['none','gms_crash','app_crash','anr','system_ui_anr','keyguard','debugger','permission','gesture_tutorial','unknown'], xmlSource: ['fresh','cached','unavailable'], uiPackage: ['app','launcher','permission','system','mixed','other','unknown'] };
@@ -22,6 +23,7 @@ for (const line of text.split('\n')) {
   const at = line.indexOf('QA_JSON '); if (at < 0) continue;
   try {
     const row = JSON.parse(line.slice(at + 8));
+    if (['ios_launch_checkpoint','ios_xctest_issue'].includes(row.event)) { const clean = sanitizeIosLaunchDiagnostic(row); if (clean?.driverFailure === true) iosIssueFailure = true; if (clean && iosLaunchDiagnostics.length < 10) iosLaunchDiagnostics.push(clean); continue; }
     if (row.event === 'ios_driver_status') { if (iosDriverStatuses.length < 2) iosDriverStatuses.push(sanitizeIosDriverStatus(row)); continue; }
     if (['driver_evidence','driver_milestones','driver_telemetry'].includes(row.event)) { const clean = sanitizeEvidence(row); if (clean && evidenceRows.length < 8) evidenceRows.push(clean); continue; }
     if(row.event==='pdf_raster') {
@@ -84,7 +86,7 @@ const report = driverTrigger ? { crash: false, diagnostics: [] } : laterReport;
 if (driverTrigger && laterReport.crash) evidenceRows.push({ event: 'driver_evidence', origin: 'collection', ...laterReport.evidence });
 const crash = laterReport.crash;
 if (crash && !driverTrigger) rows.push({ event: 'suite_result', platform, result: 'fail', reason: 'native_or_js_error' });
-const iosDriverFailed = iosDriverStatuses.some(row => row.driverFailure === true);
+const iosDriverFailed = iosIssueFailure || iosDriverStatuses.some(row => row.driverFailure === true);
 const passed = rows.some(r => r.event === 'suite_result' && r.result === 'pass') && !crash && !iosDriverFailed && !rows.some(r => r.event === 'js_error' || r.event === 'player_unavailable' || r.event === 'pdf_failure' || (r.event === 'pdf_raster' && r.status === 0) || (r.event === 'pdf_result' && r.result !== 'pass') || (r.event === 'suite_result' && r.result === 'fail'));
 if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail')) {
   const reason = rows.some(r => r.event === 'js_error') ? 'js_error' : rows.some(r => r.event === 'player_unavailable') ? 'network_or_player_unavailable' : rows.some(r => r.event === 'pdf_failure' || (r.event === 'pdf_result' && r.result !== 'pass')) ? 'pdf_failure' : 'driver_failure';
@@ -93,7 +95,7 @@ if (!passed && !rows.some(r => r.event === 'suite_result' && r.result === 'fail'
 // Diagnostics are retained only on a failing suite. Each field is validated again
 // here even when it came from the driver; arbitrary QA_JSON cannot bypass this.
 if (!passed) {
-  rows.push(...iosDriverStatuses,...surfaces,...readiness,...evidenceRows);
+  rows.push(...iosLaunchDiagnostics,...iosDriverStatuses,...surfaces,...readiness,...evidenceRows);
   const seen = new Set();
   const finalCounts = new Map();
   for (const row of [...diagnostics, ...report.diagnostics]) {
