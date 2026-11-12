@@ -1,4 +1,4 @@
-name: Android API comparison (diagnostic only; cannot release)
+name: Android crash-frame diagnostic (not release)
 on:
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [35, 36]
+        api: [36]
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:

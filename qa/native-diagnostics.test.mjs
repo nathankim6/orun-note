@@ -681,8 +681,8 @@ if(a[1]==='cat'){const n=Number(fs.readFileSync(path.join(dir,'dumps'))),labels=
   const result=spawnSync(process.execPath,['scripts/native-android-smoke.mjs'],{encoding:'utf8',timeout:20000,env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,QA_POST_DIR:dir}});
   assert.equal(result.status,1);assert(result.stdout.includes('"step":"ready_controls"'),result.stdout);assert(result.stdout.includes('"pdfPass":true'));assert(result.stdout.includes('"ready":true'));
   const rows=result.stdout.split('\n').filter(s=>s.startsWith('QA_JSON ')).map(s=>JSON.parse(s.slice(8)));
-  assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='collection').category,'javascript');assert(!rows.some(r=>r.event==='crash_js_exception'));
-  assert(!result.stdout.includes(canary));assert.equal(sanitize(result.stdout,'post-ready').status,1);
+  assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='collection').category,'javascript');const late=rows.filter(r=>r.event==='crash_js_exception');assert(late.length>0);assert(late.every(r=>r.origin==='collection'));assert(!rows.some(r=>r.event==='crash_js_exception'&&r.origin==='trigger'));assert.equal(rows.find(r=>r.event==='driver_evidence'&&r.origin==='trigger').category,'java');
+  assert(!result.stdout.includes(canary));const cleaned=sanitize(result.stdout,'post-ready');assert.equal(cleaned.status,1);
 });
 
 
@@ -705,3 +705,7 @@ test('uncertain candidate category/signal is not ownership or a proven crash',()
 });
 
 test('candidate metadata remains strict and cannot disclose unknown signal/message',async()=>{const {sanitizeEvidence}=await import('../scripts/native-diagnostics.mjs');const r=sanitizeEvidence({event:'driver_evidence',candidateCategory:'native',candidateSignal:6,nativeCause:'jni',message:'private-canary'});assert.equal(r.candidateCategory,'native');assert.equal(r.candidateSignal,6);assert.equal(r.nativeCause,'jni');assert(!JSON.stringify(r).includes('private-canary'));const u=sanitizeEvidence({event:'driver_evidence',candidateCategory:'private-canary',candidateSignal:12345,nativeCause:'private-canary'});assert(!JSON.stringify(u).includes('private-canary'));assert(!('candidateSignal'in u));});
+
+test('post-trigger frame provenance is bounded and cannot replace trigger evidence',async()=>{const {sanitizeDiagnostic}=await import('../scripts/native-diagnostics.mjs');const f=sanitizeDiagnostic({event:'crash_native_frame',nativeLibrary:'libhermes.so',nativePc:'0x123',origin:'collection',record:11,message:'private-canary'});assert.equal(f.origin,'collection');assert.equal(f.record,11);assert(!JSON.stringify(f).includes('private-canary'));const u=sanitizeDiagnostic({...f,origin:'private-canary',record:123456});assert(!('origin'in u));assert(!('record'in u));});
+
+test('APK embedded library frames preserve only basename and PC',()=>{const r=extractCrashDiagnostics('11-01 10:00:00.001 900 900 F DEBUG: Cmdline: com.paperly.study\n11-01 10:00:00.002 900 900 F DEBUG: signal 11 (SIGSEGV)\n11-01 10:00:00.003 900 900 F DEBUG: #00 pc 00000123 /data/private-canary/base.apk!libhermes.so (private-canary)\n11-01 10:00:00.004 900 900 F DEBUG: #01 pc 00000456 /data/private-canary/base.apk!lib/x86_64/libreactnative.so (private-canary)',{platform:'android'});assert.equal(r.crash,true);assert.deepEqual(r.diagnostics.map(x=>x.nativeLibrary),['libhermes.so','libreactnative.so']);assert(!JSON.stringify(r).includes('private-canary'));});

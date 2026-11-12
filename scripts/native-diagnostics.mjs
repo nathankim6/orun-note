@@ -33,6 +33,8 @@ export function sanitizeDiagnostic(row) {
     if (!iosEnums.has(row.iosException)) return null;
     out.iosException = row.iosException;
   }
+  if (['trigger','collection'].includes(row.origin)) out.origin=row.origin;
+  if (Number.isInteger(row.record)&&row.record>=0&&row.record<=10000) out.record=row.record;
   return out;
 }
 function appProcess(name) { return /^com\.paperly\.study(?::[A-Za-z0-9_.:-]+)?$/.test(name); }
@@ -148,7 +150,7 @@ export function extractCrashDiagnostics(text, { platform, pids = [], force = fal
     if (frame) add({ event: 'crash_java_frame', frameClass: frame[1].slice(0, -1), frameMethod: frame[2], sourceLine: Number(frame[3]) });
     const native = line.match(/#\d+\s+pc\s+([0-9a-fA-F]{1,16})\s+(\S+)/);
     if (native) {
-      const basename = native[2].split('/').pop();
+      const basename = native[2].split('/').pop().split('!').pop();
       add({ event: 'crash_native_frame', nativeLibrary: basename, nativePc: '0x' + native[1].toLowerCase() });
     }
     if (platform === 'ios') {

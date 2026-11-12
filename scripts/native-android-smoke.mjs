@@ -151,11 +151,12 @@ try {
   emit('driver_milestones', { ...milestones, cycle: cycleNumber });
   const evidence = (origin, record, report) => emit('driver_evidence', { origin, record: record?.record ?? 0, logReadSucceeded: record?.logReadSucceeded ?? false, cached: record?.cached ?? false, ...(report?.evidence ?? { crash: false, category: trigger.reason === 'process_crash' ? 'process_loss' : 'driver', role: 'unknown', attribution: 'none' }) });
   evidence('trigger', trigger.record, trigger.report);
-  // Collection cannot replace the exact trigger's snapshot or attach later frames.
-  for (const row of trigger.report?.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify(row));
+  // Separate provenance prevents later frames from becoming the triggering evidence.
+  for (const row of trigger.report?.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify({...row,origin:'trigger',record:trigger.record?.record??0}));
   collect(); captureSurface();
   // Keep the trigger immutable; gather supplementary crash dump only after existing UI collection.
   const later = crashLogs(); evidence('collection', logRecord, later);
+  for (const row of later.diagnostics ?? []) console.log('QA_JSON ' + JSON.stringify({...row,origin:'collection',record:logRecord?.record??0}));
   const reason = /^[a-z_]+$/.test(error.message) ? error.message : 'driver_failure';
   emit('suite_result', { platform: 'android', result: 'fail', reason }); process.exitCode = 1;
 }
