@@ -74,6 +74,12 @@ export function sanitizeIosDriverStatus(row) {
   if (exitCode !== undefined) { output.exitCode = exitCode; output.driverFailure = exitCode !== 0; }
   if (Number.isInteger(input.testsRun) && Number.isInteger(input.testsFailed) && input.testsRun >= 0 && input.testsRun <= MAX_TESTS && input.testsFailed >= 0 && input.testsFailed <= input.testsRun) Object.assign(output, { testsRun: input.testsRun, testsFailed: input.testsFailed });
   if (allowedNSError(input.errorDomain, input.errorCode)) Object.assign(output, { errorDomain: input.errorDomain, errorCode: input.errorCode });
+  if (input.source === 'xcresult') {
+    output.source = 'xcresult';
+    if (['observed', 'partial', 'unavailable', 'invalid', 'not_ci'].includes(input.collection)) output.collection = input.collection;
+    if (Number.isInteger(input.objectsRead) && input.objectsRead >= 0 && input.objectsRead <= 8) output.objectsRead = input.objectsRead;
+    if (typeof input.textClipped === 'boolean') output.textClipped = input.textClipped;
+  }
   const errorChain = sanitizeErrorChain(input.errorChain);
   if (errorChain.length) output.errorChain = errorChain;
   return output;

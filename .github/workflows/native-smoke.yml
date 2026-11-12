@@ -101,6 +101,8 @@ jobs:
         run: node scripts/test-content-protection.js
       - name: Test CI-only simulator signing guard
         run: node --test qa/native-ios-signing.test.mjs
+      - name: Test bounded XCTest result diagnostics (no device)
+        run: node --test qa/native-ios-test-diagnostics.test.mjs qa/native-ios-result-diagnostics.test.mjs
       - name: iOS Simulator build and XCTest UI smoke (QA ad-hoc)
         timeout-minutes: 80
         run: |
