@@ -169,9 +169,10 @@ try {
         currentStep = 'progress_controls'; read(); if (!find('일시정지')) await tap('컨트롤 표시');
         currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true);
       }
-      currentStep = 'player_close'; await tap('닫기'); await wait('QA Video 1 재생');
+      // the list screen underneath also has a 닫기 button: target the player's close by testID (resource-id), not label
+      currentStep = 'player_close'; await tap('review-video-player-close'); await wait('QA Video 1 재생');
     }
-    currentStep = 'list_close'; await tap('닫기'); await wait('open-review-videos'); emit('cycle_complete', { cycle });
+    currentStep = 'list_close'; await tap('review-videos-list-close'); await wait('open-review-videos'); emit('cycle_complete', { cycle });
   }
   collect(); emit('suite_result', { platform: 'android', result: 'pass', cycles: 20, playerCycles: 3 });
 } catch (error) {
