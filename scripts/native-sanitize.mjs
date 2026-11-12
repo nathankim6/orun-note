@@ -3,10 +3,10 @@ import { DIAGNOSTIC_EVENTS, sanitizeDiagnostic, sanitizeEvidence, extractCrashDi
 import { sanitizeIosDriverStatus } from './native-ios-test-diagnostics.mjs';
 const [input, output, platform] = process.argv.slice(2);
 const text = fs.existsSync(input) ? fs.readFileSync(input, 'utf8') : '';
-const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_progress', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step', 'emulator_preflight', 'ui_dump_retry', 'renderer_exit_ignored']);
+const events = new Set(['boot', 'js_error', 'list_open', 'list_close', 'player_ready', 'player_playing', 'player_progress', 'player_paused', 'player_unavailable', 'pdf_completion', 'pdf_timing', 'pdf_result', 'cycle_complete', 'suite_result', 'driver_failure_step', 'emulator_preflight', 'ui_dump_retry', 'renderer_exit_ignored', 'telemetry_summary']);
 const strings = new Set(['android', 'ios', 'pass', 'fail', 'inconclusive', 'detail', 'reading', 'tile', 'unknown', 'ready', 'emulator_system_ui_anr', 'emulator_app_anr', 'emulator_app_crash', 'emulator_os_blocked', 'emulator_os_not_ready', 'emulator_display_mismatch', 'emulator_capacity_unsupported', 'emulator_configuration_failed', 'apk_install_failed', 'process_crash', 'startup_timeout', 'app_background', 'not_hittable', 'native_or_js_error', 'native_evidence_uncertain', 'js_error', 'network_or_player_unavailable', 'network_or_player_timeout', 'ui_timeout', 'pdf_failure', 'pdf_inconclusive', 'pdf_timeout', 'suite_deadline', 'invalid_bounds', 'driver_failure']);
 const failureSteps = new Set(['startup', 'root', 'list_open', 'wait_list', 'player_open', 'wait_ready', 'ready_controls', 'progress_controls', 'wait_progress', 'play', 'pause', 'player_close', 'list_close', 'pdf']);
-const numeric = new Set(['attempt', 'cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'playerCycles', 'trials']);
+const numeric = new Set(['attempt', 'merged', 'last', 'clipped', 'cycle', 'trial', 'elapsedMs', 'requestMs', 'page', 'width', 'openMs', 'drawMs', 'encodeMs', 'writeMs', 'totalMs', 'cycles', 'playbackCycles', 'playerCycles', 'trials']);
 const rows = [], diagnostics = [], surfaces = [], readiness = [], evidenceRows = [], iosDriverStatuses = [];
 function sanitizeSurface(row) {
   const clean = { event: 'driver_surface' };

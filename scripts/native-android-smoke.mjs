@@ -9,7 +9,7 @@ let nodes = [], lastLogcat = '', nodesReadAt = 0, currentStep = 'startup';
 const knownPids = new Set();
 let lastTelemetry = [], lastUINodes = [], lastXMLState = 'unavailable', telemetrySource = 'unavailable';
 let logRecord = null, trigger = null, logSequence = 0, cycleNumber = 0;
-const environmentLimitedCycles = new Set(); let rendererExitNoted = false;
+const environmentLimitedCycles = new Set(); let rendererExitNoted = false; const telemetrySeen = new Map(); let telemetryClipped = 0;
 const milestones = { initialPid: false, root: false, pdfPass: false, list: false, ready: false, progress: false };
 function fail(reason, report = logRecord?.report) {
   if (!trigger) trigger = Object.freeze({ reason, record: logRecord, report });
@@ -29,7 +29,9 @@ function freshXML() {
 function parseXML(xml) {
   const parsed = [...xml.matchAll(/<node\b[^>]*>/g)].map(([node]) => Object.fromEntries([...node.matchAll(/([\w-]+)="([^"]*)"/g)].map(([, k, v]) => [k, decode(v)])));
   const node = parsed.find(n => n['resource-id'] === 'qa-telemetry' || n['resource-id']?.endsWith(':id/qa-telemetry'));
-  try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 900) { lastTelemetry = data; telemetrySource = 'fresh'; } } catch { /* Keep last valid telemetry. */ }
+  // The app keeps a bounded marker buffer and the accessibility dump may clip a very long label: merge every parsed
+  // snapshot into one ordered set so the final collection has every marker that was visible at any point of the run.
+  try { const data = node && JSON.parse(node['content-desc']); if (Array.isArray(data) && data.length <= 900) { lastTelemetry = data; telemetrySource = 'fresh'; for (const row of data) { const key = JSON.stringify(row); if (!telemetrySeen.has(key)) telemetrySeen.set(key, row); } } else if (node) telemetryClipped++; } catch { if (node) telemetryClipped++; /* Keep last valid telemetry. */ }
   lastUINodes = parsed; lastXMLState = 'fresh';
   return parsed;
 }
@@ -129,7 +131,8 @@ function collect() {
     parseXML(freshXML());
   } catch { lastXMLState = lastUINodes.length ? 'cached' : 'unavailable'; /* Retain telemetry and XML summary. */ }
   emit('driver_telemetry', { xmlSource: telemetrySource, cached: telemetrySource === 'cached' });
-  for (const row of lastTelemetry) console.log('QA_JSON ' + JSON.stringify(row));
+  emit('telemetry_summary', { merged: telemetrySeen.size, last: lastTelemetry.length, clipped: telemetryClipped });
+  for (const row of telemetrySeen.size ? telemetrySeen.values() : lastTelemetry) console.log('QA_JSON ' + JSON.stringify(row));
 }
 
 try {
