@@ -8,7 +8,11 @@ concurrency:
   group: emulator-environment-diagnostic-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  public-provider-metadata-only:
+    if: ${{ github.ref == 'refs/heads/qa/android-player-context-1616' }}
+    uses: ./.github/workflows/native-provider-diagnostic.yml
   environment-diagnostic:
+    if: ${{ github.ref != 'refs/heads/qa/android-player-context-1616' }}
     name: Diagnostic API ${{ matrix.api }} (no app)
     runs-on: ubuntu-latest
     timeout-minutes: 15
