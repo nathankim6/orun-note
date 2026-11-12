@@ -82,13 +82,15 @@ export const YouTubeStage = forwardRef<StageHandle, { videoId: string; onStatus:
   const onLoadError = useCallback((event: Parameters<typeof nativeLoadErrorCode>[0]) => fail(nativeLoadErrorCode(event)), [fail]);
   const onHttpError = useCallback(() => fail('http'), [fail]);
   const onProcessError = useCallback(() => fail('process'), [fail]);
+  // The shared Fabric spec requires an array. Android forwards this iOS-only
+  // prop unchanged, unlike the iOS wrapper which normalizes scalar values.
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none" testID="review-video-stage" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {!failure && validVideoId(videoId) && <WebView ref={web} source={source} originWhitelist={['*']} onMessage={onMessage}
         javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback mediaPlaybackRequiresUserAction={false}
         allowsFullscreenVideo={false} allowsPictureInPictureMediaPlayback={false} allowsAirPlayForMediaPlayback={false} allowsLinkPreview={false} setSupportMultipleWindows={false} javaScriptCanOpenWindowsAutomatically={false}
         scrollEnabled={false} bounces={false} overScrollMode="never" automaticallyAdjustContentInsets={false} contentInsetAdjustmentBehavior="never"
-        mixedContentMode="never" textInteractionEnabled={false} dataDetectorTypes="none"
+        mixedContentMode="never" textInteractionEnabled={false} dataDetectorTypes={['none']}
         onShouldStartLoadWithRequest={allowPlayerNavigation} onOpenWindow={blockWindow}
         onError={onLoadError} onHttpError={onHttpError} onContentProcessDidTerminate={onProcessError} onRenderProcessGone={onProcessError}
         style={{ flex: 1, backgroundColor: '#000' }} containerStyle={{ backgroundColor: '#000' }} />}
