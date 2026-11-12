@@ -736,5 +736,5 @@ test('isolated player context is bounded, failure-only, never overrides provider
   const tooMany = sanitize(Array.from({length:10},()=> 'QA_JSON '+JSON.stringify({...context,frameHost:canary,width:10001,height:-1,topOriginMatches:canary})).join('\n'), 'isolated-context-cap');
   const rows = tooMany.output.trim().split('\n').map(JSON.parse).filter(r=>r.event==='player_context'); assert.equal(rows.length,2); assert(!tooMany.output.includes(canary)); assert(!('width' in rows[0])); assert(!('height' in rows[0])); assert(!('frameHost' in rows[0])); assert(!('topOriginMatches' in rows[0]));
   const pass = sanitize('QA_JSON '+JSON.stringify(context)+'\nQA_JSON {"event":"suite_result","platform":"android","result":"pass"}', 'isolated-context-success'); assert.equal(pass.status,0); assert(!pass.output.includes('player_context'));
-  const workflow = fs.readFileSync('.github/workflows/native-smoke.yml','utf8'); assert(workflow.includes('android-diagnostic-player-context:')); assert(!/^  android:$/m.test(workflow));
+  const workflow = fs.readFileSync('.github/workflows/native-smoke.yml','utf8'); assert(workflow.includes('android-diagnostic-request-context:')); assert(!/^  android:$/m.test(workflow));
 });
