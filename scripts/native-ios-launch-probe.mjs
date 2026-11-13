@@ -172,7 +172,9 @@ if(process.argv[1]===fileURLToPath(import.meta.url)) {
   const [udid,app,destination]=process.argv.slice(2);
   const result={schema:4,notReleaseEvidence:true,mode:'xcode_embedded_entitlements'};
   try {
-    result.signing=verifyXcodeApp(app);
+    // Diagnostic branch: a verifier verdict is recorded (reason enum only) but does not stop the launch probe / suite,
+    // so the run shows whether Xcode's embedded entitlements actually work (launch + PDF keychain).
+    try { result.signing=verifyXcodeApp(app); } catch (error) { result.signing={verified:false,reason:String(error?.message??'').replace(/[^a-z_]/g,'').slice(0,60)}; }
     const install=execute('xcrun',['simctl','install',udid,app],undefined,300000);result.install=classify(install);
     if(install.status!==0||install.error)throw Error('install_failed');
     result.probe=probe(udid,app);result.launched=launchedSuccessfully(result.probe);
