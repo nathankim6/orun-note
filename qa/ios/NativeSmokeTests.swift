@@ -40,9 +40,13 @@ final class NativeSmokeTests: XCTestCase {
         // first three player visits is an environment limit, recorded and accepted only by the player-terminal wait.
         let flags = unavailable.label
         let code = ["150", "101", "100", "5"].first { flags.contains("qa-errorcode-\($0)") && !flags.contains("qa-errorcode-\($0)0") }
-        if let code = code, cycleNumber >= 1, cycleNumber <= 3, flags.contains("qa-unavailable-\(cycleNumber)") {
-          if !limitedCycles.contains(cycleNumber) { limitedCycles.insert(cycleNumber); emit("player_environment_limited", ["cycle": cycleNumber, "errorCode": Int(code) ?? 0]) }
-          if label == "qa-ready-\(cycleNumber)" { return unavailable }
+        // which visit the (cumulative, until the next list open) flag belongs to
+        var flagCycle = 0
+        if let r = flags.range(of: "qa-unavailable-") { flagCycle = Int(flags[r.upperBound...].prefix(while: { $0.isNumber })) ?? 0 }
+        if let code = code, flagCycle >= 1, flagCycle <= 3 {
+          if !limitedCycles.contains(flagCycle) { limitedCycles.insert(flagCycle); emit("player_environment_limited", ["cycle": flagCycle, "errorCode": Int(code) ?? 0]) }
+          let playerPhase = label.hasPrefix("qa-ready-") || label.hasPrefix("qa-state-") || label.hasPrefix("qa-progressing-")
+          if flagCycle == cycleNumber && playerPhase { return unavailable }
         } else { fail("network_or_player_unavailable"); return unavailable }
       }
       let target = contains ? app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch : element(label)
@@ -94,12 +98,17 @@ final class NativeSmokeTests: XCTestCase {
           currentStep = "list_close"; tap("review-videos-list-close"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])
           continue
         }
-        if element("컨트롤 표시").exists && !element("일시정지").exists { tap("컨트롤 표시") }
-        if element("일시정지").exists { currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
-        currentStep = "play"; tap("재생"); wait("qa-state-playing-\(cycle)", 45, contains: true)
-        currentStep = "wait_progress"; wait("qa-progressing-\(cycle)", 60, contains: true)
-        if !element("일시정지").exists { tap("컨트롤 표시") }
-        currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true)
+        playback: do {
+          if element("컨트롤 표시").exists && !element("일시정지").exists { tap("컨트롤 표시") }
+          if element("일시정지").exists { currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
+          if limitedCycles.contains(cycle) { break playback }
+          currentStep = "play"; tap("재생"); wait("qa-state-playing-\(cycle)", 45, contains: true)
+          if limitedCycles.contains(cycle) { break playback }
+          currentStep = "wait_progress"; wait("qa-progressing-\(cycle)", 60, contains: true)
+          if limitedCycles.contains(cycle) { break playback }
+          if !element("일시정지").exists { tap("컨트롤 표시") }
+          currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true)
+        }
         currentStep = "player_close"; tap("review-video-player-close"); wait("QA Video 1 재생")
       }
       currentStep = "list_close"; tap("review-videos-list-close"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])

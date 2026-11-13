@@ -109,7 +109,7 @@ async function wait(label, seconds = 25, contains = false) {
       }
       // Only the player-terminal wait may accept this node. Close/list waits
       // still require their own fresh target, even while cumulative flags remain.
-      if (unavailableCycle === cycleNumber && label === `qa-ready-${cycleNumber}`) return nodes.find(n => n['content-desc']?.includes(`qa-unavailable-${cycleNumber}`));
+      if (unavailableCycle === cycleNumber && /^qa-(ready|state-[a-z]+|progressing)-/.test(label)) return nodes.find(n => n['content-desc']?.includes(`qa-unavailable-${cycleNumber}`));
     }
     const node = contains ? nodes.find(n => n.text?.includes(label) || n['content-desc']?.includes(label)) : find(label);
     if (node) return node;
@@ -166,11 +166,15 @@ try {
         currentStep = 'ready_controls'; read();
         if (find('컨트롤 표시') && !find('일시정지')) await tap('컨트롤 표시');
         read(); if (find('일시정지')) { currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true); }
-        currentStep = 'play'; await tap('재생');
-        await wait(`qa-state-playing-${cycle}`, 45, true);
-        currentStep = 'wait_progress'; await wait(`qa-progressing-${cycle}`, 60, true); milestones.progress = true;
-        currentStep = 'progress_controls'; read(); if (!find('일시정지')) await tap('컨트롤 표시');
-        currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true);
+        // the provider may refuse the embed only after it reported ready: stop the playback checks for this visit then
+        playback: {
+          if (environmentLimitedCycles.has(cycle)) break playback;
+          currentStep = 'play'; await tap('재생');
+          await wait(`qa-state-playing-${cycle}`, 45, true); if (environmentLimitedCycles.has(cycle)) break playback;
+          currentStep = 'wait_progress'; await wait(`qa-progressing-${cycle}`, 60, true); if (environmentLimitedCycles.has(cycle)) break playback; milestones.progress = true;
+          currentStep = 'progress_controls'; read(); if (!find('일시정지')) await tap('컨트롤 표시');
+          currentStep = 'pause'; await tap('일시정지'); await wait(`qa-state-paused-${cycle}`, 20, true);
+        }
       }
       // the list screen underneath also has a 닫기 button: target the player's close by testID (resource-id), not label
       currentStep = 'player_close'; await tap('review-video-player-close'); await wait('QA Video 1 재생');
