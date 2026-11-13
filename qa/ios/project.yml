@@ -18,7 +18,7 @@ targets:
   NativeSmokeTests:
     type: bundle.ui-testing
     platform: iOS
-    sources: [NativeSmokeTests.swift]
+    sources: [NativeSmokeTests.swift, LaunchIssueDiagnostics.swift]
     dependencies:
       - target: SmokeHost
     settings:

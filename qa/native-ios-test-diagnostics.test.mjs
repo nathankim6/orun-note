@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { classifyIosTestDiagnostics, classifyReason, IOS_TEST_REASONS, IOS_TEST_STAGES, sanitizeIosDriverStatus } from '../scripts/native-ios-test-diagnostics.mjs';
+import { classifyIosTestDiagnostics, classifyReason, IOS_TEST_REASONS, IOS_TEST_STAGES, sanitizeIosDriverStatus, extractErrorChain } from '../scripts/native-ios-test-diagnostics.mjs';
 const canary = 'PRIVATE_IOS_LOG_TOKEN_PATH_URL_ASSERTION_CANARY';
 
 test('schema uses only fixed public fields and never returns raw log content', () => {
@@ -34,7 +34,7 @@ test('tail retains late failure after a large compile log and clean signing line
 });
 
 test('known NSError domain and code are emitted only as recognized pairs', () => {
-  assert.deepEqual(classifyIosTestDiagnostics({ text: 'Error Domain=CoreSimulatorErrorDomain Code=405', stage: 'launch_probe', exitCode: 1 }), { event: 'ios_driver_status', stage: 'launch_probe', reason: 'unknown', appValidated: false, exitCode: 1, driverFailure: true, errorDomain: 'CoreSimulatorErrorDomain', errorCode: 405 });
+  assert.deepEqual(classifyIosTestDiagnostics({ text: 'Error Domain=CoreSimulatorErrorDomain Code=405', stage: 'launch_probe', exitCode: 1 }), { event: 'ios_driver_status', stage: 'launch_probe', reason: 'unknown', appValidated: false, exitCode: 1, driverFailure: true, errorDomain: 'CoreSimulatorErrorDomain', errorCode: 405, errorChain: [{ domain: 'CoreSimulatorErrorDomain', code: 405 }] });
   for (const text of [`Error Domain=${canary} Code=405`, 'Error Domain=CoreSimulatorErrorDomain Code=99999', 'Error Domain=NSPOSIXErrorDomain Code=-1']) { const row = classifyIosTestDiagnostics({ text }); assert(!('errorDomain' in row)); assert(!('errorCode' in row)); }
 });
 
@@ -57,3 +57,21 @@ test('CLI emits exactly one bounded QA_JSON-compatible object', () => {
 });
 
 test('XCTest launch failures before an app marker retain tool direction',()=>{assert.equal(classifyIosTestDiagnostics({text:'Failed to launch com.paperly.study: private-canary',stage:'xctest',exitCode:65}).reason,'target_launch_failure');assert.equal(classifyIosTestDiagnostics({text:'Failed to establish communication with the test runner. private-canary',stage:'xctest',exitCode:65}).reason,'runner_launch_failure');});
+
+
+test('nested launch errors retain only fixed Apple domains and bounded numeric codes', () => {
+  const text = 'Failed to launch com.paperly.study: Error Domain=FBSOpenApplicationServiceErrorDomain Code=1 private-canary /private/path https://private.invalid ' +
+    'Error Domain=RBSRequestErrorDomain Code=5 Error Domain=NSPOSIXErrorDomain Code=153 Error Domain=PRIVATE_CANARY Code=1234';
+  const errorChain = [{ domain: 'FBSOpenApplicationServiceErrorDomain', code: 1 }, { domain: 'RBSRequestErrorDomain', code: 5 }, { domain: 'NSPOSIXErrorDomain', code: 153 }];
+  assert.deepEqual(extractErrorChain(text), errorChain);
+  const row = classifyIosTestDiagnostics({ text, exitCode: 65 });
+  assert.equal(row.reason, 'target_launch_failure'); assert.equal(row.appValidated, false); assert.deepEqual(row.errorChain, errorChain);
+  assert(!JSON.stringify(row).includes('private')); assert(!JSON.stringify(row).includes('PRIVATE_CANARY'));
+});
+test('error chain is bounded, deduplicated and revalidated at public sanitizer boundary', () => {
+  const rows = Array.from({ length: 30 }, (_, code) => ({ domain: 'NSPOSIXErrorDomain', code }));
+  const safe = sanitizeIosDriverStatus({ errorChain: [null, { domain: 'PRIVATE', code: 5 }, { domain: 'NSPOSIXErrorDomain', code: 999999 }, ...rows], appValidated: true });
+  assert.equal(safe.errorChain.length, 8); assert.equal(safe.appValidated, false);
+  assert.deepEqual(extractErrorChain('Error Domain=NSPOSIXErrorDomain Code=153 Error Domain=NSPOSIXErrorDomain Code=153'), [{ domain: 'NSPOSIXErrorDomain', code: 153 }]);
+  assert(!('errorChain' in sanitizeIosDriverStatus({ errorChain: [{ domain: 'PRIVATE', code: 4 }] })));
+});

@@ -18,6 +18,28 @@ function safeText(value) { return typeof value === 'string' ? value.slice(-MAX_T
 function safeStage(value) { return STAGES.has(value) ? value : 'xctest'; }
 function safeExitCode(value) { return Number.isInteger(value) && value >= 0 && value <= 255 ? value : undefined; }
 function allowedNSError(domain, code) { return typeof domain === 'string' && Number.isInteger(code) && ERROR_CODES[domain]?.has(code); }
+// Only fixed Apple domains plus bounded numeric codes. No NSError descriptions, paths or URLs.
+const CHAIN_DOMAINS = new Set(['NSPOSIXErrorDomain', 'CoreSimulatorErrorDomain', 'DTXMessageErrorDomain', 'IDETestOperationsObserverErrorDomain', 'XCTestErrorDomain', 'FBSOpenApplicationServiceErrorDomain', 'FBSOpenApplicationErrorDomain', 'FBProcessExit', 'RBSRequestErrorDomain', 'RBSServiceErrorDomain', 'NSOSStatusErrorDomain', 'NSCocoaErrorDomain', 'NSMachErrorDomain', 'NSLaunchdErrorDomain']);
+export function isPublicErrorDomain(domain) { return CHAIN_DOMAINS.has(domain); }
+export function sanitizeErrorChain(input) {
+  if (!Array.isArray(input)) return [];
+  const output = [], seen = new Set();
+  for (const row of input.slice(0, 64)) {
+    if (!row || !CHAIN_DOMAINS.has(row.domain) || !Number.isInteger(row.code) || Math.abs(row.code) > 65535) continue;
+    const key = row.domain + ':' + row.code;
+    if (!seen.has(key)) { output.push({ domain: row.domain, code: row.code }); seen.add(key); }
+    if (output.length === 8) break;
+  }
+  return output;
+}
+export function extractErrorChain(text) {
+  const rows = [];
+  for (const match of safeText(text).matchAll(/(?:domain\s*=\s*|error\s+domain\s+)([A-Za-z][A-Za-z0-9]{0,63})\s*(?:,?\s*code\s*=\s*|\s+code\s+)(-?\d{1,6})\b/gi)) {
+    rows.push({ domain: match[1], code: Number(match[2]) });
+    if (rows.length === 64) break;
+  }
+  return sanitizeErrorChain(rows);
+}
 function has(text, pattern) { return pattern.test(text); }
 
 export function classifyReason(text) {
@@ -53,11 +75,21 @@ export function sanitizeIosDriverStatus(row) {
   if (exitCode !== undefined) { output.exitCode = exitCode; output.driverFailure = exitCode !== 0; }
   if (Number.isInteger(input.testsRun) && Number.isInteger(input.testsFailed) && input.testsRun >= 0 && input.testsRun <= MAX_TESTS && input.testsFailed >= 0 && input.testsFailed <= input.testsRun) Object.assign(output, { testsRun: input.testsRun, testsFailed: input.testsFailed });
   if (allowedNSError(input.errorDomain, input.errorCode)) Object.assign(output, { errorDomain: input.errorDomain, errorCode: input.errorCode });
+  if (input.source === 'xcresult') {
+    output.source = 'xcresult';
+    if (['observed', 'partial', 'unavailable', 'invalid', 'not_ci'].includes(input.collection)) output.collection = input.collection;
+    if (Number.isInteger(input.objectsRead) && input.objectsRead >= 0 && input.objectsRead <= 8) output.objectsRead = input.objectsRead;
+    if (typeof input.textClipped === 'boolean') output.textClipped = input.textClipped;
+    // Counts only: structured TestAssociatedError objects seen, and those whose domain is not public-allowlisted.
+    for (const key of ['associatedErrors', 'unlistedErrorDomains']) if (Number.isInteger(input[key]) && input[key] >= 0 && input[key] <= 64) output[key] = input[key];
+  }
+  const errorChain = sanitizeErrorChain(input.errorChain);
+  if (errorChain.length) output.errorChain = errorChain;
   return output;
 }
 /** Returns a fixed-schema-safe row. appValidated is deliberately always false. */
 export function classifyIosTestDiagnostics({ text, stage, exitCode } = {}) {
-  return sanitizeIosDriverStatus({ event: 'ios_driver_status', stage, reason: classifyReason(text), exitCode, ...testCounts(text), ...knownNSError(text) });
+  return sanitizeIosDriverStatus({ event: 'ios_driver_status', stage, reason: classifyReason(text), exitCode, ...testCounts(text), ...knownNSError(text), errorChain: extractErrorChain(text) });
 }
 function cli() {
   const [file, stage, rawExitCode] = process.argv.slice(2); let text = '';
@@ -66,3 +98,17 @@ function cli() {
   console.log('QA_JSON ' + JSON.stringify(classifyIosTestDiagnostics({ text, stage, exitCode })));
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) cli();
+
+// Closed schema for synchronous XCTest issues, independent of app startup/telemetry.
+export function sanitizeIosLaunchDiagnostic(input) {
+  if (!input || typeof input !== 'object') return undefined;
+  if (input.event === 'ios_launch_checkpoint') return ['before_launch', 'after_launch'].includes(input.stage) ? { event: 'ios_launch_checkpoint', stage: input.stage, appValidated: false } : undefined;
+  if (input.event !== 'ios_xctest_issue') return undefined;
+  const reasons = ['app_not_installed', 'launch_denied', 'launch_timeout', 'automation_connection', 'app_exited', 'launch_failed', 'unknown'];
+  const row = { event: 'ios_xctest_issue', appValidated: false, driverFailure: input.isFailure !== false, reason: reasons.includes(input.reason) ? input.reason : 'unknown' };
+  if (Number.isInteger(input.issueType) && input.issueType >= 0 && input.issueType <= 5) row.issueType = input.issueType;
+  if (Number.isInteger(input.sourceLine) && input.sourceLine > 0 && input.sourceLine <= 100000) row.sourceLine = input.sourceLine;
+  if (typeof input.associatedErrorPresent === 'boolean') row.associatedErrorPresent = input.associatedErrorPresent;
+  const chain = sanitizeErrorChain(input.errorChain); if (chain.length) row.errorChain = chain;
+  return row;
+}

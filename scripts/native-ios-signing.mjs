@@ -1,4 +1,4 @@
-// CI-only ad-hoc signing for the simulator QA app. Synthetic team prefix; no Apple certs/profiles/keychain changes.
+// CI-only simulator QA signing. Normal smoke uses Xcode link-time entitlements, never re-signs.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -13,7 +13,20 @@ export function guardEnv(env = process.env, platform = process.platform) {
   if (/^(production|appstore)$/i.test(env.CONFIGURATION || '') || /^iphoneos/i.test(env.SDK_NAME || '') || env.PLATFORM_NAME === 'iphoneos') throw Error('signing_production_refused');
   return true;
 }
-export function entitlementsXml() {
+export const SIGNING_VARIANTS = Object.freeze(['V1','V2','V3','V4']);
+export function variantEntitlements(variant='V4') {
+  if (!SIGNING_VARIANTS.includes(variant)) throw Error('unknown_signing_variant');
+  return variant==='V1'?{}:variant==='V2'?{'get-task-allow':true}:variant==='V3'?{'get-task-allow':true,'keychain-access-groups':[APP_IDENTIFIER]}:{'application-identifier':APP_IDENTIFIER,'keychain-access-groups':[APP_IDENTIFIER],'get-task-allow':true};
+}
+export function validateVariant(info, ents, variant='V4') {
+  validateIdentity(info);
+  const expected=variantEntitlements(variant);
+  if (!ents || Array.isArray(ents) || JSON.stringify(Object.keys(ents).sort())!==JSON.stringify(Object.keys(expected).sort()) || Object.keys(expected).some(k=>JSON.stringify(ents[k])!==JSON.stringify(expected[k]))) throw Error('variant_entitlements_mismatch');
+  return true;
+}
+export function entitlementsXml(variant='V4') {
+  variantEntitlements(variant);
+  if(variant!=='V4') return '<?xml version="1.0"?><plist version="1.0"><dict>'+(variant==='V1'?'':'<key>get-task-allow</key><true/>')+(variant==='V3'?'<key>keychain-access-groups</key><array><string>'+APP_IDENTIFIER+'</string></array>':'')+'</dict></plist>';
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>application-identifier</key><string>${APP_IDENTIFIER}</string><key>keychain-access-groups</key><array><string>${APP_IDENTIFIER}</string></array><key>get-task-allow</key><true/></dict></plist>\n`;
 }
 // info: parsed Info.plist; ents: parsed entitlements object (from signed binary).
@@ -61,29 +74,85 @@ export function extractPlistXml(text) {
   return text.slice(start, end + 8);
 }
 const plistJson = (args, input) => JSON.parse(run('plutil', ['-convert', 'json', '-o', '-', ...args], input));
-export function signApp(app, work) {
+export function signApp(app, work, variant='V4') {
   guardEnv();
   if (!fs.existsSync(path.join(app, 'Info.plist'))) throw Error('app_missing');
   validateIdentity(plistJson(['--', path.join(app, 'Info.plist')]));
+  variantEntitlements(variant);
+  if(fs.existsSync(path.join(app,'embedded.mobileprovision'))) throw Error('simulator_profile_refused');
+  if(variant==='V1') {run('codesign',['--force','--sign','-','--timestamp=none',app]);return;}
   const file = path.join(work, 'qa-ci.entitlements');
-  fs.writeFileSync(file, entitlementsXml());
+  fs.writeFileSync(file, entitlementsXml(variant));
   run('codesign', ['--force', '--sign', '-', '--timestamp=none', '--entitlements', file, app]);
 }
-export function verifyApp(app) {
+export function verifyApp(app, variant='V4') {
   guardEnv();
   const info = plistJson(['--', path.join(app, 'Info.plist')]);
-  const xml = extractPlistXml(details('codesign', ['-d', '--entitlements', ':-', app]));
-  const ents = plistJson(['-'], xml);
-  validateApp(info, ents);
-  run('codesign', ['--verify', '--strict', app]);
+  variantEntitlements(variant);
+  if(fs.existsSync(path.join(app,'embedded.mobileprovision'))) throw Error('simulator_profile_refused');
+  const result=output('codesign', ['-d', '--entitlements', ':-', app]);
+  const text=result.stdout+'\n'+result.stderr;
+  const absent=variant==='V1' && result.stdout.trim()==='' && !/<plist|bplist|<key>/.test(text);
+  const ents=absent?{}:plistJson(['-'], extractPlistXml(text));
+  validateVariant(info, ents, variant);
+  run('codesign', ['--verify', '--deep', '--strict', app]);
   parseAdhoc(details('codesign', ['-dvv', app]));
 }
+// otool prints native-endian words on arm64; other versions emit byte-ordered hex.
+export function sectionXml(text) {
+  const rows=String(text).split('\n').filter(l=>/^\s*[0-9a-f]{8,16}\s+/i.test(l));
+  const words=rows.flatMap(l=>l.trim().split(/\s+/).slice(1).filter(w=>/^(?:[0-9a-f]{2}){1,8}$/i.test(w)));
+  if(!words.length)throw Error('embedded_entitlements_missing');
+  for(const hex of [words.join(''),words.map(w=>w.match(/../g).reverse().join('')).join('')]) {
+    const decoded=Buffer.from(hex,'hex').toString('utf8');
+    if(decoded.startsWith('<?xml'))return extractPlistXml(decoded);
+  }
+  throw Error('embedded_entitlements_encoding');
+}
+export function validateXcodeEntitlements(info, ents) {
+  validateIdentity(info);
+  // Xcode may prefix the identifier with a team id (or leave it bare); the bundle id itself must be ours, unresolved
+  // build variables ($(…)) are never accepted.
+  const appId=ents?.['application-identifier'];
+  if(typeof appId!=='string'||/\$[({]/.test(appId)||!(appId===BUNDLE_ID||appId.endsWith('.'+BUNDLE_ID)))throw Error('embedded_application_identifier_mismatch');
+  const groups=ents['keychain-access-groups'];
+  if(!Array.isArray(groups)||!groups.some(x=>x===BUNDLE_ID||(typeof x==='string'&&x.endsWith('.'+BUNDLE_ID)))||groups.some(x=>typeof x!=='string'||/\$[({]/.test(x)))throw Error('embedded_keychain_groups_mismatch');
+  return true;
+}
+export function prepareXcodeEntitlements(source,destination,stripSiwa=false) {
+  guardEnv();
+  const ents=plistJson(['--',source]);
+  if(stripSiwa)delete ents['com.apple.developer.applesignin'];
+  const resolve=v=>typeof v==='string'?v.replace(/\$\(AppIdentifierPrefix\)|\$\{AppIdentifierPrefix\}/g,'').replace(/\$\(CFBundleIdentifier\)|\$\(PRODUCT_BUNDLE_IDENTIFIER\)/g,BUNDLE_ID):Array.isArray(v)?v.map(resolve):v;
+  for(const k of Object.keys(ents))ents[k]=resolve(ents[k]);
+  ents['application-identifier']=BUNDLE_ID;
+  // Preserve existing groups; ensure default SecItemAdd has the app's own group.
+  ents['keychain-access-groups']=[...new Set([...(ents['keychain-access-groups']||[]),BUNDLE_ID])];
+  fs.writeFileSync(destination,run('plutil',['-convert','xml1','-o','-','-'],JSON.stringify(ents)));
+}
+export function verifyXcodeApp(app) {
+  guardEnv();
+  const info=plistJson(['--',path.join(app,'Info.plist')]);validateIdentity(info);
+  if(fs.existsSync(path.join(app,'embedded.mobileprovision')))throw Error('simulator_profile_refused');
+  if(typeof info.CFBundleExecutable!=='string'||path.basename(info.CFBundleExecutable)!==info.CFBundleExecutable)throw Error('invalid_executable');
+  const embedded=plistJson(['-'],sectionXml(run('otool',['-s','__TEXT','__entitlements',path.join(app,info.CFBundleExecutable)])));
+  validateXcodeEntitlements(info,embedded);
+  // On simulator codesign may report no signature-slot entitlements. Embedded section is authoritative.
+  // Xcode's simulator signature slot carries only a minimal set (e.g. get-task-allow) — the embedded section above is
+  // what the simulator honours. If the slot does carry identifiers they must still be ours.
+  const shown=details('codesign',['-d','--entitlements',':-',app]);
+  if(/<plist/.test(shown)){const slot=plistJson(['-'],extractPlistXml(shown));if(slot&&('application-identifier' in slot||'keychain-access-groups' in slot))validateXcodeEntitlements(info,{...embedded,...slot});}
+  run('codesign',['--verify','--deep','--strict',app]);parseAdhoc(details('codesign',['-dvv',app]));
+  return {embeddedEntitlements:true,applicationIdentifierMatches:true,keychainGroupMatches:true,adhoc:true,noAuthority:true};
+}
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [cmd, app, work] = process.argv.slice(2);
+  const [cmd, app, work, option] = process.argv.slice(2);
   try {
-    if (cmd === 'sign') signApp(app, work || '.');
-    else if (cmd === 'verify') verifyApp(app);
+    if(cmd==='prepare-xcode')prepareXcodeEntitlements(app,work,option==='strip-siwa');
+    else if(cmd==='verify-xcode')console.log(JSON.stringify(verifyXcodeApp(app)));
+    else if(cmd==='sign')throw Error('manual_resigning_disabled');
+    else if(cmd==='verify')verifyApp(app);
     else throw Error('usage');
-    console.log(`ios_qa_signing_${cmd}_ok`);
-  } catch (e) { console.error(`ios_qa_signing_failed:${e.message}`); process.exit(1); }
+    console.log('ios_qa_signing_'+cmd+'_ok');
+  }catch(e){console.error('ios_qa_signing_failed:'+e.message);process.exit(1);}
 }

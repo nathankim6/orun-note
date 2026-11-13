@@ -101,7 +101,9 @@ jobs:
         run: node scripts/test-content-protection.js
       - name: Test CI-only simulator signing guard
         run: node --test qa/native-ios-signing.test.mjs
-      - name: iOS Simulator build and XCTest UI smoke (QA ad-hoc)
+      - name: Test bounded XCTest result diagnostics (no device)
+        run: node --test qa/native-ios-test-diagnostics.test.mjs qa/native-ios-result-diagnostics.test.mjs qa/native-ios-issue-diagnostics.test.mjs qa/native-ios-launch-probe.test.mjs
+      - name: iOS Simulator build and XCTest UI smoke (Xcode embedded entitlements)
         timeout-minutes: 80
         run: |
           scripts/native-with-qa-entry.sh bash -c 'npx expo prebuild --platform ios --no-install && (cd ios && pod install) && scripts/native-ios-smoke.sh'
@@ -113,6 +115,8 @@ jobs:
         if: always()
         with:
           name: native-smoke-ios-sanitized-logs
-          path: qa/output/ios.jsonl
+          path: |
+            qa/output/ios.jsonl
+            qa/output/ios-launch-probe.json
           if-no-files-found: warn
           retention-days: 7
