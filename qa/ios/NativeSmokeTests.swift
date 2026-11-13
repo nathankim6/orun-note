@@ -35,7 +35,16 @@ final class NativeSmokeTests: XCTestCase {
     repeat {
       healthy()
       let unavailable = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "qa-unavailable-")).firstMatch
-      if unavailable.exists { fail("network_or_player_unavailable"); return unavailable }
+      if unavailable.exists {
+        // Same owner-approved rule as Android: YouTube refusing the embed for this CI host (150/101/100/5) during the
+        // first three player visits is an environment limit, recorded and accepted only by the player-terminal wait.
+        let flags = unavailable.label
+        let code = ["150", "101", "100", "5"].first { flags.contains("qa-errorcode-\($0)") && !flags.contains("qa-errorcode-\($0)0") }
+        if let code = code, cycleNumber >= 1, cycleNumber <= 3, flags.contains("qa-unavailable-\(cycleNumber)") {
+          if !limitedCycles.contains(cycleNumber) { limitedCycles.insert(cycleNumber); emit("player_environment_limited", ["cycle": cycleNumber, "errorCode": Int(code) ?? 0]) }
+          if label == "qa-ready-\(cycleNumber)" { return unavailable }
+        } else { fail("network_or_player_unavailable"); return unavailable }
+      }
       let target = contains ? app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch : element(label)
       if target.exists { return target }
       Thread.sleep(forTimeInterval: 0.25)
@@ -48,13 +57,15 @@ final class NativeSmokeTests: XCTestCase {
     guard app.state == .runningForeground else { return }
     let telemetry = element("qa-telemetry")
     guard telemetry.exists else { return }
-    if let data = telemetry.label.data(using: .utf8), let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], rows.count <= 180 { lastTelemetry = rows }
+    if let data = telemetry.label.data(using: .utf8), let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], rows.count <= 900 { lastTelemetry = rows }
   }
   func collect() {
     // Never re-enter healthy()/wait() on a failure. Keep the last successful snapshot if app died.
     captureTelemetry()
     for row in lastTelemetry { var values = row; let event = values.removeValue(forKey: "event") as? String ?? "invalid"; emit(event, values) }
   }
+  var cycleNumber = 0
+  var limitedCycles = Set<Int>()
   func testNativeSmoke() {
     emit("ios_launch_checkpoint", ["stage": "before_launch"])
     app.launch(); defer { collect() }
@@ -73,19 +84,26 @@ final class NativeSmokeTests: XCTestCase {
     } while Date() < end
     if !pdfPassed { fail("pdf_timeout"); return }
     for cycle in 1...20 {
+      cycleNumber = cycle
       currentStep = "list_open"; tap("open-review-videos"); currentStep = "wait_list"; wait("QA Video 1 재생")
       if cycle <= 3 {
         currentStep = "player_open"; tap("QA Video 1 재생"); currentStep = "wait_ready"; wait("qa-ready-\(cycle)", 65, contains: true)
+        if limitedCycles.contains(cycle) {
+          // provider refused the embed: player initialised without a crash; playback is verified on real devices
+          currentStep = "player_close"; tap("review-video-player-close"); wait("QA Video 1 재생")
+          currentStep = "list_close"; tap("review-videos-list-close"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])
+          continue
+        }
         if element("컨트롤 표시").exists && !element("일시정지").exists { tap("컨트롤 표시") }
         if element("일시정지").exists { currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
         currentStep = "play"; tap("재생"); wait("qa-state-playing-\(cycle)", 45, contains: true)
         currentStep = "wait_progress"; wait("qa-progressing-\(cycle)", 60, contains: true)
         if !element("일시정지").exists { tap("컨트롤 표시") }
         currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true)
-        currentStep = "player_close"; tap("닫기"); wait("QA Video 1 재생")
+        currentStep = "player_close"; tap("review-video-player-close"); wait("QA Video 1 재생")
       }
-      currentStep = "list_close"; tap("닫기"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])
+      currentStep = "list_close"; tap("review-videos-list-close"); wait("open-review-videos"); emit("cycle_complete", ["cycle": cycle])
     }
-    collect(); emit("suite_result", ["platform": "ios", "result": "pass", "cycles": 20, "playbackCycles": 3])
+    collect(); emit("suite_result", ["platform": "ios", "result": "pass", "cycles": 20, "playerCycles": 3])
   }
 }

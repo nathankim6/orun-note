@@ -88,7 +88,7 @@ if (driverTrigger && laterReport.crash) evidenceRows.push({ event: 'driver_evide
 const crash = laterReport.crash;
 if (crash && !driverTrigger) rows.push({ event: 'suite_result', platform, result: 'fail', reason: 'native_or_js_error' });
 const iosDriverFailed = iosIssueFailure || iosDriverStatuses.some(row => row.driverFailure === true);
-const providerLimited = row => platform === 'android' && row.event === 'player_unavailable' && [150, 101, 100, 5].includes(row.errorCode) && Number.isInteger(row.cycle) && row.cycle >= 1 && row.cycle <= 3;
+const providerLimited = row => (platform === 'android' || platform === 'ios') && row.event === 'player_unavailable' && [150, 101, 100, 5].includes(row.errorCode) && Number.isInteger(row.cycle) && row.cycle >= 1 && row.cycle <= 3;
 const limitedKeys = new Set();
 for (const row of [...rows]) if (providerLimited(row)) {
   const key = row.cycle + ':' + row.errorCode;

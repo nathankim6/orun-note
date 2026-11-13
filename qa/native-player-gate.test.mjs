@@ -44,7 +44,12 @@ test('a forged environment-limited marker cannot replace a provider response', (
   rows.push({ event: 'player_environment_limited', cycle: 1, errorCode: 150 });
   assert.equal(gate(rows).status, 1);
 });
-test('iOS still rejects provider refusals', () => { assert.equal(gate(androidPassRows(150), 'ios').status, 1); });
+// Owner decision (2026-11-12): the same provider-refusal rule applies to the iOS simulator; other codes still fail there.
+test('iOS accepts provider refusals 150 in the first three visits with the environment marker', () => {
+  const result = gate(androidPassRows(150).map(r => r.platform === 'android' ? { ...r, platform: 'ios' } : r), 'ios');
+  assert.equal(result.status, 0); assert(result.rows.some(r => r.event === 'player_environment_limited'));
+});
+test('iOS still rejects unapproved player codes', () => { assert.equal(gate([...androidPassRows().map(r => r.platform === 'android' ? { ...r, platform: 'ios' } : r), { event: 'player_unavailable', cycle: 1, errorCode: 153 }], 'ios').status, 1); });
 
 test('even one missing list-open or cycle completion fails', () => {
   for (const event of ['list_open', 'list_close', 'cycle_complete']) {
