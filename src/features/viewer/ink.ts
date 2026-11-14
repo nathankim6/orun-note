@@ -63,31 +63,114 @@ export function boundsOf(points: Point[]) { const xs = points.map((p) => p.x), y
  * Fixed-width pen outline. Pressure and speed never change the width,
  * including legacy strokes that were saved with variable-width metadata.
  * Returned path is in PDF page units; render with `scale={s}`. Cached per points array (immutable per stroke).
+ *
+ * perfect-freehand is tuned for screen pixels: it pads a lone point with a neighbour 1 unit away and keeps a few other
+ * absolute 1-unit thresholds. Our points are PDF page units where a pen is ~1 unit wide, so the first one or two points
+ * of every stroke rendered as a dot about twice the chosen width that snapped back once the stroke grew ("a blob for an
+ * instant when the nib lands"). Running the generator in a magnified space (≥16 units per pen width) and scaling the
+ * outline back makes those constants negligible: the landing dot is the chosen width from the very first frame.
  */
 const outlineCache = new WeakMap<Point[], string>();
-const pencilOutlineCache = new WeakMap<Point[], string>();
-/**
- * Pencil (연필): the same outline generator, but the stylus pressure recorded with each point thins and thickens the
- * line (graphite feel) and the ends taper slightly. Points without pressure (finger / legacy) fall back to a medium
- * pressure so the stroke still looks even. Rendered with the preset's partial opacity.
- */
+export const INK_SPACE = (size: number) => Math.max(8, 16 / Math.max(0.05, size));
+function strokeOutline(input: number[][], opts: Parameters<typeof getStroke>[1] & { size: number }): number[][] {
+  const k = INK_SPACE(opts.size);
+  const scaled = input.map((q) => [q[0] * k, q[1] * k, q[2]]);
+  const o: any = { ...opts, size: opts.size * k };
+  if (o.start && typeof o.start.taper === 'number') o.start = { ...o.start, taper: o.start.taper * k };
+  if (o.end && typeof o.end.taper === 'number') o.end = { ...o.end, taper: o.end.taper * k };
+  return getStroke(scaled, o).map((q) => [q[0] / k, q[1] / k]);
+}
+function outlineToPath(out: number[][]): string {
+  if (out.length < 3) return '';
+  let d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;
+  for (let i = 0; i < out.length; i++) { const [x0, y0] = out[i]; const [x1, y1] = out[(i + 1) % out.length]; d += ` ${x0.toFixed(2)} ${y0.toFixed(2)} ${((x0 + x1) / 2).toFixed(2)} ${((y0 + y1) / 2).toFixed(2)}`; }
+  return d + ' Z';
+}
+const dotPath = (q: Point, r: number) => `M ${q.x - r} ${q.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`;
 export function penOutline(points: Point[], width: number, live = false, tool: Tool | string = 'pen'): string {
-  const pencil = tool === 'pencil'; const cache = pencil ? pencilOutlineCache : outlineCache;
-  if (!live) { const hit = cache.get(points); if (hit) return hit; }
-  const input = pencil ? points.map((q) => [q.x, q.y, Math.min(1, Math.max(0.15, q.p ?? 0.5))]) : points.map((q) => [q.x, q.y, 0.5]);
-  const out = pencil
-    ? getStroke(input, { size: width * 1.15, thinning: 0.55, smoothing: 0.5, streamline: 0.35, simulatePressure: false, last: !live, start: { cap: true, taper: width * 1.5 }, end: { cap: true, taper: width * 1.5 } })
-    : getStroke(input, { size: width * 1.05, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
-  // graphite edge: a small deterministic wobble on the outline so the stroke looks drawn with a soft lead, not a marker
-  if (pencil && out.length > 2) { const a = width * 0.14; for (let i = 0; i < out.length; i++) { const n = grain(out[i][0] * 7.3 + out[i][1] * 3.1 + i); out[i] = [out[i][0] + (n - 0.5) * a, out[i][1] + (grain(n * 97 + i) - 0.5) * a]; } }
-  let d = '';
-  if (out.length > 2) {
-    d = `M ${out[0][0].toFixed(2)} ${out[0][1].toFixed(2)} Q`;
-    for (let i = 0; i < out.length; i++) { const [x0, y0] = out[i]; const [x1, y1] = out[(i + 1) % out.length]; d += ` ${x0.toFixed(2)} ${y0.toFixed(2)} ${((x0 + x1) / 2).toFixed(2)} ${((y0 + y1) / 2).toFixed(2)}`; }
-    d += ' Z';
-  } else if (points.length) { const q = points[0]; const r = width * 0.6; d = `M ${q.x - r} ${q.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`; }
-  if (!live) cache.set(points, d);
+  if (tool === 'pencil') return pencilLayers(points, width, live).wash;
+  if (!live) { const hit = outlineCache.get(points); if (hit) return hit; }
+  const size = width * 1.05;
+  const out = strokeOutline(points.map((q) => [q.x, q.y, 0.5]), { size, thinning: 0, smoothing: 0.62, streamline: 0.4, simulatePressure: false, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } });
+  const d = out.length > 2 ? outlineToPath(out) : points.length ? dotPath(points[0], size / 2) : '';
+  if (!live) outlineCache.set(points, d);
   return d;
+}
+
+/*
+ * 연필 (pencil). GoodNotes stores a pencil stroke as centre points with force / altitude / azimuth and a random seed per
+ * segment, and draws it as a textured brush raster: a grainy band of graphite specks whose visible width is roughly
+ * 0.4–0.9 of the nominal width depending on force, with ragged, speckled edges that extend a little past the centre line.
+ * We reproduce that look as a deterministic stamp brush: along the stroke, at a fixed spacing, a few graphite specks are
+ * stamped at pseudo-random offsets inside the local radius (denser near the centre), plus a faint continuous core so thin
+ * strokes do not break up. Pressure → wider and darker; a flat (tilted) stylus → wider and lighter (shading); ends taper.
+ * Everything is derived from the stored points through `grain()`, so a stroke always renders the same.
+ */
+export type PencilLayers = { core: string; dark: string; light: string; wash: string };
+const pencilCache = new WeakMap<Point[], Map<number, PencilLayers>>();
+/** stylus pressure response: raw S Pen / Apple Pencil values are low when writing normally */
+export const pencilPressure = (p?: number) => (typeof p === 'number' && p > 0 ? Math.min(1, Math.pow(Math.min(1, p), 0.55)) : 0.55);
+/** 0 upright … 1 laid flat for shading (tilt below ~45° from vertical does nothing) */
+export const pencilShade = (t?: number) => (typeof t === 'number' && t > 0 ? Math.min(1, Math.max(0, (t - 0.8) / 0.55)) : 0);
+/** visible band width relative to the chosen width (GoodNotes: ~0.4 W light … ~0.9 W firm) */
+export const pencilWidthFactor = (q: Point) => (0.45 + 0.5 * pencilPressure(q.p)) * (1 + 2 * pencilShade(q.t));
+/** graphite darkness 0..1 */
+export const pencilDarkness = (q: Point) => (0.35 + 0.65 * pencilPressure(q.p)) * (1 - 0.5 * pencilShade(q.t));
+const circ = (x: number, y: number, r: number) => `M${(x - r).toFixed(2)} ${y.toFixed(2)}a${r.toFixed(2)} ${r.toFixed(2)} 0 1 0 ${(2 * r).toFixed(2)} 0a${r.toFixed(2)} ${r.toFixed(2)} 0 1 0 ${(-2 * r).toFixed(2)} 0Z`;
+/** a speck is a tiny square (0.1–0.3 page units): indistinguishable from a dot at any zoom, a third of the path text */
+const speck = (x: number, y: number, r: number) => { const d = (2 * r).toFixed(1); return `M${(x - r).toFixed(1)} ${(y - r).toFixed(1)}h${d}v${d}h-${d}z`; };
+/** Specks are capped per stroke so a page of pencil notes stays cheap to draw; long strokes just get slightly sparser. */
+const PENCIL_MAX_SPECKS = 7000;
+export function pencilLayers(points: Point[], width: number, live = false): PencilLayers {
+  if (!live) { const hit = pencilCache.get(points)?.get(width); if (hit) return hit; }
+  const W = Math.max(0.2, width); const res: PencilLayers = { core: '', dark: '', light: '', wash: '' };
+  if (!points.length) return res;
+  // resample the centre line at a fixed spacing (page units)
+  const step = Math.max(0.16, W * 0.2);
+  type S = { x: number; y: number; p?: number; t?: number; d: number };
+  const samples: S[] = []; let total = 0;
+  for (let i = 1; i < points.length; i++) total += dist(points[i - 1], points[i]);
+  if (points.length === 1 || total < 1e-6) { const q = points[0]; samples.push({ x: q.x, y: q.y, p: q.p, t: q.t, d: 0 }); }
+  else {
+    let carry = 0, d = 0;
+    samples.push({ x: points[0].x, y: points[0].y, p: points[0].p, t: points[0].t, d: 0 });
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i]; const L = dist(a, b); if (L < 1e-6) continue;
+      let s0 = step - carry;
+      while (s0 <= L) { const u = s0 / L; samples.push({ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, p: (a.p ?? b.p) != null ? (a.p ?? b.p!) * (1 - u) + (b.p ?? a.p!) * u : undefined, t: b.t ?? a.t, d: d + s0 }); s0 += step; }
+      carry = L - (s0 - step); d += L;
+    }
+  }
+  const n = samples.length; const budget = Math.max(1, Math.min(8, Math.floor(PENCIL_MAX_SPECKS / n)));
+  let dark = '', light = '', coreW: number[] = [];
+  // ends taper over ~1.2 W (lead lands and lifts), like a real pencil
+  const taperLen = Math.max(step * 2, W * 1.2);
+  for (let i = 0; i < n; i++) {
+    const q = samples[i]; const seed = (Math.round(q.x * 37) + Math.round(q.y * 91) * 1013 + i * 7) | 0;
+    const taper = Math.min(1, 0.35 + 0.65 * Math.min(q.d, total - q.d) / taperLen);
+    const w = W * pencilWidthFactor(q) * taper, R = w / 2, dk = pencilDarkness(q);
+    coreW.push(Math.max(0.15, w * 0.42));
+    const count = Math.min(budget, Math.max(1, Math.round(3.5 + 4.5 * dk)));
+    for (let j = 0; j < count; j++) {
+      const u1 = grain(seed + j * 13.1), u2 = grain(seed * 0.7 + j * 29.3 + 5), u3 = grain(seed * 1.3 + j * 17.7 + 11);
+      const rho = R * 1.25 * Math.sqrt(u1), ang = u2 * Math.PI * 2;
+      const x = q.x + Math.cos(ang) * rho, y = q.y + Math.sin(ang) * rho;
+      const r = Math.max(0.04, w * (0.05 + 0.07 * u3) * (1 - 0.35 * (rho / (R * 1.25 + 1e-6))));
+      if (rho < R * 0.75 && u3 < 0.3 + 0.65 * dk) dark += speck(x, y, r); else light += speck(x, y, r);
+    }
+  }
+  // faint continuous core (variable width) so strokes never break into dots; also the hit/selection outline (wash)
+  const coreInput = samples.map((q, i) => [q.x, q.y, Math.min(1, coreW[i] / W)]);
+  const core = samples.length > 1
+    ? strokeOutline(coreInput, { size: W, thinning: 1, smoothing: 0.5, streamline: 0.2, simulatePressure: false, easing: (x: number) => x, last: !live, start: { cap: true, taper: 0 }, end: { cap: true, taper: 0 } })
+    : [];
+  res.core = core.length > 2 ? outlineToPath(core) : circ(samples[0].x, samples[0].y, coreW[0] / 2);
+  const washInput = samples.map((q) => [q.x, q.y, Math.min(1, pencilWidthFactor(q) * 0.5)]);
+  const wash = samples.length > 1 ? strokeOutline(washInput, { size: W * 1.5, thinning: 1, smoothing: 0.5, streamline: 0.2, simulatePressure: false, easing: (x: number) => x, last: !live }) : [];
+  res.wash = wash.length > 2 ? outlineToPath(wash) : circ(samples[0].x, samples[0].y, W * 0.5);
+  res.dark = dark; res.light = light;
+  if (!live) { let m = pencilCache.get(points); if (!m) { m = new Map(); pencilCache.set(points, m); } m.set(width, res); }
+  return res;
 }
 /**
  * Highlighter input clean-up. Where the pen lands (and lifts) it jitters for a moment; with a wide translucent stroke
@@ -107,9 +190,10 @@ export function cleanHighlight(points: Point[], width: number): Point[] {
 export function grain(seed: number) { const x = Math.sin(seed * 12.9898) * 43758.5453; return x - Math.floor(x); }
 /** id of the SVG grain pattern for a pencil colour */
 export const pencilGrainId = (color: string) => 'pg' + color.replace(/[^0-9a-zA-Z]/g, '').toLowerCase();
-/** graphite grain: an irregular field of tiny specks in one pattern cell (page units, cell PENCIL_GRAIN_CELL square) */
-export const PENCIL_GRAIN_CELL = 7;
-export const PENCIL_GRAIN_DOTS = Array.from({ length: 34 }, (_, i) => ({ cx: grain(i * 3.7 + 1) * PENCIL_GRAIN_CELL, cy: grain(i * 5.1 + 2) * PENCIL_GRAIN_CELL, r: 0.16 + grain(i * 2.3 + 3) * 0.3, a: 0.25 + grain(i * 7.9 + 5) * 0.7 }));
+/** paper-tooth grain for graphite: an irregular field of specks in one large pattern cell (page units), so the tiling is not
+ * visible. Bigger, fainter specks fill the body; small dark ones give the sparkle of graphite on paper tooth. */
+export const PENCIL_GRAIN_CELL = 17;
+export const PENCIL_GRAIN_DOTS = Array.from({ length: 520 }, (_, i) => { const big = i % 4 === 0; return { cx: grain(i * 3.7 + 1) * PENCIL_GRAIN_CELL, cy: grain(i * 5.1 + 2) * PENCIL_GRAIN_CELL, r: big ? 0.2 + grain(i * 2.3 + 3) * 0.22 : 0.07 + grain(i * 2.9 + 4) * 0.13, a: big ? 0.35 + grain(i * 7.9 + 5) * 0.35 : 0.6 + grain(i * 6.1 + 6) * 0.4 }; });
 export const isInkPen = (tool: string) => tool === 'pen' || tool === 'pencil' || tool === 'fountain' || tool === 'brush';
 
 /** Polyline path (no smoothing) for auto-corrected polygons and straight highlighter strokes. */

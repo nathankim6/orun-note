@@ -9,7 +9,8 @@ import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
 import { useSettingsStore } from '@/store/settings';
 import Svg, { G, Path, Defs, Pattern, Circle } from 'react-native-svg';
 import { GradientPalette } from './GradientPalette';
-import { penOutline, PENCIL_GRAIN_DOTS, PENCIL_GRAIN_CELL } from './ink';
+import { penOutline } from './ink';
+import { PencilStroke } from './PencilInk';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
 import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
@@ -140,7 +141,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
           <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="#F6F7FB" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
           <Path d={pts.slice(8, 16).map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke="rgba(0,122,255,0.22)" strokeWidth={cfg.width * k + 3} strokeLinecap="round" strokeLinejoin="round" fill="none" />
         </G>
-      : cfg.tool === 'pencil' ? <G><Defs><Pattern id="pg-preview" patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={cfg.color} fillOpacity={g.a} />)}</Pattern></Defs><Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity * 0.55} /><Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill="url(#pg-preview)" fillOpacity={cfg.opacity} /></G>
+      : cfg.tool === 'pencil' ? <PencilStroke points={pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p }))} width={cfg.width} color={cfg.color} opacity={cfg.opacity} scale={k} live />
       : <Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity} />;
     return <View style={styles.previewBox}><Svg width={W_} height={H_}>{ink}</Svg></View>;
   };

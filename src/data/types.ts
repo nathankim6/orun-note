@@ -1,7 +1,7 @@
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Tool = 'pen' | 'pencil' | 'highlighter' | 'fountain' | 'brush' | 'eraser' | 'vectorEraser' | 'lasso' | 'shape' | 'text' | 'laser' | 'hand' | 'image' | 'select';
 export type ShapeKind = 'line' | 'rectangle' | 'ellipse' | 'triangle' | 'diamond' | 'arrow';
-export type Point = { x: number; y: number; p?: number };
+export type Point = { x: number; y: number; /** stylus pressure 0..1 */ p?: number; /** stylus tilt from vertical, radians (0 upright) */ t?: number };
 export type Stroke = { id: string; tool: Tool; color: string; width: number; opacity: number; points: Point[]; shape?: ShapeKind; createdAt: number;
   /** 고정 굵기 (ignore pressure) */ fixed?: boolean; /** straight-segment polyline (auto-corrected polygon / straight highlighter) */ poly?: boolean; closed?: boolean };
 export type TextBox = { id: string; rect: Rect; text: string; color: string; size: number; font?: string; createdAt: number };
