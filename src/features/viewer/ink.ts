@@ -120,10 +120,10 @@ const circ = (x: number, y: number, r: number) => `M${(x - r).toFixed(2)} ${y.to
 /** a speck is a tiny square (0.1–0.3 page units): indistinguishable from a dot at any zoom, a third of the path text */
 const speck = (x: number, y: number, r: number) => { const d = (2 * r).toFixed(1); return `M${(x - r).toFixed(1)} ${(y - r).toFixed(1)}h${d}v${d}h-${d}z`; };
 /** Specks are capped per stroke so a page of pencil notes stays cheap to draw; long strokes just get slightly sparser. */
-const PENCIL_MAX_SPECKS = 7000;
+const PENCIL_MAX_SPECKS = 12000;
 export function pencilLayers(points: Point[], width: number, live = false): PencilLayers {
   if (!live) { const hit = pencilCache.get(points)?.get(width); if (hit) return hit; }
-  const W = Math.max(0.2, width); const res: PencilLayers = { core: '', dark: '', light: '', streaks: '', streakW: W * 0.11, wash: '' };
+  const W = Math.max(0.2, width); const res: PencilLayers = { core: '', dark: '', light: '', streaks: '', streakW: W * 0.09, wash: '' };
   if (!points.length) return res;
   // resample the centre line at a fixed spacing (page units)
   const step = Math.max(0.16, W * 0.2);
@@ -141,7 +141,7 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
       carry = L - (s0 - step); d += L;
     }
   }
-  const n = samples.length; const budget = Math.max(1, Math.min(10, Math.floor(PENCIL_MAX_SPECKS / n)));
+  const n = samples.length; const budget = Math.max(1, Math.min(18, Math.floor(PENCIL_MAX_SPECKS / n)));
   let dark = '', light = '', streaks = '', coreW: number[] = [];
   // ends taper over ~1.2 W (lead lands and lifts), like a real pencil
   const taperLen = Math.max(step * 2, W * 1.2);
@@ -151,7 +151,7 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
     const wf = pencilWidthFactor(q), w = W * wf * taper, R = w / 2, dk = pencilDarkness(q);
     coreW.push(Math.max(0.15, w * 0.42));
     // more graphite per step when the band is wider (shading with a flat lead covers more paper)
-    const count = Math.min(budget, Math.max(1, Math.round((3 + 4 * dk) * Math.max(1, wf / 0.9))));
+    const count = Math.min(budget, Math.max(1, Math.round((7 + 8 * dk) * Math.max(1, wf / 0.9))));
     // local direction (graphite streaks follow the movement of the lead, like fibres)
     const nb = samples[Math.min(n - 1, i + 1)], pa = samples[Math.max(0, i - 1)]; let dx = nb.x - pa.x, dy = nb.y - pa.y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     for (let j = 0; j < count; j++) {
@@ -161,7 +161,7 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
       if (u4 < 0.12 + 0.3 * dk && rho < R * 0.8) { dark += speck(x, y, Math.max(0.04, w * (0.05 + 0.06 * u3))); continue; }
       if (u4 > 0.6) { light += speck(x, y, Math.max(0.04, w * (0.04 + 0.07 * u3))); continue; }
       // a streak: short segment along the direction, a little longer towards the centre
-      const len = w * (0.12 + 0.35 * u3) * (1 - 0.3 * rho / (R * 1.3 + 1e-6));
+      const len = w * (0.1 + 0.28 * u3) * (1 - 0.3 * rho / (R * 1.3 + 1e-6));
       streaks += `M${(x - dx * len / 2).toFixed(1)} ${(y - dy * len / 2).toFixed(1)}l${(dx * len).toFixed(1)} ${(dy * len).toFixed(1)}`;
     }
   }
