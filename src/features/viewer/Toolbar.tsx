@@ -51,13 +51,13 @@ const SHAPES: { k: ShapeKind; icon: any; label: string }[] = [{ k: 'line', icon:
 const RANGE: Record<string, { min: number; max: number }> = { pen: { min: 0.5, max: 12 }, pencil: { min: 0.5, max: 12 }, highlighter: { min: 6, max: 40 }, eraser: { min: 2, max: 40 }, vectorEraser: { min: 2, max: 40 }, shape: { min: 0.5, max: 12 }, text: { min: 8, max: 48 } };
 
 type Panel = null | 'pen' | 'highlighter' | 'color' | 'shape' | 'eraser' | 'text' | 'snap' | 'lasso';
-type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; onVideos?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
+type Props = { onStylusDial?: () => void; cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; onVideos?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
 
 /**
  * Main toolbar + a single compact option row right under it. Pen and highlighter are both top-level; tapping the
  * active tool again toggles its option row. Option rows preview live; 취소 restores the pre-open state, 적용 keeps it.
  */
-export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, onVideos, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
+export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, onVideos, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
   const [titleSpace, setTitleSpace] = useState(0);
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useContentSize();
@@ -155,6 +155,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
       <View style={styles.bar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.barContent}>
           <Pressable accessibilityLabel="뒤로가기" onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.55 }]}><Ionicons name="chevron-back" size={26} color="#007AFF" /><Image source={require('../../../assets/orun-mark.png')} style={{ width: 26, height: 26, borderRadius: 7 }} /></Pressable>
+          {onStylusDial && !readOnly && roundBtn('펜 다이얼', 'aperture-outline', onStylusDial)}
           {roundBtn('되돌리기', 'arrow-undo', onUndo, !canUndo)}
           {roundBtn('다시하기', 'arrow-redo', onRedo, !canRedo)}
           {!readOnly && <>

@@ -1,7 +1,7 @@
 // Exercise the real touch callback: dismissing options must not consume the first pen point.
 const fs = require('fs'), ts = require('typescript'), vm = require('vm'), assert = require('node:assert/strict');
 const source = fs.readFileSync('src/features/viewer/InkCanvas.tsx','utf8');
-const body = source.slice(source.indexOf('  H.current = {'), source.indexOf('  const jsDown ='));
+const body = source.slice(source.indexOf('  H.current = {'), source.indexOf('  useEffect(() => onStylusShortcutCancel'));
 const calls = [], ctx = { H:{current:{}}, enabledRef:{current:true}, rejected:{current:false}, activeId:{current:null}, activeType:{current:null}, pressureRef:{current:null}, tiltRef:{current:null}, lastPe:{current:null}, beginAt:e=>calls.push(e) };
 vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,ctx);
 ctx.H.current.down(10,20,100,200,1,.6,.2);

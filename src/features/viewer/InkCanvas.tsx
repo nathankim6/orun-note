@@ -1,3 +1,4 @@
+import { onStylusShortcutCancel } from './stylusShortcutState';
 import { useSharedValue, runOnJS } from 'react-native-reanimated';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, TextInput, Pressable, Text, Platform, PixelRatio } from 'react-native';
@@ -74,7 +75,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // Finger input never draws: touch is reserved for pinch-zoom and page scrolling. Only stylus (Apple Pencil / S Pen) draws; mouse is allowed for web/desktop.
   const allowPointer = (pointerType: any) => (Platform.OS === 'web' && pointerType !== PointerType.TOUCH) || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE || cfg.tool === 'select'; // the cursor tool (select/move/define) also works with a finger
   const rejected = useRef(false); const lastPe = useRef<PseudoEvt | null>(null);
-  // read at touch time: a touch that lands while the canvas is disabled (e.g. a tool card is open and this tap only closes it) never becomes a dot
+  // Read at touch time: disabled canvases reject ink; opening tool options does NOT disable the canvas.
   const enabledRef = useRef(enabled); enabledRef.current = enabled;
   useEffect(() => () => { if (activeId.current != null) penSession.value = { ...penSession.value, writing: false }; }, []);
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
@@ -154,7 +155,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       else finish(pts, pointerOk);
       setLive([]); liveRef.current = []; if (cfg.tool === 'laser') setTimeout(() => setLaser([]), 600); 
   };
-  const abortStroke = () => { clearDwell(); cancelLive(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; };
+  const abortStroke = () => { if (eraseBefore.current && erasing.current) { strokesRef.current = eraseBefore.current; onStrokes(eraseBefore.current); } clearDwell(); cancelLive(); activeId.current = null; liveRef.current = []; setLive([]); setLasso([]); setMarquee(null); setDragOff(null); setDragScale(null); selMode.current = null; erasing.current = false; eraseBefore.current = null; penSession.value = { ...penSession.value, writing: false, at: activeType.current === PointerType.STYLUS ? Date.now() : penSession.value.at }; };
   // Pen input pipeline (Samsung Notes / GoodNotes model).
   // The pen/finger decision, activation and stroke ownership happen ON THE UI THREAD (worklets), synchronously with the touch.
   // Earlier versions asked gesture-handler to activate / end the gesture from the JS thread; those requests arrive late, and a
@@ -180,6 +181,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     finish: () => { if (activeId.current == null) return; const pe = lastPe.current; activeId.current = null; if (pe) endAt(pe); else abortStroke(); lastPe.current = null; },
     abort: () => { if (activeId.current != null) abortStroke(); lastPe.current = null; },
   };
+  useEffect(() => onStylusShortcutCancel(() => { H.current.abort(); }), []);
   const jsDown = useCallback((x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => H.current.down(x, y, ax, ay, pt, pr, tl), []);
   const jsMove = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.move(x, y, ax, ay, pr, tl), []);
   const jsUp = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.up(x, y, ax, ay, pr, tl), []);
@@ -200,6 +202,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       if (!t) return;
       const pt = manual ? (t as any).pointerType : e.pointerType;
       if (pt !== PointerType.STYLUS && !(Platform.OS === 'web' && pt === PointerType.MOUSE)) return; // finger / palm: never writes or erases — and keep listening for the pen
+      // S Pen barrel-button contact opens tools, never deposits a dot.
+      if (((t as any).buttons & 96) !== 0) { sm.fail(); return; }
       penId.value = t.id; pressSV.value = -1;
       const now = Date.now(); penSession.value = { ...penSession.value, writing: true, byPen: pt === PointerType.STYLUS, at: now, since: now };
       if (manual) sm.begin(); // iOS cannot transition directly from Undetermined to Active on the first touch event
@@ -207,10 +211,10 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       pressSV.value = (t as any).pressure ?? -1; tiltSV.value = (t as any).tilt ?? -1;
       runOnJS(jsDown)(t.x, t.y, t.absoluteX, t.absoluteY, pt, pressSV.value, tiltSV.value);
     })
-    .onTouchesMove((e) => {
+    .onTouchesMove((e, sm) => {
       'worklet';
       const id = penId.value; if (id === -1) return;
-      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
+      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { if (((t as any).buttons & 96) !== 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.end(); else sm.fail(); return; } const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
     })
     .onTouchesUp((e, sm) => {
       'worklet';

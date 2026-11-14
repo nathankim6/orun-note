@@ -1,6 +1,9 @@
+import { StylusDial } from '@/features/viewer/StylusDial';
+import { addStylusShortcutListener } from '../../modules/stylus-shortcut';
+import { cancelInkForStylusShortcut } from '@/features/viewer/stylusShortcutState';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
-import { useLocalSearchParams, usePathname, useRouter, router as rootRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, usePathname, useRouter, router as rootRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -68,6 +71,28 @@ export default function Viewer() {
   useEffect(() => { if (!uri || !doc || doc.kind === 'blank' || cfg.tool !== 'select') return; let alive = true; [pageIndex, pageIndex + 1, pageIndex - 1].filter((i) => i >= 0 && i < doc.pageCount).forEach((i) => loadWords(uri, doc.pages[i].index).then(() => alive && setWordsVer((v) => v + 1))); return () => { alive = false; }; }, [uri, pageIndex, doc?.id, cfg.tool === 'select']); // word boxes feed only the select tool (dictionary / text selection): no PdfBox work while reading or writing
   const [leftTab, setLeftTabState] = useState<LeftTab | null>(() => (isTablet && (useSettingsStore.getState().viewer.pagesPanelOpen ?? true) ? 'pages' : null));
   const setLeftTab = useCallback((t: LeftTab | null) => { setLeftTabState(t); if (isTablet && useSettingsStore.getState().hydrated) useSettingsStore.getState().setViewer({ pagesPanelOpen: !!t }); }, [isTablet]); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
+  const viewerRoot = useRef<View>(null);
+  const [dialAnchor, setDialAnchor] = useState<{ x: number; y: number } | null>(null);
+  const shortcutAllowed = viewerActive && !!doc && !!uri && !missing && !videosOpen && !sheet && !lookup && !(leftTab && !isTablet);
+  const shortcutState = useRef({ allowed: shortcutAllowed, width: winW, height: winH });
+  shortcutState.current = { allowed: shortcutAllowed, width: winW, height: winH };
+  const shortcutFocused = useRef(false);
+  const openStylusDial = useCallback((point?: { x?: number; y?: number }) => {
+    const st = shortcutState.current; if (!st.allowed || !shortcutFocused.current || AppState.currentState === 'background') return;
+    cancelInkForStylusShortcut(); setDismissKey((k) => k + 1);
+    const place = (ox = 0, oy = 0) => {
+      if (!shortcutFocused.current || !shortcutState.current.allowed) return;
+      setDialAnchor((old) => old ? null : { x: Number.isFinite(point?.x) ? point!.x! - ox : st.width * .68, y: Number.isFinite(point?.y) ? point!.y! - oy : st.height * .48 });
+    };
+    if (point && viewerRoot.current) viewerRoot.current.measureInWindow((x, y) => place(x, y)); else place();
+  }, []);
+  useFocusEffect(useCallback(() => {
+    shortcutFocused.current = true;
+    const sub = addStylusShortcutListener((event) => openStylusDial(event));
+    const bg = AppState.addEventListener('change', (state) => { if (state !== 'active') setDialAnchor(null); });
+    return () => { shortcutFocused.current = false; sub.remove(); bg.remove(); setDialAnchor(null); };
+  }, [openStylusDial]));
+  useEffect(() => { setDialAnchor(null); }, [docId, videosOpen, sheet, lookup, pageIndex]);
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
   // Not a lazy setState updater: React may run those during a later render, and the settings-store write inside would
   // then update other components mid-render ("Cannot update a component while rendering a different component").
@@ -161,7 +186,7 @@ export default function Viewer() {
 
   return (
     <DerivedPagesContext.Provider value={derivedInfo}>
-    <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE', paddingTop: insets.top }}>
+    <View ref={viewerRoot} collapsable={false} style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE', paddingTop: insets.top }}>
       {/* The toolbar floats above the page so opening a tool's option row overlays the page instead of pushing it down. */}
       {!fullscreen && <View style={{ height: toolbarH }} />}
       {tabsH > 0 && (
@@ -179,7 +204,7 @@ export default function Viewer() {
           <IconButton icon="ellipsis-horizontal" onPress={() => setSheet('more')} label="더보기" />
           <IconButton icon="expand-outline" onPress={() => setFullscreen(true)} label="전체 화면" />
         </View>)}
-      <View style={{ flex: 1, flexDirection: 'row' }} onStartShouldSetResponderCapture={() => { if (panelOpen.current) setDismissKey((k) => k + 1); return false; }}>
+      <View style={{ flex: 1, flexDirection: 'row' }} onStartShouldSetResponderCapture={() => { if (panelOpen.current) setDismissKey((k) => k + 1); if (dialAnchor) setDialAnchor(null); return false; }}>
         {leftTab && isTablet && <LeftPanel tab={leftTab} setTab={setLeftTab} width={leftW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={goto} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} />}
         {/* Narrow screens (phones / split view): the same panel as a modal sheet so the ≡ button always shows the page grid */}
         {leftTab && !isTablet && <Modal visible transparent animationType="slide" onRequestClose={() => setLeftTab(null)}><Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }} onPress={() => setLeftTab(null)} /><View style={{ height: '70%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Modal>}
@@ -195,7 +220,7 @@ export default function Viewer() {
           {splitOn && <SubDocWindow docked={{ w: subW, h: subH }} split onToggleSplit={toggleSplit} mode={subDoc === 'pick' ? 'pick' : 'show'} docId={subDoc === 'pick' ? null : subDoc} excludeId={doc.id} onPick={(id) => setSubDoc(id)} onClose={() => setSubDoc(null)} />}
         </View>
       </View>
-      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (INK_PENS.includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} onVideos={() => { setLookup(null); setSheet(null); setVideosOpen(true); }} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
+      {!fullscreen && <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}><Toolbar onStylusDial={() => openStylusDial()} cfg={cfg} onCfg={onCfg} onCfgReplace={(c) => { setCfg(c); if (INK_PENS.includes(c.tool)) prevPen.current = c; }} onUndo={() => (zoomPad ? padInk.current?.undo() : activeInk?.undo())} onRedo={() => (zoomPad ? padInk.current?.redo() : activeInk?.redo())} canUndo={zoomPad ? padHist.canUndo : hist.canUndo} canRedo={zoomPad ? padHist.canRedo : hist.canRedo} onClear={clearPage} onClearAll={clearAllInk} onBack={exit} dismissKey={dismissKey} onPanelChange={(o) => { panelOpen.current = o; }} onMore={() => setSheet('more')} recentColors={recentColors} textFont={textFont} onTextFont={setTextFont} onSubDoc={() => setSubDoc(subDoc ? null : 'pick')} onVideos={() => { setLookup(null); setSheet(null); setVideosOpen(true); }} zoomPad={zoomPad} onZoomPad={() => setZoomPad((v) => !v)} onInsertImage={async () => { const im = await pickImageForPage(); if (!im) return; const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = pageAt(pageIndex); const w = Math.min(pg.width * 0.35, im.width); const h = w * (im.height / im.width); const nextImgs = [...(useInkStore.getState().pages[k]?.images ?? []), { id: Math.random().toString(36).slice(2, 10), rect: { x: (pg.width - w) / 2, y: pg.height * 0.1, w, h }, uri: im.uri, createdAt: Date.now() }]; const h_ = inkRefs.current[String(pageIndex)]; if (h_?.commitImages) h_.commitImages(nextImgs); else ink.setImages(k, nextImgs); setCfg((c) => ({ ...c, tool: 'hand' })); toast('사진을 넣었어요. 드래그로 옮기고 모서리로 크기를 바꿔요'); }} /></View>}
       {lookup && <WordLookup text={lookup.text} anchor={lookup.abs} onClose={() => setLookup(null)} onLookup={(q) => setLookup((l) => l && { ...l, text: q })} onHighlight={() => { const k = lookup.k; const add = lookup.rects.map((r) => ({ id: Math.random().toString(36).slice(2, 10), tool: 'highlighter' as Tool, color: '#FDE68A', width: r.h * 0.95, opacity: 0.45, points: [{ x: r.x, y: r.y + r.h / 2 }, { x: r.x + r.w, y: r.y + r.h / 2 }], createdAt: Date.now() })); ink.setStrokes(k, [...(ink.pages[k]?.strokes ?? []), ...add]); setLookup(null); toast('형광펜으로 표시했어요'); }} />}
       {zoomPad && uri && (() => { const k = inkKey(doc.id, cycle, String(pageIndex)); const pg = ink.pages[k]; return (
         <ZoomPad height={padH} uri={uri} pageW={pageAt(pageIndex).width} pageH={pageAt(pageIndex).height} sourceIndex={pageAt(pageIndex).index} template={doc.template}
@@ -215,6 +240,7 @@ export default function Viewer() {
       </View>
 
       {!isTablet && leftTab && <Sheet visible onClose={() => setLeftTab(null)} height="80%"><View style={{ height: winH * 0.7, marginHorizontal: -16 }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Sheet>}
+      {dialAnchor && <StylusDial anchor={dialAnchor} cfg={cfg} onCfg={onCfg} favorites={prefs.favoriteColors} onClose={() => setDialAnchor(null)} />}
       <SettingsSheet visible={sheet === 'settings'} onClose={() => setSheet(null)} layout={layout} setLayout={(l) => { setLayout(l); settings.setViewer({ defaultLayoutMode: l }); }} />
       <VersionSheet visible={sheet === 'versions'} onClose={() => setSheet(null)} pageIndex={pageIndex} versions={pageInk?.versions ?? []} onRestore={(id) => { ink.restore(inkKey(doc.id, cycle, String(pageIndex)), id); setSheet(null); toast('복원 완료'); }} onSnapshot={() => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex)), '수동 저장'); toast('현재 필기를 버전으로 저장했어요'); }} />
       <CycleSheet visible={sheet === 'cycle'} onClose={() => setSheet(null)} cycle={cycle} maxCycle={doc.maxCycle} onSwitch={(c) => store.switchCycle(doc.id, c)} onNew={() => { const c = store.startNewCycle(doc.id); toast(`${c}회독을 시작했어요`); }} onResetInk={(scope) => { if (scope === 'all') ink.clearPackage(doc.id + ':'); else ink.clearPackage(`${doc.id}:${cycle}:`); toast('필기가 초기화되었습니다'); }} />

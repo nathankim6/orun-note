@@ -28,3 +28,8 @@ g.callbacks.onFinalize({},true);g.callbacks.onTouchesDown(event([t(5,1)],[t(5,1)
 g.callbacks.onTouchesCancelled({},g.sm);assert.equal(g.events.at(-1)[0],'abort');assert.equal(g.transitions.at(-1),'fail');assert.equal(g.ctx.penId.value,-1);
 g=create('android');assert.equal(g.kind,'pan');g.callbacks.onTouchesDown(event([t(1)],[t(1)]),g.sm);assert.equal(g.events.length,0);g.callbacks.onTouchesDown(event([t(2,1)],[t(1),t(2,1)],1),g.sm);assert.deepEqual(g.transitions,['activate']);g.callbacks.onTouchesUp(event([t(2,1)],[t(1)],1),g.sm);assert.deepEqual(g.transitions,['activate']);
 console.log('PASS: finger-only passthrough, mixed-contact Pencil identification, palm lift, pen lift, repeated strokes, cancellation, Android Pan lifecycle');
+
+// A held S Pen button never deposits ink, including a stationary button change mid-stroke.
+g=create('android'); const barrel={...t(8,1),buttons:32};g.callbacks.onTouchesDown(event([barrel],[barrel],1),g.sm);assert.equal(g.events.length,0);assert.deepEqual(g.transitions,['fail']);
+g=create('android');g.callbacks.onTouchesDown(event([t(9,1)],[t(9,1)],1),g.sm);g.callbacks.onTouchesMove(event([],[{...t(9,1),buttons:32}],1),g.sm);assert.equal(g.events.at(-1)[0],'abort');assert.equal(g.ctx.penId.value,-1);g.callbacks.onTouchesUp(event([t(9,1)],[],1),g.sm);assert(!g.events.some(e=>e[0]==='up'));
+console.log('PASS: barrel-button contact rejects dot and mid-stroke button cancels without committing');

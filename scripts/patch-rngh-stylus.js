@@ -22,12 +22,18 @@ const edits = [
   { f: 'android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt', from: '    trackedPointersCount++\n    addChangedPointer(trackedPointers[pointerId]!!)', to: '    trackedPointersCount++\n    // orun-note patch: pressure / tilt of the pointer that just went down\n    if (event.getToolType(event.actionIndex) == MotionEvent.TOOL_TYPE_STYLUS) { trackedPointers[pointerId]!!.pressure = event.getPressure(event.actionIndex); trackedPointers[pointerId]!!.tilt = event.getAxisValue(MotionEvent.AXIS_TILT, event.actionIndex) }\n    addChangedPointer(trackedPointers[pointerId]!!)' },
   { f: 'android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt', from: '        pointer.absoluteY = sourceEvent.getY(i) + offsetY - windowOffset[1]\n', to: '        pointer.absoluteY = sourceEvent.getY(i) + offsetY - windowOffset[1]\n        // orun-note patch: stylus pressure / tilt follow the pointer\n        if (event.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) { pointer.pressure = event.getPressure(i); pointer.tilt = event.getAxisValue(MotionEvent.AXIS_TILT, i) }\n' },
   { f: 'android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt', from: '    putDouble("absoluteY", PixelUtil.toDIPFromPixel(pointerData.absoluteY).toDouble())\n  }', to: '    putDouble("absoluteY", PixelUtil.toDIPFromPixel(pointerData.absoluteY).toDouble())\n    // orun-note patch\n    putDouble("pressure", pointerData.pressure.toDouble())\n    putDouble("tilt", pointerData.tilt.toDouble())\n  }' },
+  {"f":"android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt","from":"    var tilt: Float = 0f,","to":"    /* orun-buttons */ var buttons: Int = 0,\n    var tilt: Float = 0f,"},
+  {"f":"android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt","from":"    addChangedPointer(trackedPointers[pointerId]!!)\n    extractAllPointersData()","to":"    /* orun-buttons */ trackedPointers[pointerId]!!.buttons = event.buttonState\n    addChangedPointer(trackedPointers[pointerId]!!)\n    extractAllPointersData()"},
+  {"f":"android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt","from":"      if (pointer.x != event.getX(i) || pointer.y != event.getY(i)) {","to":"      if (pointer.x != event.getX(i) || pointer.y != event.getY(i) || /* orun-buttons-condition */ pointer.buttons != event.buttonState) {"},
+  {"f":"android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt","from":"        addChangedPointer(pointer)\n        pointersAdded++","to":"        /* orun-buttons */ pointer.buttons = event.buttonState\n        addChangedPointer(pointer)\n        pointersAdded++"},
+  {"f":"android/src/main/java/com/swmansion/gesturehandler/core/GestureHandler.kt","from":"    putDouble(\"tilt\", pointerData.tilt.toDouble())","to":"    putDouble(\"tilt\", pointerData.tilt.toDouble())\n    /* orun-buttons */ putInt(\"buttons\", pointerData.buttons)"},
 ];
 let applied = 0, already = 0, missing = [];
 for (const e of edits) {
   const p = base + e.f; if (!fs.existsSync(p)) { missing.push(e.f + ' (file)'); continue; }
   let s = fs.readFileSync(p, 'utf8');
-  if (s.includes(e.to)) { already++; continue; }
+  let finalTo = e.to; for (const later of edits.slice(edits.indexOf(e) + 1)) { if (later.f === e.f) finalTo = finalTo.replace(later.from, later.to); }
+  if (s.includes(finalTo) || s.includes(e.to) || s.replace(/^.*\/\* orun-buttons \*\/.*\n/gm, '').includes(e.to)) { already++; continue; }
   if (!s.includes(e.from)) { missing.push(e.f); continue; }
   fs.writeFileSync(p, s.replace(e.from, e.to)); applied++;
 }
