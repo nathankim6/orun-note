@@ -44,6 +44,12 @@ private func pdfV2AAD(_ header: [UInt8], _ index: UInt64, last: Bool) -> Data {
 /// with ThisDeviceOnly accessibility so it is never exported with backups. Large (v2) files are decrypted chunk by chunk
 /// into a private working copy in Caches that PDFKit reads lazily, so 200 MB+ textbooks open without loading into memory.
 public class PdfRendererModule: Module {
+  /// Live module for `PdfPageView` (views are created by the view manager, not by JS calls).
+  static weak var shared: PdfRendererModule?
+  static let pageViewWidth = 2400
+  private static let pageViewPixels: CGFloat = 6_000_000
+  /// The page view draws on the reading lane (it owns the reading PDFKit documents).
+  var pageViewQueue: DispatchQueue { readingQueue }
   /// Open documents, least recently used first (at most `maxDocs`).
   private var cache: [String: PDFDocument] = [:]
   private var lru: [String] = []
@@ -79,6 +85,12 @@ public class PdfRendererModule: Module {
     lifecycle.lock(); defer { lifecycle.unlock() }
     while maintaining && !destroyed { lifecycle.wait() }
     guard !destroyed else { throw PdfRendererError.unavailable }
+    activeOperations += 1
+  }
+  /// Never waits: callers already on readingQueue must not block while maintenance waits to sync onto readingQueue.
+  private func tryBeginOperation() throws {
+    lifecycle.lock(); defer { lifecycle.unlock() }
+    guard !maintaining, !destroyed else { throw PdfRendererError.unavailable }
     activeOperations += 1
   }
   private func endOperation() {
@@ -385,16 +397,39 @@ public class PdfRendererModule: Module {
     }
   }
 
+  /// readingQueue only. Screen-resolution page bitmap for `PdfPageView`; drawn in memory, never encoded or written.
+  func pageBitmap(_ uri: String, _ index: Int, _ width: Int) throws -> UIImage {
+    try tryBeginOperation(); defer { endOperation() }
+    guard width > 0 else { throw PdfRendererError.badPage(index) }
+    let start = milliseconds()
+    let doc = try readingDocument(uri)
+    guard let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+    let size = pageSize(page)
+    guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { throw PdfRendererError.badPage(index) }
+    let ratio = size.height / size.width
+    let target = CGFloat(min(width, PdfRendererModule.pageViewWidth))
+    let pixelWidth = max(1, min(target, floor(sqrt(PdfRendererModule.pageViewPixels / ratio))))
+    let pixelHeight = max(1, min(floor(PdfRendererModule.pageViewPixels / pixelWidth), floor(pixelWidth * ratio)))
+    let scale = min(pixelWidth / size.width, pixelHeight / size.height)
+    let opened = milliseconds()
+    let image = draw(page, canvas: CGSize(width: pixelWidth, height: pixelHeight), scale: scale, origin: .zero, pageHeightPx: pixelHeight)
+    let drawn = milliseconds()
+    recordTiming(lane: "view", page: index, width: Int(pixelWidth), start: start, opened: opened, drawn: drawn, encoded: drawn, written: drawn)
+    return image
+  }
+
   public func definition() -> ModuleDefinition {
     Name("PdfRenderer")
 
     OnCreate { [weak self] in
       guard let module = self else { return }
+      PdfRendererModule.shared = module
       // Drop open documents (PDFKit caches) when iOS is short on memory; they reopen on demand.
       module.memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak module] _ in
         guard let m = module else { return }
         m.queue.async { m.cache.removeAll(); m.lru.removeAll() }
         m.readingQueue.async { m.clearReadingDocuments() }
+        PageBitmaps.shared.clear()
       }
       // Page images written by older builds were keyed by a per-launch random hash and can never be reused.
       module.ioQueue.async {
@@ -406,6 +441,7 @@ public class PdfRendererModule: Module {
       }
     }
     OnDestroy {
+      PageBitmaps.shared.clear()
       if let o = self.memoryObserver { NotificationCenter.default.removeObserver(o) }
       self.memoryObserver = nil
       self.lifecycle.lock(); self.destroyed = true; self.lifecycle.broadcast(); self.lifecycle.unlock()
@@ -459,6 +495,7 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("deleteFile") { (uri: String) throws in
+      PageBitmaps.shared.clear()
       try self.withMaintenance {
         self.queue.sync {
           for key in Array(self.cache.keys) where self.cacheKey(key) == self.cacheKey(uri) { self.forget(key) }
@@ -480,6 +517,7 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("clearCaches") { () throws in
+      PageBitmaps.shared.clear()
       try self.withMaintenance {
         self.queue.sync { self.cache.removeAll(); self.lru.removeAll() }
         self.readingQueue.sync { self.clearReadingDocuments() }
@@ -501,6 +539,27 @@ public class PdfRendererModule: Module {
         return ["pageCount": doc.pageCount, "pages": pages, "title": title]
       }
     }.runOnQueue(self.ioQueue)
+
+    /// Native page surface: shows the page bitmap directly (see `PdfPageView`).
+    View(PdfPageView.self) {
+      Events("onPageReady")
+      Prop("source") { (view: PdfPageView, v: String) in view.source = v }
+      Prop("index") { (view: PdfPageView, v: Int) in view.index = v }
+      Prop("pixelWidth") { (view: PdfPageView, v: Int) in view.pixelWidth = v }
+      OnViewDidUpdateProps { (view: PdfPageView) in view.update() }
+    }
+    /// Prefetch page bitmaps for `PdfPageView` (next pages in the scroll direction). Replaces the previous list.
+    Function("warmPages") { (uri: String, indices: [Int], width: Int) in
+      let w = max(1, min(width, PdfRendererModule.pageViewWidth))
+      PageBitmaps.shared.warm(indices.filter { $0 >= 0 }.map { (i: Int) -> (String, () -> Void) in
+        let key = PageBitmaps.key(uri, i, w)
+        return (key, { [weak self] in
+          guard let self, PageBitmaps.shared.get(key) == nil, let image = try? self.pageBitmap(uri, i, w) else { return }
+          PageBitmaps.shared.put(key, image)
+        })
+      }, on: self.readingQueue)
+    }
+    Function("clearPageBitmaps") { PageBitmaps.shared.clear() }
 
     AsyncFunction("takeRenderTimings") { () -> [[String: Any]] in
       self.timingLock.lock(); defer { self.timingLock.unlock() }

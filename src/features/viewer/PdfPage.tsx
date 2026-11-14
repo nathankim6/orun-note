@@ -1,6 +1,7 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Image, PixelRatio, Text, Platform } from 'react-native';
-import { PdfRenderer } from '../../../modules/pdf-renderer';
+import { PdfRenderer, PdfPageSurface, type PageReadyEvent } from '../../../modules/pdf-renderer';
+import { nativePagePixels, useNativeSurface, createWarmBatcher } from './nativePageView';
 import { useTheme } from '@/theme';
 import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
@@ -13,7 +14,15 @@ import { PageQualityContext } from './pageQuality';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
 const imageLoads = createImageLoadReporter(Platform.OS, reportError);
-export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
+const nativePages = !!PdfPageSurface && PdfRenderer.hasPageView();
+const warm = createWarmBatcher((uri, indices, px) => PdfRenderer.warmPages(uri, indices, px));
+export const withPagePrefetchWindow = (run: () => void) => {
+  if (!nativePages) return work.reading.prefetchWindow(run);
+  // Native page views: one ordered bitmap warm list per window; JPEG prefetches still go through the scheduler window.
+  let release: () => void = () => {};
+  warm.window(() => { release = work.reading.prefetchWindow(run); });
+  return release;
+};
 type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
   const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), previewPx = previewPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
@@ -92,6 +101,7 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
 /** Neighbours get reading images only, never speculative 2400px detail rasters. */
 export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
   if (!uri || uri === 'blank:' || index < 0) return;
+  if (useNativeSurface(nativePages, Platform.OS, displayWidth)) { warm.add(uri, index, nativePagePixels(displayWidth, PixelRatio.get()), rank); return; }
   const width = readingPixels(displayWidth), page = `${uri}|${index}`;
   return work.reading.prefetch(`${page}|read|${width}`, RenderPriority.prefetch + rank / 100,
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
@@ -152,7 +162,36 @@ export function PdfPage(props: { uri: string | null; index: number; width: numbe
   if (props.uri === 'blank:') return <BlankPaper width={props.width} height={props.height} template={props.template} />;
   return <RasterPdfPage {...props} />;
 }
-function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile }) {
+type RasterProps = { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile };
+const surfaceLoads = createImageLoadReporter(Platform.OS + '-native', reportError);
+function RasterPdfPage(props: RasterProps) {
+  const page = props.uri + '|' + props.index;
+  const [nativeFailed, setNativeFailed] = useState<string | null>(null);
+  if (props.uri && useNativeSurface(nativePages, Platform.OS, props.width * (props.renderScale ?? 1)) && nativeFailed !== page)
+    return <NativePdfPage {...props} uri={props.uri} onFailure={() => setNativeFailed(page)} />;
+  return <ImagePdfPage {...props} />;
+}
+/** Base page drawn by the native PdfPageView (in-memory bitmap at screen resolution); zoom tiles stay on top as before. */
+function NativePdfPage({ uri, index, width, height, renderScale = 1, tile, onFailure }: RasterProps & { uri: string; onFailure: () => void }) {
+  const Surface = PdfPageSurface!; const page = uri + '|' + index;
+  const [ready, setReady] = useState<string | null>(null);
+  const tileRequest = page + '|' + pageTileKey(tile);
+  const [failedTile, setFailedTile] = useState<string | null>(null);
+  const session = useRef<{ page: string; done?: () => void } | null>(null);
+  if (session.current?.page !== page) { const s = surfaceLoads.begin(index); session.current = { page, done: s.ready('reading', nativePagePixels(width * renderScale, PixelRatio.get())) }; }
+  const onPageReady = (e: { nativeEvent: PageReadyEvent }) => {
+    if (e.nativeEvent.page !== index) return;
+    if (!e.nativeEvent.ok) { onFailure(); return; }
+    session.current?.done?.(); if (session.current) session.current.done = undefined;
+    setReady(page);
+  };
+  return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
+    <Surface source={uri} index={index} pixelWidth={nativePagePixels(width * renderScale, PixelRatio.get())} style={{ width, height }} onPageReady={onPageReady} />
+    {ready === page && tile && PdfRenderer.hasRenderRegion() && failedTile !== tileRequest
+      ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}><TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(page + '|' + key)} /></View> : null}
+  </View>;
+}
+function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile }: RasterProps) {
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
   const tileRequest = uri + '|' + index + '|' + pageTileKey(tile);
   const [failedTile, setFailedTile] = useState<string | null>(null);
@@ -164,4 +203,4 @@ function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { u
     {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
-export function clearImageCache() { work.reading.clear(); work.detail.clear(); }
+export function clearImageCache() { work.reading.clear(); work.detail.clear(); PdfRenderer.clearPageBitmaps(); }
