@@ -10,12 +10,17 @@ import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnos
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
+import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath } from './derivedPages';
+import { tierWidth } from './derivedPagesCore';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
 const imageLoads = createImageLoadReporter(Platform.OS, reportError);
 export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
 type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
+  // Pre-rendered pages (docs/derived-pages.md): a JPEG on disk replaces every native render of this page.
+  const derived = useContext(DerivedPagesContext);
+  const derivedReadPath = pageImagePath(derived, index, 'reading'), derivedDetailPath = pageImagePath(derived, index, 'detail');
   const page = `${uri}|${index}`, readPx = readingPixels(displayWidth), previewPx = previewPixels(displayWidth), fullPx = detailPixels(displayWidth, PixelRatio.get());
   const previewKey = `${page}|preview|${previewPx}`, readKey = `${page}|read|${readPx}`, fullKey = `${page}|detail|${fullPx}`;
   const [presentedRequest, setPresentedRequest] = useState<object | null>(null); const pageRef = useRef(page); pageRef.current = page;
@@ -35,6 +40,12 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
       if (isCurrent()) { sourceReady(src, sharp, width); setImage(old => ({ ...old, page, ...(sharp ? { detail: src, detailWidth: fullPx } : { reading: src }), err: false })); }
     };
     const start = async () => {
+      if (derivedReadPath) {
+        // shown at once when already on disk; otherwise one stat, then the native path below as today
+        const d = isPresentSync(derivedReadPath) ? derivedReadPath : await derivedPageImage(derived, index, 'reading');
+        if (!isCurrent()) return;
+        if (d) { show(d, false, tierWidth(derived!, 'reading') ?? readPx); return; }
+      }
       const sharp = work.detail.value(fullKey), ready = work.reading.value(readKey);
       if (sharp) { show(sharp, true); return; }
       if (ready) { show(ready, false); return; }
@@ -67,12 +78,17 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
     };
     void start().catch(() => { if (isCurrent()) setImage(old => ({ ...old, page, err: true })); });
     return () => { alive = false; leases.forEach(lease => lease.release()); };
-  }, [uri, index, readPx, previewPx, fullPx]);
+  }, [uri, index, readPx, previewPx, fullPx, derivedReadPath]);
   useEffect(() => {
     if (!uri || uri === 'blank:' || !detailAllowed || presentedRequest !== tracking) return;
     let alive = true; let lease: RenderLease | undefined;
-    const show = (src: string) => { if (alive && pageRef.current === page) { sourceReady(src, true); setImage(old => ({ ...old, page, detail: src, detailWidth: fullPx, err: false })); } };
+    const show = (src: string, width = fullPx) => { if (alive && pageRef.current === page) { sourceReady(src, true, width); setImage(old => ({ ...old, page, detail: src, detailWidth: width, err: false })); } };
     void (async () => {
+      if (derivedDetailPath) {
+        const d = await derivedPageImage(derived, index, 'detail'); if (!alive) return;
+        if (d) { show(d, tierWidth(derived!, 'detail') ?? fullPx); return; }
+        if (isPresentSync(derivedReadPath)) return; // reading tier is derived: never fall back to a slow native full-page render
+      }
       const ready = work.detail.value(fullKey); if (ready) { show(ready); return; }
       const cached = await PdfRenderer.cachedPage(uri, index, fullPx); if (!alive) return;
       if (cached) { work.detail.remember(fullKey, cached, { page, width: fullPx, index }); show(cached); return; }
@@ -81,7 +97,7 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
       show(await lease.promise);
     })().catch(() => {}); // a refinement failure must not hide the usable reading page
     return () => { alive = false; lease?.release(); };
-  }, [uri, index, fullPx, detailAllowed, presentedRequest]);
+  }, [uri, index, fullPx, detailAllowed, presentedRequest, derivedDetailPath]);
   const current = image.page === page ? image : null;
   const rendered = useRef({ reading: current?.reading, detail: current?.detail }); rendered.current = { reading: current?.reading, detail: current?.detail };
   return { onLoad: (source = current?.detail ?? current?.reading ?? null) => {
@@ -92,6 +108,8 @@ export function usePageImage(uri: string | null, index: number, displayWidth: nu
 /** Neighbours get reading images only, never speculative 2400px detail rasters. */
 export function prefetchPage(uri: string | null, index: number, displayWidth: number, rank = 1) {
   if (!uri || uri === 'blank:' || index < 0) return;
+  // derived pages are files already (or arriving from the download manager): nothing to pre-render
+  if (derivedForUri(uri)) return;
   const width = readingPixels(displayWidth), page = `${uri}|${index}`;
   return work.reading.prefetch(`${page}|read|${width}`, RenderPriority.prefetch + rank / 100,
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;

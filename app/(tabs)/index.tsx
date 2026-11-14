@@ -10,6 +10,7 @@ import { GlassBackground } from '@/components/Glass';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { useInkStore } from '@/store/ink';
 import { useSession } from '@/store/session';
+import { useDerivedProgress, ensureAllDerived } from '@/features/library/derivedDownload';
 import { pickAndImportPdf, deleteDocFiles, resolveUri, downloadMaterial, createBlankDoc } from '@/lib/files';
 import { PdfPage, BlankPaper } from '@/features/viewer/PdfPage';
 import { fmtBytes, timeAgo } from '@/utils/format';
@@ -66,6 +67,9 @@ export default function Library() {
   const [menuDoc, setMenuDoc] = useState<Doc | null>(null);
   const refresh = async () => { setRefreshing(true); try { await refreshMaterials(); setNetErr(null); } catch (e: any) { setNetErr(e?.message ?? '교재 목록을 불러오지 못했어요'); } finally { setRefreshing(false); } };
   useEffect(() => { refresh(); }, [role]);
+  // pre-rendered pages for already-downloaded materials (docs/derived-pages.md): fills in quietly, one book at a time
+  const derivedProgress = useDerivedProgress((s) => s.byMaterial);
+  useEffect(() => { if (role) void ensureAllDerived(cred()); }, [role, Object.keys(docs).length]);
   const localByMaterial = useMemo(() => Object.fromEntries(Object.values(docs).filter((d) => d.materialId).map((d) => [d.materialId!, d])), [docs]);
   const pending = useMemo(() => materials.filter((mm) => !localByMaterial[mm.id]), [materials, localByMaterial]);
   const qn = q.normalize('NFC').trim().toLowerCase();
@@ -133,6 +137,7 @@ export default function Library() {
                 </>} />
                 <Text numberOfLines={2} style={[type.footnote, styles.tileTitle, { color: colors.text }]}>{d.title}</Text>
                 <Text numberOfLines={1} style={[type.caption, { color: colors.textMuted, textAlign: 'center' }]}>{d.pageCount}페이지 · {fmtBytes(d.size)}</Text>
+                {(() => { const dp = d.materialId ? derivedProgress[d.materialId] : undefined; if (!dp || dp.state === 'done' || dp.state === 'error' || !dp.total) return null; return <View style={{ width: '80%', marginTop: 4, alignItems: 'center' }}><ProgressBar value={dp.done / dp.total} /><Text numberOfLines={1} style={[type.caption, { color: ios.blue, textAlign: 'center', marginTop: 2 }]}>{dp.state === 'deferred' ? '선명한 페이지는 Wi-Fi에서 받아요' : `선명한 페이지 받는 중 ${Math.round((dp.done / dp.total) * 100)}%`}</Text></View>; })()}
                 {(pct != null || ink > 0 || !d.materialId || d.maxCycle > 1) && <Text numberOfLines={1} style={[type.caption, { color: colors.textMuted, textAlign: 'center' }]}>{[pct != null ? `${pct}% 읽음` : null, ink > 0 ? '필기' : null, d.maxCycle > 1 ? `${d.cycle}회독` : null, !d.materialId ? '내 파일' : null].filter(Boolean).join(' · ')}</Text>}
               </Pressable>); })}
           </View>)}

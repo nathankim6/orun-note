@@ -5,6 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { api } from './api';
+import { ensureDerived, removeDerived } from '@/features/library/derivedDownload';
 import { Doc } from '@/data/types';
 
 // --- web (preview only): keep PDF bytes in IndexedDB so documents survive reloads. Native builds never use this path;
@@ -48,7 +49,7 @@ export async function importPdf({ uri, name: name0, size, file, title: title0, s
 }
 
 export async function deleteDocFiles(doc: Doc) { if (doc.kind === 'blank' || doc.sourceDocId) return; const others = Object.values(useDocsStore.getState().docs).some((d) => d.id !== doc.id && d.sourceDocId === doc.id); if (others) return; // keep the file while split copies still use it
-  if (Platform.OS === 'web') { await idb.del(doc.id).catch(() => {}); const u = webUrls.get(doc.id); if (u) URL.revokeObjectURL(u); webUrls.delete(doc.id); } else { await PdfRenderer.deleteFile(doc.uri); } }
+  if (Platform.OS === 'web') { await idb.del(doc.id).catch(() => {}); const u = webUrls.get(doc.id); if (u) URL.revokeObjectURL(u); webUrls.delete(doc.id); } else { await PdfRenderer.deleteFile(doc.uri); await removeDerived(doc.materialId); } }
 export async function storageUsage(): Promise<number> { return Object.values(useDocsStore.getState().docs).reduce((a, d) => a + d.size, 0); }
 export async function clearPageCache() { await PdfRenderer.clearCaches(); }
 
@@ -73,6 +74,8 @@ export async function downloadMaterial(code: string | null, materialId: string, 
   const doc = await importPdf({ uri: tmp, name: r.fileName || `${title}.pdf`, size: 0, title, materialId });
   await FileSystem.deleteAsync(tmp, { idempotent: true }).catch(() => {});
   if (coverUri) useDocsStore.getState().update(doc.id, { coverUri });
+  // pre-rendered pages (sharp, instant) download in the background right after the PDF itself
+  if (r.derived) void ensureDerived(code, doc, { page: 0, serverDerived: r.derived });
   return { ...doc, coverUri: coverUri ?? undefined };
 }
 /** Largest PDF the client will try to upload. The real ceiling is the Supabase storage file-size limit (plan + bucket setting). */

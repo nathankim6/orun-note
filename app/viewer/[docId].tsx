@@ -21,6 +21,9 @@ import { ImageBox } from '@/data/types';
 import { InkCanvas, InkHandle } from '@/features/viewer/InkCanvas';
 import { WordLookup } from '@/features/viewer/WordLookup';
 import { cachedWords, loadWords } from '@/features/viewer/words';
+import { DerivedPagesContext, registerUri } from '@/features/viewer/derivedPages';
+import { useSession } from '@/store/session';
+import { ensureDerived, infoFor, prioritise } from '@/features/library/derivedDownload';
 import { reportError } from '@/lib/diag';
 import { ReviewVideosScreen } from '@/features/viewer/ReviewVideos';
 import { Toolbar } from '@/features/viewer/Toolbar';
@@ -105,6 +108,12 @@ export default function Viewer() {
     const onKey = (e: KeyboardEvent) => { const t = e.target as HTMLElement | null; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return; if (!(e.ctrlKey || e.metaKey)) return; const k = e.key.toLowerCase(); if (k === 'z') { e.preventDefault(); if (e.shiftKey) undoKeys.current.redo(); else undoKeys.current.undo(); } else if (k === 'y') { e.preventDefault(); undoKeys.current.redo(); } };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   }, [!!doc]);
+  // Pre-rendered pages (docs/derived-pages.md): provide the set to PdfPage/words and keep it downloading, nearest pages first.
+  const derivedInfo = useMemo(() => infoFor(doc), [doc?.materialId, doc?.derived?.version, doc?.derived?.pages]);
+  useEffect(() => { registerUri(uri, derivedInfo); return () => registerUri(uri, null); }, [uri, derivedInfo]);
+  const sessionCred = useSession((s) => s.cred);
+  useEffect(() => { if (doc?.materialId && doc.kind !== 'blank') void ensureDerived(sessionCred(), doc, { page: doc.pages[pageIndex]?.index ?? pageIndex }); }, [doc?.id]);
+  useEffect(() => { if (doc?.materialId) prioritise(doc.materialId, doc.pages[pageIndex]?.index ?? pageIndex); }, [pageIndex, doc?.materialId]);
 
   if (!doc) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}><T>문서를 찾을 수 없어요</T><Button title="돌아가기" style={{ marginTop: 12 }} onPress={() => router.replace('/(tabs)')} /></View>;
   if (missing) return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, padding: 24 }}><Ionicons name="document-lock-outline" size={48} color={colors.textFaint} /><T variant="h3" style={{ marginTop: 12 }}>PDF 파일을 찾을 수 없어요</T><Muted center style={{ marginTop: 6 }}>원본 파일이 삭제되었거나 (웹) 브라우저 저장소가 비워졌어요. 다시 가져와 주세요.</Muted><Button title="내 서재로" style={{ marginTop: 16 }} onPress={() => router.replace('/(tabs)')} /></View>;
@@ -151,6 +160,7 @@ export default function Viewer() {
   const pageInk = ink.pages[inkKey(doc.id, cycle, String(pageIndex))];
 
   return (
+    <DerivedPagesContext.Provider value={derivedInfo}>
     <View style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE', paddingTop: insets.top }}>
       {/* The toolbar floats above the page so opening a tool's option row overlays the page instead of pushing it down. */}
       {!fullscreen && <View style={{ height: toolbarH }} />}
@@ -232,6 +242,7 @@ export default function Viewer() {
       <GuideOverlay visible={!settings.viewerGuideDone && !!uri} onDone={() => settings.setViewerGuideDone(true)} />
       {viewerActive && videosOpen && <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, { zIndex: 2000, elevation: 60 }]}><ReviewVideosScreen onClose={() => setVideosOpen(false)} /></View>}
     </View>
+    </DerivedPagesContext.Provider>
   );
 }
 

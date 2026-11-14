@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ScrollView, Text } from 'react-native';
+import { View, ScrollView, Text, Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { useTheme, useLayout, type, ios } from '@/theme';
 import { ListItem, Toggle, Dialog, Group, Cell, Segmented } from '@/components/ui';
@@ -44,6 +44,7 @@ export default function Settings() {
         <Group header="저장 공간">
           <ListItem icon="document-text" iconColor={ios.blue} title="PDF 파일" value={`${Object.keys(docs).length}개 · ${fmtBytes(usage)}`} />
           <ListItem icon="pencil" iconColor={ios.orange} title="필기 데이터" value={`${strokes}획 · ${Object.keys(inkPages).length}페이지`} />
+          {Platform.OS !== 'web' && <ListItem icon="wifi" iconColor={ios.green} title="선명한 페이지는 Wi-Fi에서만 받기" subtitle="교재의 미리 그려진 페이지 이미지(책당 수십 MB)를 셀룰러에서는 받지 않아요" right={<Toggle value={!!s.derivedWifiOnly} onChange={(v) => s.setDerivedWifiOnly(v)} />} chevron={false} />}
           <ListItem icon="images" iconColor={ios.teal} title="페이지 렌더 캐시 비우기" subtitle="PDF 페이지 이미지 캐시를 삭제합니다 (다시 열면 재생성)" chevron={false} onPress={async () => { await clearPageCache(); clearImageCache(); showToast('캐시를 비웠어요'); }} />
           <ListItem icon="trash" iconColor={ios.red} title="모든 필기 삭제" tint={ios.red} chevron={false} onPress={() => setConfirm(true)} />
         </Group>

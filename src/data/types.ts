@@ -15,6 +15,8 @@ export type Doc = {
   /** where reading/writing stopped: page, scroll fraction inside that page (0..1) and zoom; restored on the next open */
   lastView?: { page: number; frac: number; zoom: number }; bookmarks: number[]; folderId?: string; coverColor: string;
   cycle: number; maxCycle: number; subject?: string; tags: string[]; favorite?: boolean; materialId?: string;
+  /** server-rendered page images for this material (docs/derived-pages.md); set once the manifest was fetched */
+  derived?: { version: number; pages: number; widths: number[]; words: boolean; bytes?: number; generatedAt?: string; engine?: string };
   // 'pdf' (default) renders pages from the file; 'blank' is a free-drawing notebook (no file) with a paper template per page.
   kind?: 'pdf' | 'blank'; template?: PaperTemplate;
   // Split documents: pages[i].index points into the source file; the file itself is shared with sourceDocId.

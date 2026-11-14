@@ -1,4 +1,5 @@
 import { PdfRenderer, PdfWord } from '../../../modules/pdf-renderer';
+import { forUri, pageWords } from './derivedPages';
 // Per-page word boxes (normalized 0..1). Loaded lazily and cached for the session.
 const cache = new Map<string, PdfWord[]>(); const pending = new Map<string, Promise<PdfWord[]>>();
 const key = (uri: string, i: number) => `${uri}|${i}`;
@@ -6,7 +7,10 @@ export function cachedWords(uri: string | null, index: number) { return uri ? ca
 export function loadWords(uri: string | null, index: number): Promise<PdfWord[]> {
   if (!uri || uri === 'blank:') return Promise.resolve([]); const k = key(uri, index);
   if (cache.has(k)) return Promise.resolve(cache.get(k)!); if (pending.has(k)) return pending.get(k)!;
-  const p = PdfRenderer.getWords(uri, index).then((w) => { const m = mergeFragments(w); cache.set(k, m); pending.delete(k); return m; }).catch(() => { pending.delete(k); return []; });
+  // server-extracted word boxes (same shape) avoid parsing the PDF text layer on the device
+  const derived = forUri(uri);
+  const source: Promise<PdfWord[]> = derived ? pageWords(derived, index).then((w) => (w ? (w as PdfWord[]) : PdfRenderer.getWords(uri, index))) : PdfRenderer.getWords(uri, index);
+  const p = source.then((w) => { const m = mergeFragments(w); cache.set(k, m); pending.delete(k); return m; }).catch(() => { pending.delete(k); return []; });
   pending.set(k, p); return p;
 }
 /**

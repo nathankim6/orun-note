@@ -4,7 +4,7 @@ function load(file, mocks = {}) {
   const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const exports = {}; vm.runInNewContext(source, { exports, require: n => n in mocks ? mocks[n] : require(n), console, Map, Promise }); return exports;
 }
-const { mergeFragments, wordAt, cleanWord } = load('src/features/viewer/words.ts', { '../../../modules/pdf-renderer': { PdfRenderer: {} } });
+const { mergeFragments, wordAt, cleanWord } = load('src/features/viewer/words.ts', { '../../../modules/pdf-renderer': { PdfRenderer: {} }, './derivedPages': { forUri: () => null, pageWords: async () => null } });
 const h = 0.02, y = 0.5;
 const W = (t, x, w) => ({ t, x, y, w, h });
 // ligature split "signi" + "ficant" (no gap) is glued; the real next word (space ≈ 0.3h) is not
