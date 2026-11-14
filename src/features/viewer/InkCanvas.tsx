@@ -10,6 +10,7 @@ import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
 import { PencilStroke } from './PencilInk';
+import { toolCard } from './toolCardState';
 import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
@@ -74,6 +75,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // Finger input never draws: touch is reserved for pinch-zoom and page scrolling. Only stylus (Apple Pencil / S Pen) draws; mouse is allowed for web/desktop.
   const allowPointer = (pointerType: any) => (Platform.OS === 'web' && pointerType !== PointerType.TOUCH) || pointerType === PointerType.STYLUS || pointerType === PointerType.MOUSE || cfg.tool === 'select'; // the cursor tool (select/move/define) also works with a finger
   const rejected = useRef(false); const lastPe = useRef<PseudoEvt | null>(null);
+  // read at touch time: a touch that lands while the canvas is disabled (e.g. a tool card is open and this tap only closes it) never becomes a dot
+  const enabledRef = useRef(enabled); enabledRef.current = enabled;
   useEffect(() => () => { if (activeId.current != null) penSession.value = { ...penSession.value, writing: false }; }, []);
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
@@ -163,6 +166,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const H = useRef<any>({});
   H.current = {
     down: (x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => {
+      if (!enabledRef.current || toolCard.open) { rejected.current = true; activeId.current = null; return; }
       rejected.current = false; activeId.current = 1; activeType.current = pt; pressureRef.current = pr > 0 ? pr : undefined; tiltRef.current = tl >= 0 ? tl : undefined;
       const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: pt, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined }; lastPe.current = pe; beginAt(pe);
     },
