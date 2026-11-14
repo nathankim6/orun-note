@@ -58,7 +58,7 @@ export function StylusDial({ cfg, onCfg, onClose, anchor, favorites }: StylusDia
           </Pressable>;
         })}
         <View style={{ position: 'absolute', left: c - sliderWidth / 2, top: compact ? 67 : 91, width: sliderWidth }}>
-          <View pointerEvents="none" style={styles.widthLabel}><Text style={{ color: colors.textMuted, fontSize: 9 }}>{name}</Text><Text testID="stylus-dial-current-width" style={{ color: colors.text, fontSize: 10, fontWeight: '700', fontVariant: ['tabular-nums'] }}>{Number(cfg.width.toFixed(1))}</Text></View>
+          <View pointerEvents="none" style={styles.widthLabel}><Text style={{ color: colors.textMuted, fontSize: 9 }}>{name}</Text></View>
           <View testID="stylus-dial-width-slider" accessibilityLabel={`${name} 굵기 조절`}>
             <DragSlider min={range.min} max={range.max} step={range.step} value={Math.max(range.min, Math.min(range.max, cfg.width))} width={sliderWidth} height={30}
               onChange={width => onCfg({ width: Math.round(width * 10) / 10 })} fill={colors.primary} thumb={colors.primary} track={<View style={{ position: 'absolute', left: 11, right: 11, height: 4, borderRadius: 2, backgroundColor: edge }} />} />

@@ -22,3 +22,5 @@ const src = fs.readFileSync('src/features/viewer/StylusDial.tsx', 'utf8');
 assert(src.includes("from './ToolArt'")); assert(src.includes('pointerEvents="box-none"'));
 assert(!src.includes('opacity: w')); assert(!src.includes('Modal')); assert(src.includes("import { DragSlider } from './Toolbar'")); assert(src.includes('borderTopLeftRadius: c')); assert(src.includes('borderBottomLeftRadius: 0')); assert(src.includes('scaleX: 1.3')); assert(src.includes('size={compact ? 0.86 : 1.02}'));  assert(!src.includes('widthButton'));
 console.log('PASS: 500 edge/phone/tablet/landscape placements, nonfinite anchors, continuous slider ranges, half-disk dome bounds and enlarged artwork, colors, original ToolArt, non-modal outside touch');
+
+assert(!fs.readFileSync('src/features/viewer/StylusDial.tsx','utf8').includes('stylus-dial-current-width'), 'dial must not display numeric thickness');
