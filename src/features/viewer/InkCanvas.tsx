@@ -28,6 +28,8 @@ export type InkOpts = { fixedWidth: boolean; straightHighlighter: boolean; erase
 const DEFAULT_OPTS: InkOpts = { fixedWidth: true, straightHighlighter: false, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, neatShape: false };
 /** Lasso clipboard shared across pages (잘라내기/복사 → 붙여넣기). */
 let CLIP: { strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; b: { x: number; y: number; w: number; h: number } } | null = null;
+/** Hold the pen still this long at the end of a stroke and it snaps to a straight line (user-chosen: 0.4 s). */
+export const LINE_SNAP_DWELL_MS = 400;
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
 export let lastLookupAt = 0;
 export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1}: Props) {
@@ -76,7 +78,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
   const clearDwell = () => { if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null; } };
-  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, 500); };
+  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, LINE_SNAP_DWELL_MS); };
 
   const finish = useCallback((pts: Point[], pointerOk: boolean) => {
     const t = Date.now() - startT.current; const tool = cfg.tool;

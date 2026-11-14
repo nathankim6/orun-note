@@ -14,7 +14,7 @@ import { PencilStroke } from './PencilInk';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
 import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
-const TITLE_H = 34; const MARK_H = 30; const MARK_GAP = 8;
+const TITLE_H = 24; const MARK_H = 30; const MARK_GAP = 8;
 import { ToolArt, ToolArtKind, ColorWheel } from './ToolArt';
 
 export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
@@ -63,6 +63,9 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
   // pen / highlighter card: favorites edit mode (tap a pen to delete it) and the fine color tuner
   const [favEdit, setFavEdit] = useState(false);
+  // the fine colour sheet is folded away by default (GoodNotes-like compact card); it stays open while the card is open
+  const [spectrum, setSpectrum] = useState(false);
+  useEffect(() => { if (!panel) setSpectrum(false); }, [panel]);
   useEffect(() => { if (!panel) setFavEdit(false); }, [panel]);
   useEffect(() => { if (dismissKey) setPanel(null); }, [dismissKey]);
   useEffect(() => { onPanelChange?.(!!panel); }, [panel]);
@@ -86,7 +89,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const ic = (name: any, active?: boolean, lib?: 'mci', size = 20) => lib === 'mci' ? <MaterialCommunityIcons name={name} size={size} color={active ? '#fff' : colors.text} /> : <Ionicons name={name} size={size} color={active ? '#fff' : colors.text} />;
   const CI = (n: ColorIconName, ink?: string, d?: boolean) => <ColorIcon name={n} size={24} ink={ink} disabled={d} />;
   const previewDot = (max = 30) => { const d = Math.min(max, Math.max(2, cfg.width * (cfg.tool === 'highlighter' ? 0.8 : isEraser ? 1 : 2.2))); return <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)', alignItems: 'center', justifyContent: 'center' }}><View style={{ width: d, height: d, borderRadius: 17, backgroundColor: isEraser ? 'rgba(0,0,0,0.08)' : cfg.color, borderWidth: isEraser ? 1.5 : 0, borderColor: colors.textMuted, opacity: cfg.tool === 'highlighter' ? 0.55 * cfg.opacity + 0.2 : cfg.opacity }} /></View>; };
-  const widthSlider = (<Row gap={8} style={{ flex: 1, minWidth: 180, maxWidth: 320 }}><MaterialCommunityIcons name="circle-small" size={16} color={colors.textFaint} /><DragSlider min={range.min} max={range.max} step={cfg.tool === 'pen' || cfg.tool === 'pencil' ? 0.1 : 0.5} value={Math.min(range.max, Math.max(range.min, cfg.width))} onChange={(v) => onCfg({ width: cfg.tool === 'pen' || cfg.tool === 'pencil' ? Math.round(v * 10) / 10 : Math.round(v * 2) / 2 })} fill={colors.primary} thumb={colors.primary} /><MaterialCommunityIcons name="circle" size={16} color={colors.textFaint} />{previewDot()}</Row>);
+  const widthSlider = (<Row gap={8} style={{ flex: 1, minWidth: 180, maxWidth: 320 }}><MaterialCommunityIcons name="circle-small" size={16} color={colors.textFaint} /><DragSlider min={range.min} max={range.max} step={cfg.tool === 'pen' || cfg.tool === 'pencil' ? 0.1 : 0.5} value={Math.min(range.max, Math.max(range.min, cfg.width))} onChange={(v) => onCfg({ width: cfg.tool === 'pen' || cfg.tool === 'pencil' ? Math.round(v * 10) / 10 : Math.round(v * 2) / 2 })} fill={colors.primary} thumb={colors.primary} /><MaterialCommunityIcons name="circle" size={16} color={colors.textFaint} />{(isEraser || cfg.tool === 'shape') && previewDot()}</Row>);
   const opacitySlider = (<Row gap={6} style={{ flex: 1, minWidth: 160, maxWidth: 320 }}><MaterialCommunityIcons name="circle-opacity" size={16} color={colors.textFaint} /><DragSlider min={0.15} max={1} step={0.05} value={cfg.opacity} onChange={(v) => onCfg({ opacity: Math.round(v * 20) / 20 })} fill={colors.primary} thumb={colors.primary} /></Row>);
   const Seg = ({ items, value, onChange }: { items: { k: string; label: string; icon?: any }[]; value: string; onChange: (k: string) => void }) => <View style={styles.seg}>{items.map((it) => <Pressable key={it.k} onPress={() => onChange(it.k)} style={[styles.segItem, value === it.k && { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } }]}>{it.icon && <MaterialCommunityIcons name={it.icon} size={14} color={value === it.k ? colors.primary : colors.textMuted} />}<Text style={{ fontSize: 12, fontWeight: '700', color: value === it.k ? colors.primary : colors.textMuted }}>{it.label}</Text></Pressable>)}</View>;
   const Footer = () => <Row gap={6} style={{ marginLeft: 'auto', paddingLeft: 10 }}><Pressable onPress={cancelPanel} style={styles.ghostBtn}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted }}>취소</Text></Pressable><Pressable onPress={applyPanel} style={[styles.ghostBtn, { backgroundColor: colors.primary }]}><Ionicons name="checkmark" size={14} color="#fff" /><Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>적용</Text></Pressable></Row>;
@@ -105,7 +108,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const favs = viewer.favoritePens ?? [];
   const removeFav = (i: number) => { const next = favs.filter((_, j) => j !== i); settings.setViewer({ favoritePens: next }); if (!next.length) setFavEdit(false); };
   const favRow = (
-    <View style={[styles.cardRow, { flexWrap: 'wrap' }]}><Text style={styles.rowLbl}>즐겨찾기</Text>
+    <View style={[styles.cardRow, { flexWrap: 'wrap', minHeight: 28 }]}><Ionicons name="star-outline" size={14} color="#8E8E93" />
       {favs.map((f, i) => <Pressable key={i} accessibilityLabel={favEdit ? `즐겨찾는 펜 ${i + 1} 삭제` : `즐겨찾는 펜 ${i + 1}`} onPress={() => { if (favEdit) { removeFav(i); return; } onCfg({ tool: f.tool as Tool, color: f.color, width: f.width, opacity: f.opacity }); setPanel(null); /* picked a favourite: close the card and write right away */ }} onLongPress={() => setFavEdit(true)} style={({ pressed }) => [styles.fav, !favEdit && cfg.tool === f.tool && cfg.color === f.color && cfg.width === f.width && { borderColor: '#007AFF' }, favEdit && { borderColor: 'rgba(255,59,48,0.45)' }, pressed && { transform: [{ scale: 0.92 }] }]}><MaterialCommunityIcons name={f.tool === 'highlighter' ? 'marker' : f.tool === 'pencil' ? 'pencil' : 'pen'} size={11} color="#8E8E93" /><View style={{ width: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), height: Math.min(14, 3 + f.width * (f.tool === 'highlighter' ? 0.4 : 1.2)), borderRadius: 7, backgroundColor: f.color, opacity: f.tool === 'highlighter' ? 0.7 : 1 }} />{favEdit && <View pointerEvents="none" style={styles.favDel}><Ionicons name="close" size={10} color="#fff" /></View>}</Pressable>)}
       {!favEdit && favs.length < 8 && <Pressable accessibilityLabel="즐겨찾는 펜 추가" onPress={() => settings.setViewer({ favoritePens: [...favs, { tool: cfg.tool, color: cfg.color, width: cfg.width, opacity: cfg.opacity, fixed: cfg.tool === 'pen' ? true : undefined }] })} style={[styles.fav, { borderStyle: 'dashed' }]}><Ionicons name="add" size={14} color="#8E8E93" /></Pressable>}
       {favs.length > 0 && <Pressable accessibilityLabel={favEdit ? '즐겨찾기 편집 완료' : '즐겨찾기 편집'} onPress={() => setFavEdit((v) => !v)} style={({ pressed }) => [styles.favEditBtn, favEdit && { backgroundColor: '#007AFF' }, pressed && { opacity: 0.6 }]}><Text style={{ fontSize: 12, fontWeight: '700', color: favEdit ? '#fff' : '#007AFF' }}>{favEdit ? '완료' : '편집'}</Text></Pressable>}
@@ -117,22 +120,22 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
   const colorRow = (list: string[]) => {
     const swatches = Array.from(new Set([...(viewer.favoriteColors ?? []), ...list].map((c) => c.toUpperCase()))).slice(0, 14);
     return (
-      <View style={[styles.cardRow, { alignItems: 'flex-start' }]}>
-        <Text style={[styles.rowLbl, { lineHeight: 26 }]}>색상</Text>
-        <View style={{ flex: 1, gap: 8 }}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5 }}>
-            {swatches.map((c) => { const sel = c === cfg.color.toUpperCase(); return <Pressable key={c} accessibilityLabel={`색상 ${c}`} accessibilityState={{ selected: sel }} hitSlop={2} onPress={() => onCfg({ color: c })} style={({ pressed }) => [styles.cSw, { backgroundColor: c, borderWidth: sel ? 3 : 1, borderColor: sel ? '#007AFF' : 'rgba(0,0,0,0.14)' }, pressed && { transform: [{ scale: 0.88 }] }]} />; })}
+      <View style={{ gap: 8 }}>
+        <View style={[styles.cardRow, { minHeight: 28 }]}>
+          <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
+            {swatches.map((c) => { const sel = c === cfg.color.toUpperCase(); return <Pressable key={c} accessibilityLabel={`색상 ${c}`} accessibilityState={{ selected: sel }} hitSlop={3} onPress={() => onCfg({ color: c })} style={({ pressed }) => [styles.cSw, { backgroundColor: c, borderWidth: sel ? 3 : 1, borderColor: sel ? '#007AFF' : 'rgba(0,0,0,0.14)' }, pressed && { transform: [{ scale: 0.88 }] }]} />; })}
+            <Pressable accessibilityLabel={spectrum ? '색상표 접기' : '다른 색 고르기'} accessibilityState={{ expanded: spectrum }} hitSlop={3} onPress={() => setSpectrum((v) => !v)} style={({ pressed }) => [styles.cSw, styles.spectrumBtn, spectrum && { borderColor: '#007AFF', borderWidth: 2 }, pressed && { transform: [{ scale: 0.88 }] }]}><Ionicons name="color-palette-outline" size={14} color={spectrum ? '#007AFF' : '#3C3C43'} /></Pressable>
           </View>
-          <GradientPalette color={cfg.color} onChange={(c) => onCfg({ color: c })} width={Math.min(cardW - 32 - 62, 440)} height={cfg.tool === 'highlighter' ? 64 : 104} pastelOnly={cfg.tool === 'highlighter'} />
         </View>
+        {spectrum && <GradientPalette color={cfg.color} onChange={(c) => onCfg({ color: c })} width={Math.min(cardW - 32, 500)} height={cfg.tool === 'highlighter' ? 56 : 84} pastelOnly={cfg.tool === 'highlighter'} />}
       </View>
     );
   };
   const toggleRow = (label: string, value: boolean, onChange: (v: boolean) => void) => <View style={styles.cardRow}><Text style={[styles.rowLbl, { width: undefined, flex: 1 }]}>{label}</Text><Toggle value={value} onChange={onChange} /></View>;
   const sizeRow = (label: string) => <View style={styles.cardRow}><Text style={styles.rowLbl}>{label}</Text>{widthSlider}</View>;
   // live sample of the current tool (a short wave drawn exactly like the page stroke: outline for pens, band for highlighter)
-  const strokePreview = () => {
-    const W_ = Math.min(cardW - 32, 420), H_ = 46; const pts = Array.from({ length: 24 }, (_, i) => ({ x: 10 + (i / 23) * (W_ - 20), y: H_ / 2 + Math.sin(i / 23 * Math.PI * 2) * 11, p: 0.35 + 0.65 * Math.sin((i / 23) * Math.PI) }));
+  const strokePreview = (w?: number, h?: number) => {
+    const W_ = w ?? Math.min(cardW - 32, 420), H_ = h ?? 46; const pts = Array.from({ length: 24 }, (_, i) => ({ x: 10 + (i / 23) * (W_ - 20), y: H_ / 2 + Math.sin(i / 23 * Math.PI * 2) * 11, p: 0.35 + 0.65 * Math.sin((i / 23) * Math.PI) }));
     const k = 2.2; // screen px per page unit in the sample (matches a typical zoom)
     const ink = cfg.tool === 'highlighter'
       ? <Path d={pts.map((q, i) => `${i ? 'L' : 'M'} ${q.x} ${q.y}`).join(' ')} stroke={cfg.color} strokeOpacity={cfg.opacity} strokeWidth={cfg.width * k} strokeLinecap="butt" strokeLinejoin="round" fill="none" />
@@ -143,7 +146,7 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
         </G>
       : cfg.tool === 'pencil' ? <PencilStroke points={pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p }))} width={cfg.width} color={cfg.color} opacity={cfg.opacity} scale={k} live />
       : <Path d={penOutline(pts.map((q) => ({ x: q.x / k, y: q.y / k, p: q.p })), cfg.width, true, cfg.tool)} scale={k} fill={cfg.color} fillOpacity={cfg.opacity} />;
-    return <View style={styles.previewBox}><Svg width={W_} height={H_}>{ink}</Svg></View>;
+    return <View style={[styles.previewBox, w ? { alignSelf: 'auto', width: W_ + 12, height: H_ + 4 } : null]}><Svg width={W_} height={H_}>{ink}</Svg></View>;
   };
   const cardW = Math.min(560, winW - 24);
 
@@ -190,12 +193,20 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
         <View pointerEvents="box-none" style={{ paddingHorizontal: 12, paddingTop: 8, alignItems: 'flex-start' }}>
           <View style={[styles.card, { width: cardW }]}>
             {(panel === 'pen' || panel === 'highlighter') && <>
-              {strokePreview()}
-              <View style={styles.cardRow}><Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'pencil', label: '연필', icon: 'pencil' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k === 'highlighter' ? 'highlighter' : 'pen'); }} /><View style={{ flex: 1 }} />
-                {cfg.tool === 'highlighter' && <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선 형광펜' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}</View>
+              {/* GoodNotes-like compact card: type + live sample on one row, thickness (+ quick sizes), colours, favourites */}
+              <View style={styles.cardRow}>
+                <Seg items={[{ k: 'pen', label: '펜', icon: 'pen' }, { k: 'pencil', label: '연필', icon: 'pencil' }, { k: 'highlighter', label: '형광펜', icon: 'marker' }]} value={cfg.tool} onChange={(k) => { onCfg({ tool: k as Tool }); setPanel(k === 'highlighter' ? 'highlighter' : 'pen'); }} />
+                {cfg.tool === 'highlighter' && <Seg items={[{ k: 'free', label: '자유' }, { k: 'line', label: '직선' }]} value={viewer.straightHighlighter ? 'line' : 'free'} onChange={(k) => settings.setViewer({ straightHighlighter: k === 'line' })} />}
+                <View style={{ flex: 1 }} />
+                {cardW >= 420 && strokePreview(Math.min(170, cardW - 330), 30)}
+                <Pressable accessibilityLabel="닫기" hitSlop={8} onPress={applyPanel} style={({ pressed }) => [styles.closeBtn, pressed && { opacity: 0.6 }]}><Ionicons name="close" size={16} color="#3C3C43" /></Pressable>
+              </View>
+              <View style={styles.cardRow}>
+                <Text style={styles.rowLbl}>굵기</Text>{widthSlider}
+                <View style={{ flexDirection: 'row', gap: 4 }}>{(cfg.tool === 'highlighter' ? [8, 14, 24] : [0.7, 1.5, 3]).map((w) => <Pressable key={w} accessibilityLabel={`굵기 ${w}`} hitSlop={3} onPress={() => onCfg({ width: w })} style={({ pressed }) => [styles.sizeDot, Math.abs(cfg.width - w) < 0.05 && { borderColor: '#007AFF', backgroundColor: 'rgba(0,122,255,0.08)' }, pressed && { transform: [{ scale: 0.9 }] }]}><View style={{ width: Math.min(18, 3 + w * (cfg.tool === 'highlighter' ? 0.6 : 3)), height: Math.min(18, 3 + w * (cfg.tool === 'highlighter' ? 0.6 : 3)), borderRadius: 9, backgroundColor: cfg.color, opacity: cfg.tool === 'highlighter' ? 0.6 : 1 }} /></Pressable>)}</View>
+              </View>
+              {cfg.tool === 'highlighter' && <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}<Text style={{ width: 36, fontSize: 11, color: '#8E8E93', textAlign: 'right' }}>{Math.round(cfg.opacity * 100)}%</Text></View>}
               {colorRow(cfg.tool === 'highlighter' ? HL_PALETTE : PALETTE)}
-              {sizeRow('굵기')}
-              <View style={styles.cardRow}><Text style={styles.rowLbl}>투명도</Text>{opacitySlider}</View>
               {favRow}
             </>}
             {panel === 'eraser' && <>
@@ -230,11 +241,11 @@ export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, can
               {toggleRow('부분 선택된 개체 포함', viewer.lassoPartial ?? true, (v) => settings.setViewer({ lassoPartial: v }))}
               <Text style={{ fontSize: 12, color: '#8E8E93' }}>선택한 뒤 끌어서 이동 · 오른쪽 아래 점으로 크기 조절</Text>
             </>}
-            <View style={styles.cardFooter}>
+            {panel !== 'pen' && panel !== 'highlighter' && <View style={styles.cardFooter}>
               <Text style={{ flex: 1, fontSize: 11, color: '#8E8E93' }}>페이지를 터치하면 바로 적용돼요</Text>
               <Pressable accessibilityLabel="취소" onPress={cancelPanel} style={({ pressed }) => [styles.cancelBtn, pressed && { opacity: 0.6 }]}><Text style={styles.cancelText}>취소</Text></Pressable>
               <Pressable accessibilityLabel="적용" onPress={applyPanel} style={({ pressed }) => [styles.applyBtn, pressed && { opacity: 0.8 }]}><Text style={styles.applyText}>적용</Text></Pressable>
-            </View>
+            </View>}
           </View>
         </View>
       )}
@@ -258,9 +269,12 @@ const styles = StyleSheet.create({
   chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 30, borderRadius: 15, backgroundColor: '#EFEFF4', marginBottom: 17 },
   chipActive: { backgroundColor: 'rgba(0,122,255,0.14)' },
   chipText: { fontSize: 12, fontWeight: '600', color: '#3A3A3C' },
-  card: { backgroundColor: '#FFFFFF', borderRadius: 20, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, gap: 10, shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.15)' },
-  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 34 },
-  rowLbl: { width: 52, fontSize: 13, fontWeight: '600', color: '#3C3C43' },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 18, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, gap: 8, shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.15)' },
+  cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 32 },
+  rowLbl: { width: 44, fontSize: 12, fontWeight: '600', color: '#3C3C43' },
+  closeBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(0,0,0,0.06)', alignItems: 'center', justifyContent: 'center' },
+  sizeDot: { width: 28, height: 28, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  spectrumBtn: { backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(0,0,0,0.14)' },
   previewBox: { alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#F6F7FB', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(60,60,67,0.12)', paddingVertical: 2 },
   cardFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(60,60,67,0.18)', paddingTop: 10, marginTop: 2 },
   cancelBtn: { paddingHorizontal: 16, height: 34, borderRadius: 10, backgroundColor: '#EFEFF4', alignItems: 'center', justifyContent: 'center' },
@@ -271,9 +285,9 @@ const styles = StyleSheet.create({
   dot: { width: 26, height: 26, borderRadius: 13, borderWidth: 2, alignItems: 'center', justifyContent: 'center', marginHorizontal: 1 }, widthBtn: { width: 34, height: 34, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginLeft: 2, backgroundColor: '#fff' },
   toggleBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, height: 30, borderRadius: 8, borderWidth: 1, borderColor: 'transparent', marginLeft: 4 },
   seg: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.06)', borderRadius: 10, padding: 3, gap: 2 }, segItem: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 28, borderRadius: 8 },
-  fav: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 28, minWidth: 34, paddingHorizontal: 6, borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.1)', backgroundColor: '#fff', justifyContent: 'center' },
+  fav: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 26, minWidth: 32, paddingHorizontal: 6, borderRadius: 8, borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.1)', backgroundColor: '#fff', justifyContent: 'center' },
   favDel: { position: 'absolute', top: -7, right: -7, width: 17, height: 17, borderRadius: 9, backgroundColor: '#FF3B30', borderWidth: 1.5, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   favEditBtn: { height: 28, paddingHorizontal: 10, borderRadius: 8, backgroundColor: 'rgba(0,122,255,0.10)', alignItems: 'center', justifyContent: 'center' },
-  cSw: { width: 25, height: 25, borderRadius: 13 },
+  cSw: { width: 24, height: 24, borderRadius: 12 },
   ghostBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, height: 30, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.05)' }, lbl: { fontSize: 12, fontWeight: '600', color: '#5B6578' },
 });
