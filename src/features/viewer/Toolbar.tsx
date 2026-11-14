@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Pressable, Text, ScrollView, StyleSheet, Image, useWindowDimensions } from 'react-native';
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useTheme } from '@/theme';
+import { useTheme, useContentSize } from '@/theme';
 import { Tool, ShapeKind } from '@/data/types';
 import { ToolConfig } from './ink';
 import { Row, Muted, Toggle, Button, Dialog } from '@/components/ui';
@@ -59,7 +59,7 @@ type Props = { cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgRe
 export function Toolbar({ cfg, onCfg, onCfgReplace, onUndo, onRedo, canUndo, canRedo, onClear, onClearAll, onBack, onMore, onInsertImage, onSubDoc, onVideos, readOnly, recentColors, textFont = 'system', onTextFont, zoomPad, onZoomPad, locked, onLock, dismissKey, onPanelChange }: Props) {
   const [titleSpace, setTitleSpace] = useState(0);
   const { colors } = useTheme(); const [panel, setPanel] = useState<Panel>(null); const [confirm, setConfirm] = useState<null | 'page' | 'all'>(null);
-  const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useWindowDimensions();
+  const settings = useSettingsStore(); const viewer = settings.viewer; const { width: winW } = useContentSize();
   // pen / highlighter card: favorites edit mode (tap a pen to delete it) and the fine color tuner
   const [favEdit, setFavEdit] = useState(false);
   useEffect(() => { if (!panel) setFavEdit(false); }, [panel]);

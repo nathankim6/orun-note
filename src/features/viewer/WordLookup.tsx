@@ -3,7 +3,7 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, Platform, useWind
 import { Ionicons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
 import { createAudioPlayer } from 'expo-audio';
-import { useTheme } from '@/theme';
+import { useTheme, useContentSize } from '@/theme';
 import { DOCS_FN, SUPABASE_ANON_KEY } from '@/lib/config';
 
 type Dict = { q: string; headword: string; isWord: boolean; phonetic: { text: string; us: string; uk: string; audioUs: string; audioUk: string }; korean: { main: string; byPos: { pos: string; terms: string[] }[] }; meanings: { pos: string; posKo: string; defs: { def: string; ex?: string }[]; synonyms: string[] }[] };
@@ -37,7 +37,7 @@ async function play(url: string, fallbackText: string, accent: 'us' | 'uk') {
 
 /** Context-menu style dictionary card shown next to a tapped/selected English word or phrase. */
 export function WordLookup({ text, anchor, onClose, onHighlight, onLookup }: { text: string; anchor: { x: number; y: number }; onClose: () => void; onHighlight?: () => void; onLookup?: (q: string) => void }) {
-  const { colors } = useTheme(); const { width: W, height: H } = useWindowDimensions();
+  const { colors } = useTheme(); const { width: W, height: H } = useContentSize();
   const [d, setD] = useState<Dict | null>(null); const [err, setErr] = useState<string | null>(null);
   useEffect(() => { setD(null); setErr(null); fetchDict(text).then(setD).catch((e) => setErr(e.message)); }, [text]);
   const cardW = Math.min(380, W - 24); const left = Math.max(12, Math.min(W - cardW - 12, anchor.x - cardW / 2)); const below = anchor.y < H * 0.55; const maxH = Math.min(440, below ? H - anchor.y - 30 : anchor.y - 40);

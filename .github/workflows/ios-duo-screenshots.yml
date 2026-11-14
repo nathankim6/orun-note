@@ -1,0 +1,60 @@
+name: iPhone Duo compile + screenshots (QA only, no upload to Apple)
+# Builds the real app with the iOS 27.x SDK (iPhone Duo optimized), runs it on the iPhone Duo simulator and
+# captures the outer (folded) and inner (unfolded) displays at App Store screenshot sizes. Never signs for
+# distribution and never talks to App Store Connect.
+on:
+  workflow_dispatch: {}
+  push: { branches: [feat/iphone-duo] }
+permissions:
+  contents: read
+jobs:
+  duo:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '27.2' }
+      - run: xcodebuild -version && xcrun simctl list runtimes && xcrun simctl list devicetypes | grep -i duo
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx expo prebuild --platform ios --no-install
+      - run: cd ios && pod install
+      - name: Build for iPhone Duo simulator (ad-hoc local signing only)
+        run: |
+          cd ios
+          xcodebuild -workspace Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath ../duo-build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER="" CODE_SIGN_ENTITLEMENTS="" build | tail -40
+          test -d ../duo-build/Build/Products/Release-iphonesimulator/Paperly.app
+          /usr/libexec/PlistBuddy -c 'Print :DTSDKName' ../duo-build/Build/Products/Release-iphonesimulator/Paperly.app/Info.plist
+      - name: Boot iPhone Duo, capture outer and inner displays
+        run: |
+          set -euo pipefail
+          brew install artemnovichkov/tap/hinge || brew install skarol/tap/duoctl
+          RT=$(xcrun simctl list runtimes -j | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).runtimes.filter(x=>x.isAvailable&&/^iOS 27\.[12]/.test(x.name)).pop();console.log(r.identifier)})')
+          UDID=$(xcrun simctl create "Duo shots" "iPhone Duo" "$RT")
+          xcrun simctl boot "$UDID"; xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl io "$UDID" enumerate || true
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+          xcrun simctl install "$UDID" duo-build/Build/Products/Release-iphonesimulator/Paperly.app
+          mkdir -p duo-shots
+          fold() { if command -v hinge >/dev/null; then hinge -d "$UDID" "$@"; else DUOCTL_UDID="$UDID" duoctl "$@"; fi; }
+          orient() { if command -v hinge >/dev/null; then hinge -d "$UDID" orient "$1"; else DUOCTL_UDID="$UDID" duoctl rotate "$1"; fi; }
+          relaunch() { xcrun simctl terminate "$UDID" com.paperly.study || true; xcrun simctl launch "$UDID" com.paperly.study; sleep 14; }
+          orient portrait; fold close; relaunch
+          xcrun simctl io "$UDID" screenshot --display=1 --mask=black duo-shots/outer-portrait.png
+          fold open; relaunch
+          xcrun simctl io "$UDID" screenshot --display=3 --mask=black duo-shots/inner-open-portrait.png
+          orient landscape-left; fold open; relaunch
+          xcrun simctl io "$UDID" screenshot --display=3 --mask=black duo-shots/inner-open-upright.png || true
+          for f in duo-shots/*.png; do sips -g pixelWidth -g pixelHeight -g hasAlpha "$f"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-duo-screenshots
+          path: duo-shots/*.png
+          if-no-files-found: warn
+          retention-days: 14
