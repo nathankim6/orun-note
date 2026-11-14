@@ -1,0 +1,35 @@
+name: DuoShots
+options:
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  DuoHost:
+    type: application
+    platform: iOS
+    sources: [Host.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paperly.qa.duohost
+  DuoShotsTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [DuoShotsTests.swift]
+    dependencies:
+      - target: DuoHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paperly.qa.duotests
+        TEST_TARGET_NAME: DuoHost
+schemes:
+  DuoShots:
+    build:
+      targets:
+        DuoHost: all
+        DuoShotsTests: [test]
+    test:
+      targets: [DuoShotsTests]
