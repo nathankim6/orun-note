@@ -141,16 +141,17 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
       carry = L - (s0 - step); d += L;
     }
   }
-  const n = samples.length; const budget = Math.max(1, Math.min(8, Math.floor(PENCIL_MAX_SPECKS / n)));
+  const n = samples.length; const budget = Math.max(1, Math.min(10, Math.floor(PENCIL_MAX_SPECKS / n)));
   let dark = '', light = '', coreW: number[] = [];
   // ends taper over ~1.2 W (lead lands and lifts), like a real pencil
   const taperLen = Math.max(step * 2, W * 1.2);
   for (let i = 0; i < n; i++) {
     const q = samples[i]; const seed = (Math.round(q.x * 37) + Math.round(q.y * 91) * 1013 + i * 7) | 0;
     const taper = Math.min(1, 0.35 + 0.65 * Math.min(q.d, total - q.d) / taperLen);
-    const w = W * pencilWidthFactor(q) * taper, R = w / 2, dk = pencilDarkness(q);
+    const wf = pencilWidthFactor(q), w = W * wf * taper, R = w / 2, dk = pencilDarkness(q);
     coreW.push(Math.max(0.15, w * 0.42));
-    const count = Math.min(budget, Math.max(1, Math.round(3.5 + 4.5 * dk)));
+    // more graphite per step when the band is wider (shading with a flat lead covers more paper)
+    const count = Math.min(budget, Math.max(1, Math.round((3.5 + 4.5 * dk) * Math.max(1, wf / 0.9))));
     for (let j = 0; j < count; j++) {
       const u1 = grain(seed + j * 13.1), u2 = grain(seed * 0.7 + j * 29.3 + 5), u3 = grain(seed * 1.3 + j * 17.7 + 11);
       const rho = R * 1.25 * Math.sqrt(u1), ang = u2 * Math.PI * 2;
