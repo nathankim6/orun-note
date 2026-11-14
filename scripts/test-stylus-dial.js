@@ -5,10 +5,10 @@ for (const width of [240, 320, 375, 768, 1366]) for (const height of [240, 375, 
   const p = placeStylusDial({x, y}, {width, height, top: 24, bottom: 20});
   assert(p.left >= 8 && p.top >= 32, JSON.stringify(p));
   assert(p.left + p.width <= width - 8 && p.top + p.height <= height - 28, JSON.stringify(p));
-  assert(p.width <= 296 && p.height <= 176 && p.width / p.height >= 1.45 && p.width / p.height <= 2 && p.width > 0 && p.height > 0);
+  assert(p.width <= 296 && p.height <= 200 && p.width / p.height >= 1.2 && p.width / p.height <= 2 && p.width > 0 && p.height > 0);
 }
 const nan = placeStylusDial({x: NaN, y: Infinity}, {width: 375, height: 812}); assert(Object.values(nan).every(Number.isFinite));
-assert.equal(placeStylusDial({x: 500, y: 700}, {width: 1000, height: 1000}).top, 500);
+assert.equal(placeStylusDial({x: 500, y: 700}, {width: 1000, height: 1000}).top, 476);
 assert.equal(placeStylusDial({x: 500, y: 30}, {width: 1000, height: 1000}).top, 54);
 assert.equal(JSON.stringify(dialWidthRange('pen')), JSON.stringify({min:0.5,max:12,step:0.1}));
 assert.equal(dialWidthRange('pencil').step, 0.1);
@@ -24,3 +24,5 @@ assert(!src.includes('opacity: w')); assert(!src.includes('Modal')); assert(src.
 console.log('PASS: 500 edge/phone/tablet/landscape placements, nonfinite anchors, continuous slider ranges, half-disk dome bounds and enlarged artwork, colors, original ToolArt, non-modal outside touch');
 
 assert(!fs.readFileSync('src/features/viewer/StylusDial.tsx','utf8').includes('stylus-dial-current-width'), 'dial must not display numeric thickness');
+
+assert(src.includes('stylus-dial-brand') && src.includes('<OrunMark height={16} />'), 'official logo is retained in a separate footer');

@@ -1,3 +1,4 @@
+import { OrunMark } from '@/components/OrunMark';
 import React, { useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,7 +30,7 @@ export function StylusDial({ cfg, onCfg, onClose, anchor, favorites }: StylusDia
   const content = useContentSize(); const insets = useSafeAreaInsets();
   const [measured, setMeasured] = useState<{ width: number; height: number } | null>(null);
   const pos = placeStylusDial(anchor, { ...(measured ?? content), top: insets.top, bottom: insets.bottom });
-  const w = pos.width, h = pos.height, c = w / 2, compact = w < 260;
+  const w = pos.width, h = pos.height - 24, c = w / 2, compact = w < 260;
   const sliderWidth = compact ? 80 : 100, toolHeight = compact ? 64 : 78, toolWidth = compact ? 44 : 52;
   const isEraser = cfg.tool === 'eraser' || cfg.tool === 'vectorEraser';
   const selected = isEraser ? 'eraser' : cfg.tool;
@@ -78,6 +79,12 @@ export function StylusDial({ cfg, onCfg, onClose, anchor, favorites }: StylusDia
           style={({ pressed }) => [styles.close, { right: compact ? 14 : 12, top: h - 40, backgroundColor: pressed ? colors.primarySoft : 'transparent' }]}>
           <Svg width={12} height={12} viewBox="0 0 14 14"><Path d="M3 3L11 11M11 3L3 11" stroke={colors.textMuted} strokeWidth={1.6} strokeLinecap="round" /></Svg>
         </Pressable>}
+        <View pointerEvents="none" testID="stylus-dial-brand" style={{ position: 'absolute', left: 20, right: 20, bottom: 0, height: 25, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: edge }}>
+          <View style={{ width: 24, height: 1, backgroundColor: dark ? '#625936' : '#E5D9AC' }} />
+          <View style={{ padding: 2, borderRadius: 5, backgroundColor: '#FFFFFF' }}><OrunMark height={16} /></View>
+          <Text style={{ fontSize: 10, fontWeight: '800', letterSpacing: 0.8, color: dark ? '#D5E4F5' : '#294665' }}>옳은영어</Text>
+          <View style={{ width: 24, height: 1, backgroundColor: dark ? '#625936' : '#E5D9AC' }} />
+        </View>
       </View>
     </View>
   );

@@ -11,7 +11,7 @@ export function placeStylusDial(anchor: DialPoint, bounds: DialBounds) {
   const bottom = Math.max(top, finite(bounds.height, 640) - Math.max(0, bounds.bottom ?? 0) - margin);
   const width = Math.min(296, right - left);
   // A half-disk dome plus a shallow flat-base control strip. Keep narrow-phone controls usable.
-  const height = Math.min(176, Math.max(150, width * 176 / 296), bottom - top);
+  const height = Math.min(200, Math.max(174, width * 176 / 296 + 24), bottom - top);
   const ax = finite(anchor.x, (left + right) / 2), ay = finite(anchor.y, (top + bottom) / 2);
   const above = ay - height - 24;
   const y = above >= top ? above : ay + 24 + height <= bottom ? ay + 24 : clamp(ay - height / 2, top, bottom - height);
