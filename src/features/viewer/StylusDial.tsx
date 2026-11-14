@@ -44,7 +44,7 @@ export function StylusDial({ cfg, onCfg, onClose, anchor, favorites }: StylusDia
       setMeasured(old => old?.width === width && old?.height === height ? old : { width, height });
     }}>
       <View testID="stylus-dial" onStartShouldSetResponder={() => true} accessibilityLabel="반원 펜 빠른 도구 다이얼" style={[styles.panel, pos, { borderTopLeftRadius: c, borderTopRightRadius: c, backgroundColor: colors.surface, borderColor: edge }]}>
-        <View pointerEvents="none" style={{ position: 'absolute', left: 8, right: 8, top: 8, bottom: 8, borderTopLeftRadius: c - 8, borderTopRightRadius: c - 8, backgroundColor: dark ? '#24262C' : '#F7F9FD', borderColor: edge, borderWidth: StyleSheet.hairlineWidth }} />
+        <View pointerEvents="none" style={{ position: 'absolute', left: 8, right: 8, top: 8, bottom: 24, borderTopLeftRadius: c - 8, borderTopRightRadius: c - 8, backgroundColor: dark ? '#24262C' : '#F7F9FD', borderColor: edge, borderWidth: StyleSheet.hairlineWidth, borderBottomWidth: 0 }} />
         {TOOLS.map(t => {
           const active = selected === t.kind;
           const x = w * t.x, y = t.outer ? (compact ? 73 : 88) : (compact ? 36 : 50);
