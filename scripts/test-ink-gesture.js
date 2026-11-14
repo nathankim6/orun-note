@@ -5,7 +5,7 @@ const body=text.slice(text.indexOf('  const pan = useMemo('),text.indexOf('  con
 function create(OS){
  const callbacks={}, events=[], transitions=[]; let kind;
  const gesture=new Proxy({}, {get:(_,key)=>(...args)=>{ if(key.startsWith('on'))callbacks[key]=args[0]; return gesture; }});
- const ctx={ Platform:{OS}, PointerType:{TOUCH:0,STYLUS:1,MOUSE:2}, Gesture:{Manual:()=>{kind='manual';return gesture}, Pan:()=>{kind='pan';return gesture}}, useMemo:fn=>fn(), enabled:true, handMode:{value:false}, penId:{value:-1}, pressSV:{value:-1}, penSession:{value:{}}, Date,
+ const ctx={ Platform:{OS}, PointerType:{TOUCH:0,STYLUS:1,MOUSE:2}, Gesture:{Manual:()=>{kind='manual';return gesture}, Pan:()=>{kind='pan';return gesture}}, useMemo:fn=>fn(), enabled:true, handMode:{value:false}, penId:{value:-1}, pressSV:{value:-1}, tiltSV:{value:-1}, penSession:{value:{}}, Date,
  runOnJS:fn=>fn, jsDown:(...a)=>events.push(['down',...a]),jsMove:(...a)=>events.push(['move',...a]),jsUp:(...a)=>events.push(['up',...a]),jsFinish:()=>events.push(['finish']),jsAbort:()=>events.push(['abort']) };
  vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,ctx);
  const sm={begin:()=>transitions.push('begin'),activate:()=>transitions.push('activate'),end:()=>transitions.push('end'),fail:()=>transitions.push('fail')};

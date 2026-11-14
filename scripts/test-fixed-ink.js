@@ -49,3 +49,23 @@ assert(viewerSrc.includes("useSettingsStore.getState().hydrated && ['pen', 'penc
 assert(viewerSrc.includes("viewer.pagesPanelOpen ?? true) ? 'pages' : null")); assert(viewerSrc.includes("setViewer({ pagesPanelOpen: !!t })"));
 assert(viewerSrc.includes('useEffect(() => { if (settingsHydrated && !hydratedAtMount.current)'));
 console.log('PASS: v12 defaults + pencil, persistence guards, v11 modest defaults, v9/v1/v10 migration, custom presets preserved, pressure-independent live/stored ink, toolbar removal');
+
+// ---- pen landing dot + pencil stamp brush (added with the GoodNotes-style pencil) ----
+{
+  const ink = load('src/features/viewer/ink.ts');
+  const h = (d) => { const ys = [...d.matchAll(/(-?\d+\.?\d*) (-?\d+\.?\d*)/g)].map((m) => Number(m[2])); return Math.max(...ys) - Math.min(...ys); };
+  // the landing dot and the first few points never exceed the chosen width (was ~2x for 1-2 points)
+  for (const n of [1, 2, 3, 4, 6, 10]) { const pts = Array.from({ length: n }, (_, k) => ({ x: 100 + k * 0.3, y: 100 })); const d = ink.penOutline(pts, 1, true, 'pen'); assert.ok(h(d) <= 1.25, `pen width stable at ${n} points: ${h(d)}`); }
+  // pencil: pressure widens + darkens, tilt widens + lightens; output is deterministic and bounded
+  const line = (p, t) => Array.from({ length: 40 }, (_, k) => ({ x: 10 + k, y: 50, p, t }));
+  const soft = ink.pencilLayers(line(0.1), 1.2), firm = ink.pencilLayers(line(0.9), 1.2), flat = ink.pencilLayers(line(0.5, 1.3), 1.2);
+  assert.ok(ink.pencilWidthFactor({ p: 0.9 }) > ink.pencilWidthFactor({ p: 0.1 }) && ink.pencilDarkness({ p: 0.9 }) > ink.pencilDarkness({ p: 0.1 }));
+  assert.ok(ink.pencilWidthFactor({ p: 0.5, t: 1.3 }) > 2 * ink.pencilWidthFactor({ p: 0.5 }) && ink.pencilDarkness({ p: 0.5, t: 1.3 }) < ink.pencilDarkness({ p: 0.5 }));
+  assert.ok(firm.dark.length > soft.dark.length, 'firm pressure deposits more dark specks');
+  const mid = ink.pencilLayers(line(0.5), 1.2); const share = (L) => L.dark.length / (L.dark.length + L.light.length + L.streaks.length); assert.ok(flat.streaks.length + flat.light.length > mid.streaks.length + mid.light.length && share(flat) < share(mid), 'tilted pencil spreads lighter graphite');
+  assert.equal(ink.pencilLayers(line(0.5), 1.2).dark, ink.pencilLayers(line(0.5), 1.2).dark, 'deterministic');
+  const long = ink.pencilLayers(Array.from({ length: 2000 }, (_, k) => ({ x: k * 0.5, y: 0 })), 1.2);
+  assert.ok((long.dark.match(/M/g) || []).length + (long.light.match(/M/g) || []).length <= 7000, 'speck budget per stroke');
+  assert.ok(ink.pencilLayers([{ x: 5, y: 5 }], 1.2).core.length > 0, 'single tap leaves a dot');
+}
+console.log('PASS: pen landing width, pencil pressure/tilt response, determinism, speck budget');

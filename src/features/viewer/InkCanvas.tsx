@@ -9,7 +9,8 @@ import { TEXT_FONTS } from './Toolbar';
 import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
-import { ToolConfig, penOutline, isInkPen, pencilGrainId, PENCIL_GRAIN_DOTS, PENCIL_GRAIN_CELL, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
+import { PencilStroke } from './PencilInk';
+import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
 
@@ -27,6 +28,8 @@ export type InkOpts = { fixedWidth: boolean; straightHighlighter: boolean; erase
 const DEFAULT_OPTS: InkOpts = { fixedWidth: true, straightHighlighter: false, eraseHighlighterOnly: false, lassoMode: 'free', lassoPartial: true, neatShape: false };
 /** Lasso clipboard shared across pages (잘라내기/복사 → 붙여넣기). */
 let CLIP: { strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; b: { x: number; y: number; w: number; h: number } } | null = null;
+/** Hold the pen still this long at the end of a stroke and it snaps to a straight line (user-chosen: 0.4 s). */
+export const LINE_SNAP_DWELL_MS = 400;
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
 export let lastLookupAt = 0;
 export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1}: Props) {
@@ -64,7 +67,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   }; });
   const toPage = (x: number, y: number): Point => ({ x: x / s, y: y / s });
   // stylus pressure (0..1) from Apple Pencil / S Pen; absent for touch/mouse
-  const toPageP = (e: any): Point => { const q: Point = { x: e.x / s, y: e.y / s }; const pr = e?.stylusData?.pressure; if (typeof pr === 'number' && pr > 0) q.p = pr; return q; };
+  const toPageP = (e: any): Point => { const q: Point = { x: e.x / s, y: e.y / s }; const pr = e?.stylusData?.pressure; if (typeof pr === 'number' && pr > 0) q.p = Math.round(pr * 1000) / 1000; const tl = e?.stylusData?.tilt; if (typeof tl === 'number' && tl > 0.01) q.t = Math.round(tl * 100) / 100; return q; };
   const eraserR = Math.max(8, cfg.width * 3);
   const isDrawingTool = ['pen', 'pencil', 'highlighter', 'fountain', 'brush'].includes(cfg.tool);
   // Finger input draws only when the user enabled it; stylus (Apple Pencil / S Pen) and mouse always draw.
@@ -75,7 +78,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // Dwell-to-line: while a pen stroke is in progress, holding still at the end point for 1.5s snaps the stroke to a straight line.
   const dwellTimer = useRef<any>(null); const lastMovePt = useRef<Point | null>(null); const snappedLine = useRef(false);
   const clearDwell = () => { if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null; } };
-  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, 500); };
+  const armDwell = (p: Point) => { if (!lineSnap) return; clearDwell(); dwellTimer.current = setTimeout(() => { const pts = liveRef.current; if (pts.length < 4 || snappedLine.current) return; if (dist(pts[0], p) < 20 / s) return; snappedLine.current = true; liveRef.current = [pts[0], p]; setLive([pts[0], p]); }, LINE_SNAP_DWELL_MS); };
 
   const finish = useCallback((pts: Point[], pointerOk: boolean) => {
     const t = Date.now() - startT.current; const tool = cfg.tool;
@@ -105,10 +108,10 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // A stroke follows ONLY the contact that started it (the pen). Palms/fingers landing while writing are ignored
   // (they no longer cancel the stroke or drag the line toward the palm). Finger contacts never draw; they wait, so the
   // document can scroll/zoom with them — or a pen that lands while the palm rests still starts a stroke.
-  const activeId = useRef<number | null>(null); const activeType = useRef<any>(null); const pressureRef = useRef<number | undefined>(undefined);
+  const activeId = useRef<number | null>(null); const activeType = useRef<any>(null); const pressureRef = useRef<number | undefined>(undefined); const tiltRef = useRef<number | undefined>(undefined);
   const rafRef = useRef<any>(null); const scheduleLive = () => { if (rafRef.current == null) rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setLive([...liveRef.current]); }); }; const cancelLive = () => { if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
-  type PseudoEvt = { x: number; y: number; absoluteX: number; absoluteY: number; pointerType: any; stylusData?: { pressure: number } };
-  const pseudo = (t: { x: number; y: number; absoluteX: number; absoluteY: number }): PseudoEvt => ({ x: t.x, y: t.y, absoluteX: t.absoluteX, absoluteY: t.absoluteY, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current } : undefined });
+  type PseudoEvt = { x: number; y: number; absoluteX: number; absoluteY: number; pointerType: any; stylusData?: { pressure: number; tilt?: number } };
+  const pseudo = (t: { x: number; y: number; absoluteX: number; absoluteY: number }): PseudoEvt => ({ x: t.x, y: t.y, absoluteX: t.absoluteX, absoluteY: t.absoluteY, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined });
   const beginAt = (e: PseudoEvt) => { startT.current = Date.now(); snappedLine.current = false; clearDwell(); const p = toPageP(e); liveRef.current = [p]; lastMovePt.current = p;
       if (cfg.tool === 'select' || cfg.tool === 'lasso') { selStart.current = p; setTextSel([]); setPasteAt(null);
         const hasSel = selection.length || selText.length || selImg.length; const sb = combinedBounds();
@@ -159,26 +162,26 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   // begun/activated/ended for the Pencil on the UI thread only (never delayed JS state-manager commands).
   const H = useRef<any>({});
   H.current = {
-    down: (x: number, y: number, ax: number, ay: number, pt: any) => {
-      rejected.current = false; activeId.current = 1; activeType.current = pt; pressureRef.current = undefined;
-      const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: pt }; lastPe.current = pe; beginAt(pe);
+    down: (x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => {
+      rejected.current = false; activeId.current = 1; activeType.current = pt; pressureRef.current = pr > 0 ? pr : undefined; tiltRef.current = tl >= 0 ? tl : undefined;
+      const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: pt, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined }; lastPe.current = pe; beginAt(pe);
     },
-    move: (x: number, y: number, ax: number, ay: number, pr: number) => {
-      if (activeId.current == null) return; if (pr > 0) pressureRef.current = pr;
-      const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current } : undefined }; lastPe.current = pe; moveTo(pe);
+    move: (x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => {
+      if (activeId.current == null) return; if (pr > 0) pressureRef.current = pr; if (tl >= 0) tiltRef.current = tl;
+      const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined }; lastPe.current = pe; moveTo(pe);
     },
-    up: (x: number, y: number, ax: number, ay: number, pr: number) => {
-      if (activeId.current == null) return; if (pr > 0) pressureRef.current = pr; activeId.current = null;
-      endAt({ x, y, absoluteX: ax, absoluteY: ay, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current } : undefined }); lastPe.current = null;
+    up: (x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => {
+      if (activeId.current == null) return; if (pr > 0) pressureRef.current = pr; if (tl >= 0) tiltRef.current = tl; activeId.current = null;
+      endAt({ x, y, absoluteX: ax, absoluteY: ay, pointerType: activeType.current, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined }); lastPe.current = null;
     },
     finish: () => { if (activeId.current == null) return; const pe = lastPe.current; activeId.current = null; if (pe) endAt(pe); else abortStroke(); lastPe.current = null; },
     abort: () => { if (activeId.current != null) abortStroke(); lastPe.current = null; },
   };
-  const jsDown = useCallback((x: number, y: number, ax: number, ay: number, pt: any) => H.current.down(x, y, ax, ay, pt), []);
-  const jsMove = useCallback((x: number, y: number, ax: number, ay: number, pr: number) => H.current.move(x, y, ax, ay, pr), []);
-  const jsUp = useCallback((x: number, y: number, ax: number, ay: number, pr: number) => H.current.up(x, y, ax, ay, pr), []);
+  const jsDown = useCallback((x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => H.current.down(x, y, ax, ay, pt, pr, tl), []);
+  const jsMove = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.move(x, y, ax, ay, pr, tl), []);
+  const jsUp = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.up(x, y, ax, ay, pr, tl), []);
   const jsFinish = useCallback(() => H.current.finish(), []); const jsAbort = useCallback(() => H.current.abort(), []);
-  const penId = useSharedValue(-1); const pressSV = useSharedValue(-1); const handMode = useSharedValue(cfg.tool === 'hand');
+  const penId = useSharedValue(-1); const pressSV = useSharedValue(-1); const tiltSV = useSharedValue(-1); const handMode = useSharedValue(cfg.tool === 'hand');
   useEffect(() => { handMode.value = cfg.tool === 'hand'; }, [cfg.tool]);
   const pan = useMemo(() => {
     const manual = Platform.OS === 'ios';
@@ -198,12 +201,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       const now = Date.now(); penSession.value = { ...penSession.value, writing: true, byPen: pt === PointerType.STYLUS, at: now, since: now };
       if (manual) sm.begin(); // iOS cannot transition directly from Undetermined to Active on the first touch event
       sm.activate();
-      runOnJS(jsDown)(t.x, t.y, t.absoluteX, t.absoluteY, pt);
+      pressSV.value = (t as any).pressure ?? -1; tiltSV.value = (t as any).tilt ?? -1;
+      runOnJS(jsDown)(t.x, t.y, t.absoluteX, t.absoluteY, pt, pressSV.value, tiltSV.value);
     })
     .onTouchesMove((e) => {
       'worklet';
       const id = penId.value; if (id === -1) return;
-      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value); return; } }
+      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
     })
     .onTouchesUp((e, sm) => {
       'worklet';
@@ -211,7 +215,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       if (id === -1) { if (manual && e.numberOfTouches === 0) sm.fail(); return; }
       for (let i = 0; i < e.changedTouches.length; i++) { const t = e.changedTouches[i]; if (t.id === id) {
         penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() };
-        runOnJS(jsUp)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value);
+        runOnJS(jsUp)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value);
         if (manual) sm.end(); // clear ownership first: ending can synchronously cancel remaining palm pointers
         return; } }
     })
@@ -288,13 +292,12 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const inkEls = (layer: 'base' | 'sharp') => { const withUi = layer === 'sharp' || !sharpBox;
     const sb = layer === 'base' && sharpBox && !interactive ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
     const skip = (st: Stroke) => { if (layer === 'sharp') return st.opacity < 0.99; if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
-    const pencilColors = Array.from(new Set(strokes.filter((st) => st.tool === 'pencil' && !skip(st)).map((st) => st.color)));
     return (<>
-    {pencilColors.length > 0 && <Defs>{pencilColors.map((c) => <Pattern key={c} id={pencilGrainId(c)} patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={c} fillOpacity={g.a} />)}</Pattern>)}</Defs>}
+    
     {withUi && textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
     {strokes.map((st) => { if (skip(st)) return null; const sel = selection.includes(st.id); const tr = sel ? selTransform : undefined;
       if (st.poly) return <Path key={st.id} transform={tr} d={dFor(st, 'poly')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />;
-      if (!st.shape && st.tool === 'pencil' && st.points.length > 0) { const d = dFor(st, 'pen'); return <G key={st.id} transform={tr}><Path d={d} scale={s} fill={st.color} fillOpacity={st.opacity * 0.55} /><Path d={d} scale={s} fill={`url(#${pencilGrainId(st.color)})`} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>; }
+      if (!st.shape && st.tool === 'pencil' && st.points.length > 0) return <PencilStroke key={st.id} transform={tr} points={st.points} width={st.width} color={st.color} opacity={st.opacity} scale={s} selected={sel} selColor={colors.primary} />;
       if (!st.shape && isInkPen(st.tool) && st.points.length > 0) return <G key={st.id} transform={tr}><Path d={dFor(st, 'pen')} scale={s} fill={st.color} fillOpacity={st.opacity} stroke={sel ? colors.primary : undefined} strokeWidth={sel ? 1.2 / s : 0} strokeDasharray={sel ? `${3 / s} ${2 / s}` : undefined} /></G>;
       return <Path key={st.id} transform={tr} d={dFor(st, 'line')} stroke={st.color} strokeWidth={st.width * s} strokeOpacity={sel ? Math.min(1, st.opacity + 0.3) : st.opacity} fill="none" strokeLinecap={st.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" strokeDasharray={sel ? '4 3' : undefined} />; })}
     {withUi && selBounds && <SvgRect x={selBounds.x * s - 6} y={selBounds.y * s - 6} width={selBounds.w * s + 12} height={selBounds.h * s + 12} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="6 4" fill="rgba(47,111,237,0.04)" />}
@@ -367,7 +370,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
             <G>
               {marquee && <SvgRect x={Math.min(marquee.a.x, marquee.b.x) * s} y={Math.min(marquee.a.y, marquee.b.y) * s} width={Math.abs(marquee.b.x - marquee.a.x) * s} height={Math.abs(marquee.b.y - marquee.a.y) * s} fill="rgba(47,111,237,0.08)" stroke={colors.primary} strokeWidth={1} strokeDasharray="4 3" />}
               {livePath && (isInkPen(cfg.tool) && !snappedLine.current ? (cfg.tool === 'pencil'
-                ? <G><Defs><Pattern id="pg-live" patternUnits="userSpaceOnUse" width={PENCIL_GRAIN_CELL} height={PENCIL_GRAIN_CELL}>{PENCIL_GRAIN_DOTS.map((g, i) => <Circle key={i} cx={g.cx} cy={g.cy} r={g.r} fill={cfg.color} fillOpacity={g.a} />)}</Pattern></Defs><Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity * 0.55} /><Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill="url(#pg-live)" fillOpacity={cfg.opacity} /></G>
+                ? <PencilStroke points={live} width={cfg.width} color={cfg.color} opacity={cfg.opacity} scale={s} live />
                 : <Path d={penOutline(live, cfg.width, true, cfg.tool)} scale={s} fill={cfg.color} fillOpacity={cfg.opacity} />) : <Path d={livePath} stroke={cfg.color} strokeWidth={cfg.width * s} strokeOpacity={cfg.opacity} fill="none" strokeLinecap={cfg.tool === 'highlighter' ? 'butt' : 'round'} strokeLinejoin="round" />)}
               {laser.length > 0 && <Path d={pathFromPoints(laser, s)} stroke="#FF3B30" strokeWidth={4} strokeOpacity={0.9} fill="none" strokeLinecap="round" />}
               {lasso.length > 1 && <Path d={pathFromPoints(lasso, s, false)} stroke={colors.primary} strokeWidth={1.5} strokeDasharray="5 4" fill="rgba(14,124,123,0.08)" />}
