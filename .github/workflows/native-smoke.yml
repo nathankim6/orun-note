@@ -30,6 +30,13 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - run: npm ci
+      - name: Test stylus shortcuts, dial geometry and first-stroke regression
+        run: |
+          node modules/stylus-shortcut/tests/bridge.test.cjs
+          node scripts/test-stylus-dial.js
+          node scripts/test-stylus-cancel.js
+          node scripts/test-tool-card-writing.js
+          node scripts/test-ink-gesture.js
       - name: Test administrator recording policy
         run: node scripts/test-content-protection.js
       - name: Test diagnostic privacy and process attribution (no device)
@@ -97,6 +104,13 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Test stylus shortcuts, dial geometry and first-stroke regression
+        run: |
+          node modules/stylus-shortcut/tests/bridge.test.cjs
+          node scripts/test-stylus-dial.js
+          node scripts/test-stylus-cancel.js
+          node scripts/test-tool-card-writing.js
+          node scripts/test-ink-gesture.js
       - name: Test administrator recording policy
         run: node scripts/test-content-protection.js
       - name: Test CI-only simulator signing guard
