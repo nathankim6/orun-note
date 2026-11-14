@@ -1,6 +1,6 @@
 import { StylusDial } from '@/features/viewer/StylusDial';
 import { addStylusShortcutListener } from '../../modules/stylus-shortcut';
-import { cancelInkForStylusShortcut } from '@/features/viewer/stylusShortcutState';
+import { cancelInkForStylusShortcut, onInkContact } from '@/features/viewer/stylusShortcutState';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, usePathname, useRouter, router as rootRouter } from 'expo-router';
@@ -71,7 +71,7 @@ export default function Viewer() {
   useEffect(() => { if (!uri || !doc || doc.kind === 'blank' || cfg.tool !== 'select') return; let alive = true; [pageIndex, pageIndex + 1, pageIndex - 1].filter((i) => i >= 0 && i < doc.pageCount).forEach((i) => loadWords(uri, doc.pages[i].index).then(() => alive && setWordsVer((v) => v + 1))); return () => { alive = false; }; }, [uri, pageIndex, doc?.id, cfg.tool === 'select']); // word boxes feed only the select tool (dictionary / text selection): no PdfBox work while reading or writing
   const [leftTab, setLeftTabState] = useState<LeftTab | null>(() => (isTablet && (useSettingsStore.getState().viewer.pagesPanelOpen ?? true) ? 'pages' : null));
   const setLeftTab = useCallback((t: LeftTab | null) => { setLeftTabState(t); if (isTablet && useSettingsStore.getState().hydrated) useSettingsStore.getState().setViewer({ pagesPanelOpen: !!t }); }, [isTablet]); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
-  const viewerRoot = useRef<View>(null);
+  const viewerRoot = useRef<React.ElementRef<typeof View>>(null);
   const [dialAnchor, setDialAnchor] = useState<{ x: number; y: number } | null>(null);
   const shortcutAllowed = viewerActive && !!doc && !!uri && !missing && !videosOpen && !sheet && !lookup && !(leftTab && !isTablet);
   const shortcutState = useRef({ allowed: shortcutAllowed, width: winW, height: winH });
@@ -89,8 +89,9 @@ export default function Viewer() {
   useFocusEffect(useCallback(() => {
     shortcutFocused.current = true;
     const sub = addStylusShortcutListener((event) => openStylusDial(event));
+    const offContact = onInkContact(() => { setDialAnchor(null); if (panelOpen.current) setDismissKey((k) => k + 1); });
     const bg = AppState.addEventListener('change', (state) => { if (state !== 'active') setDialAnchor(null); });
-    return () => { shortcutFocused.current = false; sub.remove(); bg.remove(); setDialAnchor(null); };
+    return () => { shortcutFocused.current = false; sub.remove(); offContact(); bg.remove(); setDialAnchor(null); };
   }, [openStylusDial]));
   useEffect(() => { setDialAnchor(null); }, [docId, videosOpen, sheet, lookup, pageIndex]);
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);
