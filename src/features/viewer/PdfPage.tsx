@@ -1,12 +1,14 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Image, PixelRatio, Text, Platform } from 'react-native';
-import { PdfRenderer } from '../../../modules/pdf-renderer';
+import { PdfRenderer, PdfPageSurface, type PageReadyEvent } from '../../../modules/pdf-renderer';
+import { nativePagePixels, useNativeSurface, createWarmBatcher } from './nativePageView';
 import { useTheme } from '@/theme';
 import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
 import { RenderPriority, type RenderLease } from './renderScheduler';
 import { createPdfWork, readingPixels, previewPixels, detailPixels } from './pdfWork';
 import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnostics';
+import { halfTile, noteTileTiming, tileIsSlow, tileImageStyle } from './tileProgress';
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
@@ -15,7 +17,15 @@ import { tierWidth } from './derivedPagesCore';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
 const imageLoads = createImageLoadReporter(Platform.OS, reportError);
-export const withPagePrefetchWindow = (run: () => void) => work.reading.prefetchWindow(run);
+const nativePages = !!PdfPageSurface && PdfRenderer.hasPageView();
+const warm = createWarmBatcher((uri, indices, px) => PdfRenderer.warmPages(uri, indices, px));
+export const withPagePrefetchWindow = (run: () => void) => {
+  if (!nativePages) return work.reading.prefetchWindow(run);
+  // Native page views: one ordered bitmap warm list per window; JPEG prefetches still go through the scheduler window.
+  let release: () => void = () => {};
+  warm.window(() => { release = work.reading.prefetchWindow(run); });
+  return release;
+};
 type PageImage = { page: string; reading: string | null; detail: string | null; detailWidth: number; err: boolean };
 export function usePageImage(uri: string | null, index: number, displayWidth: number, detailAllowed = false) {
   // Pre-rendered pages (docs/derived-pages.md): a JPEG on disk replaces every native render of this page.
@@ -110,12 +120,13 @@ export function prefetchPage(uri: string | null, index: number, displayWidth: nu
   if (!uri || uri === 'blank:' || index < 0) return;
   // derived pages are files already (or arriving from the download manager): nothing to pre-render
   if (derivedForUri(uri)) return;
+  if (useNativeSurface(nativePages, Platform.OS, displayWidth)) { warm.add(uri, index, nativePagePixels(displayWidth, PixelRatio.get()), rank); return; }
   const width = readingPixels(displayWidth), page = `${uri}|${index}`;
   return work.reading.prefetch(`${page}|read|${width}`, RenderPriority.prefetch + rank / 100,
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
 }
 export type { PageTile } from './pdfTileGeometry';
-type TileImage = { page: string; token: object; src: string; t: PageTile };
+type TileImage = { page: string; token: object; src: string; t: PageTile; px: { w: number; h: number } };
 /** Loaded tile stays underneath its replacement, including throughout motion. */
 export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; onFailure?: (key: string) => void }) {
   const allowed = useContext(PageQualityContext), page = uri + '|' + index;
@@ -129,28 +140,34 @@ export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri:
   const rr = PdfRenderer.hasRenderRegion() ? PdfRenderer.renderRegion : undefined;
   useEffect(() => {
     if (!tile || !rr || !allowed) return;
-    let alive = true; let lease: RenderLease | undefined;
+    let alive = true; const leases: RenderLease[] = [];
     const failed = () => { if (alive && identity.current.token === token) failureRef.current?.(pageTileKey(tile)); };
+    const present = (src: string, t: PageTile) => {
+      if (!alive || identity.current.token !== token) return;
+      // A same-session cache hit is already decoded. A prior A session's same URI is not:
+      // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
+      const decoded = shownRef.current;
+      if (decoded?.token === token && decoded.src === src) setPending(null);
+      else setPending({ page, token, src, t: tile, px: { w: t.w, h: t.h } });
+    };
     void (async () => {
       // Visible reads remain urgent. Speculative reading neighbours never delay a visible tile.
       await work.reading.whenIdle(RenderPriority.visible); if (!alive) return;
-      lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(tile), RenderPriority.tile,
-        () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
-      const src = await lease.promise;
+      const render = async (t: PageTile) => {
+        const lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(t), RenderPriority.tile, () => rr(uri, index, t.pxW, t.x, t.y, t.w, t.h));
+        leases.push(lease); const started = Date.now(); const src = await lease.promise; noteTileTiming(uri, Date.now() - started); return src;
+      };
+      if (tileIsSlow(uri)) { const quick = await render(halfTile(tile)); if (!alive) return; if (quick) present(quick, halfTile(tile)); }
+      const src = await render(tile);
       if (!src) { failed(); return; }
-      if (alive && identity.current.token === token) {
-        // A same-session cache hit is already decoded. A prior A session's same URI is not:
-        // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
-        const decoded = shownRef.current;
-        if (decoded?.token === token && decoded.src === src) setPending(null);
-        else setPending({ page, token, src, t: tile });
-      }
+      present(src, tile);
     })().catch(failed);
-    return () => { alive = false; lease?.release(); };
+    return () => { alive = false; for (const l of leases) l.release(); };
   }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token]);
   const currentShown = shown?.token === token ? shown : null;
   const images = [currentShown, pending].filter((im, i) => im && im.token === token && (i === 0 || im.src !== currentShown?.src)) as TileImage[];
-  return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height, opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
+  const dpr = PixelRatio.get();
+  return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', ...tileImageStyle(t, im.px, width, height, dpr), opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
     onLoad={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; shownRef.current = im; setShown(im); setPending(null); }}
     onError={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; setPending(null); failureRef.current?.(pageTileKey(im.t)); }} />; })}</>;
 }
@@ -170,7 +187,39 @@ export function PdfPage(props: { uri: string | null; index: number; width: numbe
   if (props.uri === 'blank:') return <BlankPaper width={props.width} height={props.height} template={props.template} />;
   return <RasterPdfPage {...props} />;
 }
-function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile }) {
+type RasterProps = { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile };
+const surfaceLoads = createImageLoadReporter(Platform.OS + '-native', reportError);
+function RasterPdfPage(props: RasterProps) {
+  const page = props.uri + '|' + props.index;
+  const [nativeFailed, setNativeFailed] = useState<string | null>(null);
+  // a server pre-rendered page (docs/derived-pages.md) is a JPEG on disk: cheaper than any native drawing, so it wins
+  const derived = useContext(DerivedPagesContext);
+  const derivedReady = !!props.uri && !!derived && !!pageImagePath(derived, props.index, 'reading') && isPresentSync(pageImagePath(derived, props.index, 'reading')!);
+  if (props.uri && !derivedReady && useNativeSurface(nativePages, Platform.OS, props.width * (props.renderScale ?? 1)) && nativeFailed !== page)
+    return <NativePdfPage {...props} uri={props.uri} onFailure={() => setNativeFailed(page)} />;
+  return <ImagePdfPage {...props} />;
+}
+/** Base page drawn by the native PdfPageView (in-memory bitmap at screen resolution); zoom tiles stay on top as before. */
+function NativePdfPage({ uri, index, width, height, renderScale = 1, tile, onFailure }: RasterProps & { uri: string; onFailure: () => void }) {
+  const Surface = PdfPageSurface!; const page = uri + '|' + index;
+  const [ready, setReady] = useState<string | null>(null);
+  const tileRequest = page + '|' + pageTileKey(tile);
+  const [failedTile, setFailedTile] = useState<string | null>(null);
+  const session = useRef<{ page: string; done?: () => void } | null>(null);
+  if (session.current?.page !== page) { const s = surfaceLoads.begin(index); session.current = { page, done: s.ready('reading', nativePagePixels(width * renderScale, PixelRatio.get())) }; }
+  const onPageReady = (e: { nativeEvent: PageReadyEvent }) => {
+    if (e.nativeEvent.page !== index) return;
+    if (!e.nativeEvent.ok) { onFailure(); return; }
+    session.current?.done?.(); if (session.current) session.current.done = undefined;
+    setReady(page);
+  };
+  return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
+    <Surface source={uri} index={index} pixelWidth={nativePagePixels(width * renderScale, PixelRatio.get())} style={{ width, height }} onPageReady={onPageReady} />
+    {ready === page && tile && PdfRenderer.hasRenderRegion() && failedTile !== tileRequest
+      ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}><TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(page + '|' + key)} /></View> : null}
+  </View>;
+}
+function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile }: RasterProps) {
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
   const tileRequest = uri + '|' + index + '|' + pageTileKey(tile);
   const [failedTile, setFailedTile] = useState<string | null>(null);
@@ -182,4 +231,4 @@ function RasterPdfPage({ uri, index, width, height, renderScale = 1, tile }: { u
     {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
-export function clearImageCache() { work.reading.clear(); work.detail.clear(); }
+export function clearImageCache() { work.reading.clear(); work.detail.clear(); PdfRenderer.clearPageBitmaps(); }

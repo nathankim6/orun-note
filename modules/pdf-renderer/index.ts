@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
-import { requireNativeModule } from 'expo-modules-core';
+import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import type { ComponentType } from 'react';
+import type { ViewProps } from 'react-native';
 import type { PdfInfo, PdfOutlineItem, PdfWord } from './src/types';
 export * from './src/types';
 
@@ -19,7 +21,12 @@ type Native = {
   takeRenderTimings?(): Promise<Record<string, unknown>[]>;
   getInstallSource?(): Promise<string | null>;
   cachedPage?(uri: string, index: number, width: number): Promise<string | null>;
+  /** Native page surface prefetch (synchronous enqueue). Missing on builds without PdfPageView. */
+  warmPages?(uri: string, indices: number[], width: number): void;
+  clearPageBitmaps?(): void;
 };
+export type PageReadyEvent = { ok: boolean; page: number; width?: number; ms?: number; cached?: boolean };
+export type PdfPageSurfaceProps = ViewProps & { source: string; index: number; pixelWidth: number; onPageReady?: (e: { nativeEvent: PageReadyEvent }) => void };
 let impl: Native;
 if (Platform.OS === 'web') { impl = require('./src/web').default as Native; }
 else {
@@ -32,7 +39,17 @@ else {
   }
 }
 
+let surface: ComponentType<PdfPageSurfaceProps> | null = null;
+if (Platform.OS !== 'web' && typeof impl.warmPages === 'function') {
+  try { surface = requireNativeViewManager<PdfPageSurfaceProps>('PdfRenderer'); } catch { surface = null; }
+}
+/** Native page view (draws the page bitmap directly). Null on web and on builds made before it existed. */
+export const PdfPageSurface = surface;
+
 export const PdfRenderer = {
+  hasPageView: () => surface !== null,
+  warmPages: (uri: string, indices: number[], width: number) => { try { impl.warmPages?.(uri, indices, Math.round(width)); } catch { /* prefetch is optional */ } },
+  clearPageBitmaps: () => { try { impl.clearPageBitmaps?.(); } catch { /* optional */ } },
   /** Encrypts and stores a picked PDF inside app-private storage. Returns the stored (encrypted) URI. */
   importFile: (srcUri: string, id: string) => impl.importFile(srcUri, id),
   deleteFile: (uri: string) => impl.deleteFile(uri).catch(() => {}),

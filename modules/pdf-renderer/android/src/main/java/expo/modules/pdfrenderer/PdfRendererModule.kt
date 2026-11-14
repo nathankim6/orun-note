@@ -70,6 +70,10 @@ class PdfRendererModule : Module() {
     private const val READING_WIDTH = 1200
     private const val READING_PIXELS = 4_000_000
     private val READING_LOCK = Any()
+    /** Live module for [PdfPageView] (views are created by the module's view manager, not by JS calls). */
+    @Volatile internal var shared: PdfRendererModule? = null
+    internal const val PAGE_VIEW_WIDTH = 2400
+    private const val PAGE_VIEW_PIXELS = 6_000_000.0
     private var readingUri: String? = null
     private var readingPfd: ParcelFileDescriptor? = null
     private var readingRenderer: PdfRenderer? = null
@@ -274,6 +278,34 @@ class PdfRendererModule : Module() {
   }
 
   // ---- cached renderer / text document (call with LOCK held) ----
+  /** Screen-resolution page bitmap for [PdfPageView]: drawn in memory on the reading renderer, never encoded or written. */
+  internal fun pageBitmap(uri: String, index: Int, width: Int): Bitmap {
+    require(width > 0) { "bad page width" }
+    val requested = width.coerceAtMost(PAGE_VIEW_WIDTH)
+    val timing = RenderTiming("view", index, requested)
+    return withReadingRenderer(uri, timing) { r ->
+      val opened = System.nanoTime()
+      val p = r.openPage(index)
+      timing.openNanos += System.nanoTime() - opened
+      p.use {
+        require(p.width > 0 && p.height > 0) { "bad page size" }
+        val aspect = p.height.toDouble() / p.width
+        val rasterWidth = if (requested.toDouble() * requested * aspect > PAGE_VIEW_PIXELS)
+          sqrt(PAGE_VIEW_PIXELS / aspect).toInt().coerceIn(1, requested) else requested
+        val rasterHeight = (rasterWidth * aspect).toLong().coerceIn(1L, (PAGE_VIEW_PIXELS / rasterWidth).toLong()).toInt()
+        val bmp = Bitmap.createBitmap(rasterWidth, rasterHeight, Bitmap.Config.ARGB_8888)
+        try {
+          val draw = System.nanoTime()
+          bmp.eraseColor(Color.WHITE)
+          p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+          timing.drawNanos += System.nanoTime() - draw
+          recordTiming(timing)
+          bmp
+        } catch (e: Throwable) { bmp.recycle(); throw e }
+      }
+    }
+  }
+
   private fun closeRendererLocked() {
     try { renderer?.close() } catch (e: Throwable) {}
     try { rPfd?.close() } catch (e: Throwable) {}
@@ -420,6 +452,14 @@ class PdfRendererModule : Module() {
     Name("PdfRenderer")
 
     OnCreate {
+      shared = this@PdfRendererModule
+      try {
+        ctx.applicationContext.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
+          override fun onTrimMemory(level: Int) = PageBitmaps.trim(level)
+          override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+          @Deprecated("Deprecated in Java") override fun onLowMemory() = PageBitmaps.clear()
+        })
+      } catch (_: Throwable) {}
       try { val cur = Thread.getDefaultUncaughtExceptionHandler(); if (cur !is CrashSaver) Thread.setDefaultUncaughtExceptionHandler(CrashSaver(File(ctx.filesDir, "crash"), cur)) } catch (e: Throwable) {}
       // Page images / decrypted copies written by older builds used a different key scheme and are never reused.
       Thread {
@@ -431,7 +471,7 @@ class PdfRendererModule : Module() {
         } catch (e: Throwable) {}
       }.start()
     }
-    OnDestroy { synchronized(LOCK) { destroyed = true; closeDetailLocked(); synchronized(READING_LOCK) { closeReadingLocked(); closeRendererLocked(); closePdfBoxLocked() } } }
+    OnDestroy { if (shared === this@PdfRendererModule) shared = null; PageBitmaps.clear(); synchronized(LOCK) { destroyed = true; closeDetailLocked(); synchronized(READING_LOCK) { closeReadingLocked(); closeRendererLocked(); closePdfBoxLocked() } } }
 
     /** Encrypts a picked/downloaded PDF into app storage (v2, streamed) and keeps a decrypted working copy so the first open is instant. */
     AsyncFunction("importFile") Coroutine { srcUri: String, id: String ->
@@ -476,6 +516,7 @@ class PdfRendererModule : Module() {
       }
     }
     AsyncFunction("deleteFile") { uri: String ->
+      PageBitmaps.clear()
       synchronized(LOCK) { closeDetailLocked(); synchronized(READING_LOCK) {
         if (readingUri == uri) closeReadingLocked()
         if (rUri == uri) closeRendererLocked()
@@ -489,6 +530,7 @@ class PdfRendererModule : Module() {
     }
     AsyncFunction("fileExists") { uri: String -> fileFor(uri).exists() }
     AsyncFunction("clearCaches") {
+      PageBitmaps.clear()
       synchronized(LOCK) { closeDetailLocked(); synchronized(READING_LOCK) {
         closeReadingLocked(); closeRendererLocked(); closePdfBoxLocked()
         decDir().deleteRecursively(); pagesDir().deleteRecursively()
@@ -574,6 +616,24 @@ class PdfRendererModule : Module() {
         }
       }
     }
+    /** Native page surface: draws the page bitmap directly (see [PdfPageView]). */
+    View(PdfPageView::class) {
+      Events("onPageReady")
+      Prop("source") { view: PdfPageView, v: String -> view.source = v }
+      Prop("index") { view: PdfPageView, v: Int -> view.index = v }
+      Prop("pixelWidth") { view: PdfPageView, v: Int -> view.pixelWidth = v }
+      OnViewDidUpdateProps { view: PdfPageView -> view.update() }
+    }
+    /** Prefetch page bitmaps for [PdfPageView] (next pages in the scroll direction). Replaces the previous list. */
+    Function("warmPages") { uri: String, indices: List<Int>, width: Int ->
+      val w = width.coerceIn(1, PAGE_VIEW_WIDTH)
+      PageBitmaps.warm(indices.filter { it >= 0 }.map { i ->
+        val key = PageBitmaps.key(uri, i, w)
+        val job: () -> Unit = { if (PageBitmaps.get(key) == null) { try { PageBitmaps.put(key, pageBitmap(uri, i, w)) } catch (_: Throwable) {} } }
+        key to job
+      })
+    }
+    Function("clearPageBitmaps") { PageBitmaps.clear() }
     AsyncFunction("takeRenderTimings") {
       synchronized(TIMING_LOCK) { renderTimings.toList().also { renderTimings.clear() } }
     }

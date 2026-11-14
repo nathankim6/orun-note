@@ -44,6 +44,59 @@ private func pdfV2AAD(_ header: [UInt8], _ index: UInt64, last: Bool) -> Data {
 /// with ThisDeviceOnly accessibility so it is never exported with backups. Large (v2) files are decrypted chunk by chunk
 /// into a private working copy in Caches that PDFKit reads lazily, so 200 MB+ textbooks open without loading into memory.
 public class PdfRendererModule: Module {
+  /// Live module for `PdfPageView` (views are created by the view manager, not by JS calls).
+  static weak var shared: PdfRendererModule?
+  static let pageViewWidth = 2400
+  private static let pageViewPixels: CGFloat = 6_000_000
+  /// The page view draws on the reading lane (it owns the reading PDFKit documents).
+  var pageViewQueue: DispatchQueue { readingQueue }
+  // MARK: - Parsed pages shared by every lane
+  // PDFKit parses a page (fonts, patterns, shadings, transparency groups) the first time a PDFPage object draws, and keeps
+  // that work only on that object. On the textbooks students use this parse costs 2.5–5 s per page, every draw after it
+  // 0.06–0.3 s. The reading and detail lanes used to hold separate PDFDocuments, so a zoom tile re-parsed a page the
+  // reading lane had just parsed; with lane LRUs and memory warnings a page could be parsed several times in one visit.
+  // Every lane now draws the same PDFPage object per (file, page): the page a student is looking at is parsed once,
+  // and its zoom tiles start warm. A page draws under its own lock (one draw per page at a time; different pages in
+  // parallel across lanes). The entry keeps its PDFDocument alive (a PDFPage does not own its document) and pins the
+  // decrypted working copy so trimming never pulls the file from under an open page.
+  private struct ParsedPage { let document: PDFDocument; let page: PDFPage; let lock: NSLock; let backing: URL? }
+  private let parsedLock = NSLock()
+  private var parsed: [String: ParsedPage] = [:]
+  private var parsedLRU: [String] = []
+  private let maxParsedPages = 12
+  private func parsedKey(_ uri: String, _ index: Int) -> String { "\(uri)|\(index)" }
+  /// The shared parsed page for (uri, index), creating it from `open()` (the calling lane's document) when absent.
+  private func parsedPage(_ uri: String, _ index: Int, open: () throws -> PDFDocument) throws -> ParsedPage {
+    let key = parsedKey(uri, index)
+    parsedLock.lock()
+    if let hit = parsed[key] { parsedLRU.removeAll { $0 == key }; parsedLRU.append(key); parsedLock.unlock(); return hit }
+    parsedLock.unlock()
+    let doc = try open()
+    guard let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+    let entry = ParsedPage(document: doc, page: page, lock: NSLock(), backing: pinExistingPlain(uri))
+    var evicted: [ParsedPage] = []
+    parsedLock.lock()
+    if let race = parsed[key] { parsedLock.unlock(); unpinPlain(entry.backing); return race }
+    parsed[key] = entry; parsedLRU.append(key)
+    while parsedLRU.count > maxParsedPages { let old = parsedLRU.removeFirst(); if let e = parsed.removeValue(forKey: old) { evicted.append(e) } }
+    parsedLock.unlock()
+    for e in evicted { e.lock.lock(); e.lock.unlock(); unpinPlain(e.backing) } // never unpin while a draw is in flight
+    return entry
+  }
+  /// Draws with the shared parsed page. `body` runs under the page lock.
+  private func withParsedPage<T>(_ uri: String, _ index: Int, open: () throws -> PDFDocument, _ body: (PDFPage) throws -> T) throws -> T {
+    let entry = try parsedPage(uri, index, open: open)
+    entry.lock.lock(); defer { entry.lock.unlock() }
+    return try body(entry.page)
+  }
+  private func dropParsedPages(matching uri: String? = nil) {
+    parsedLock.lock()
+    let keys = parsed.keys.filter { uri == nil || $0.hasPrefix(uri! + "|") }
+    let gone = keys.compactMap { parsed.removeValue(forKey: $0) }
+    parsedLRU.removeAll { keys.contains($0) }
+    parsedLock.unlock()
+    for e in gone { e.lock.lock(); e.lock.unlock(); unpinPlain(e.backing) }
+  }
   /// Open documents, least recently used first (at most `maxDocs`).
   private var cache: [String: PDFDocument] = [:]
   private var lru: [String] = []
@@ -79,6 +132,12 @@ public class PdfRendererModule: Module {
     lifecycle.lock(); defer { lifecycle.unlock() }
     while maintaining && !destroyed { lifecycle.wait() }
     guard !destroyed else { throw PdfRendererError.unavailable }
+    activeOperations += 1
+  }
+  /// Never waits: callers already on readingQueue must not block while maintenance waits to sync onto readingQueue.
+  private func tryBeginOperation() throws {
+    lifecycle.lock(); defer { lifecycle.unlock() }
+    guard !maintaining, !destroyed else { throw PdfRendererError.unavailable }
     activeOperations += 1
   }
   private func endOperation() {
@@ -385,16 +444,40 @@ public class PdfRendererModule: Module {
     }
   }
 
+  /// readingQueue only. Screen-resolution page bitmap for `PdfPageView`; drawn in memory, never encoded or written.
+  func pageBitmap(_ uri: String, _ index: Int, _ width: Int) throws -> UIImage {
+    try tryBeginOperation(); defer { endOperation() }
+    guard width > 0 else { throw PdfRendererError.badPage(index) }
+    let start = milliseconds()
+    return try withParsedPage(uri, index, open: { try readingDocument(uri) }) { page in
+    let size = pageSize(page)
+    guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { throw PdfRendererError.badPage(index) }
+    let ratio = size.height / size.width
+    let target = CGFloat(min(width, PdfRendererModule.pageViewWidth))
+    let pixelWidth = max(1, min(target, floor(sqrt(PdfRendererModule.pageViewPixels / ratio))))
+    let pixelHeight = max(1, min(floor(PdfRendererModule.pageViewPixels / pixelWidth), floor(pixelWidth * ratio)))
+    let scale = min(pixelWidth / size.width, pixelHeight / size.height)
+    let opened = milliseconds()
+    let image = draw(page, canvas: CGSize(width: pixelWidth, height: pixelHeight), scale: scale, origin: .zero, pageHeightPx: pixelHeight)
+    let drawn = milliseconds()
+    recordTiming(lane: "view", page: index, width: Int(pixelWidth), start: start, opened: opened, drawn: drawn, encoded: drawn, written: drawn)
+    return image
+    }
+  }
+
   public func definition() -> ModuleDefinition {
     Name("PdfRenderer")
 
     OnCreate { [weak self] in
       guard let module = self else { return }
+      PdfRendererModule.shared = module
       // Drop open documents (PDFKit caches) when iOS is short on memory; they reopen on demand.
       module.memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak module] _ in
         guard let m = module else { return }
         m.queue.async { m.cache.removeAll(); m.lru.removeAll() }
         m.readingQueue.async { m.clearReadingDocuments() }
+        m.dropParsedPages()
+        PageBitmaps.shared.clear()
       }
       // Page images written by older builds were keyed by a per-launch random hash and can never be reused.
       module.ioQueue.async {
@@ -406,6 +489,8 @@ public class PdfRendererModule: Module {
       }
     }
     OnDestroy {
+      PageBitmaps.shared.clear()
+      self.dropParsedPages()
       if let o = self.memoryObserver { NotificationCenter.default.removeObserver(o) }
       self.memoryObserver = nil
       self.lifecycle.lock(); self.destroyed = true; self.lifecycle.broadcast(); self.lifecycle.unlock()
@@ -459,6 +544,8 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("deleteFile") { (uri: String) throws in
+      PageBitmaps.shared.clear()
+      self.dropParsedPages(matching: uri)
       try self.withMaintenance {
         self.queue.sync {
           for key in Array(self.cache.keys) where self.cacheKey(key) == self.cacheKey(uri) { self.forget(key) }
@@ -480,6 +567,8 @@ public class PdfRendererModule: Module {
     }.runOnQueue(self.ioQueue)
 
     AsyncFunction("clearCaches") { () throws in
+      PageBitmaps.shared.clear()
+      self.dropParsedPages()
       try self.withMaintenance {
         self.queue.sync { self.cache.removeAll(); self.lru.removeAll() }
         self.readingQueue.sync { self.clearReadingDocuments() }
@@ -502,6 +591,27 @@ public class PdfRendererModule: Module {
       }
     }.runOnQueue(self.ioQueue)
 
+    /// Native page surface: shows the page bitmap directly (see `PdfPageView`).
+    View(PdfPageView.self) {
+      Events("onPageReady")
+      Prop("source") { (view: PdfPageView, v: String) in view.source = v }
+      Prop("index") { (view: PdfPageView, v: Int) in view.index = v }
+      Prop("pixelWidth") { (view: PdfPageView, v: Int) in view.pixelWidth = v }
+      OnViewDidUpdateProps { (view: PdfPageView) in view.update() }
+    }
+    /// Prefetch page bitmaps for `PdfPageView` (next pages in the scroll direction). Replaces the previous list.
+    Function("warmPages") { (uri: String, indices: [Int], width: Int) in
+      let w = max(1, min(width, PdfRendererModule.pageViewWidth))
+      PageBitmaps.shared.warm(indices.filter { $0 >= 0 }.map { (i: Int) -> (String, () -> Void) in
+        let key = PageBitmaps.key(uri, i, w)
+        return (key, { [weak self] in
+          guard let self, PageBitmaps.shared.get(key) == nil, let image = try? self.pageBitmap(uri, i, w) else { return }
+          PageBitmaps.shared.put(key, image)
+        })
+      }, on: self.readingQueue)
+    }
+    Function("clearPageBitmaps") { PageBitmaps.shared.clear() }
+
     AsyncFunction("takeRenderTimings") { () -> [[String: Any]] in
       self.timingLock.lock(); defer { self.timingLock.unlock() }
       let records = self.renderTimings; self.renderTimings.removeAll(keepingCapacity: true)
@@ -521,8 +631,7 @@ public class PdfRendererModule: Module {
         try autoreleasepool {
           if let cached = self.cachedReadingURL(uri, index, width) { return cached.absoluteString }
           let start = self.milliseconds()
-          let doc = try self.readingDocument(uri)
-          guard let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+          return try self.withParsedPage(uri, index, open: { try self.readingDocument(uri) }) { page in
           let size = self.pageSize(page)
           guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { throw PdfRendererError.badPage(index) }
           // Bound actual bitmap area as well as width, including unusually tall pages.
@@ -542,6 +651,7 @@ public class PdfRendererModule: Module {
           let written = self.milliseconds()
           self.recordTiming(lane: "reading", page: index, width: Int(pixelWidth), start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
           return out.absoluteString
+          }
         }
       }
     }.runOnQueue(self.ioQueue)
@@ -563,8 +673,8 @@ public class PdfRendererModule: Module {
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
         let start = self.milliseconds()
-        let doc = try self.document(uri)
-        guard width > 0, let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+        guard width > 0 else { throw PdfRendererError.badPage(index) }
+        return try self.withParsedPage(uri, index, open: { try self.document(uri) }) { page in
         let size = self.pageSize(page); let scale = CGFloat(width) / size.width
         let h = max(1, (size.height * scale).rounded())
         let opened = self.milliseconds()
@@ -576,6 +686,7 @@ public class PdfRendererModule: Module {
         let written = self.milliseconds()
         self.recordTiming(lane: "detail", page: index, width: width, start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
         return out.absoluteString
+        }
       }
     }.runOnQueue(self.ioQueue)
 
@@ -588,8 +699,8 @@ public class PdfRendererModule: Module {
       return try self.queue.sync { () throws -> String in
         if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
         let start = self.milliseconds()
-        let doc = try self.document(uri)
-        guard pageWidthPx > 0, let page = doc.page(at: index) else { throw PdfRendererError.badPage(index) }
+        guard pageWidthPx > 0 else { throw PdfRendererError.badPage(index) }
+        return try self.withParsedPage(uri, index, open: { try self.document(uri) }) { page in
         let size = self.pageSize(page); let scale = CGFloat(pageWidthPx) / size.width
         let fullH = max(1, Int((size.height * scale).rounded()))
         let x0 = min(max(0, x), pageWidthPx - 1), y0 = min(max(0, y), fullH - 1)
@@ -603,6 +714,7 @@ public class PdfRendererModule: Module {
         let written = self.milliseconds()
         self.recordTiming(lane: "tile", page: index, width: pageWidthPx, start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
         return out.absoluteString
+        }
       }
     }.runOnQueue(self.ioQueue)
 
