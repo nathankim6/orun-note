@@ -17,7 +17,7 @@ final class DuoShotsTests: XCTestCase {
   /// Download the material (tap once), then open it once the download finished (the tile ignores taps while busy).
   func testBDownloadAndOpen() {
     wait("내 PDF 추가", 90)
-    let tile = app.staticTexts[title]; XCTAssertTrue(tile.waitForExistence(timeout: 60), "material tile")
+    let tile = app.staticTexts[title].firstMatch; XCTAssertTrue(tile.waitForExistence(timeout: 60), "material tile")
     tile.tap()
     let end = Date().addingTimeInterval(240)
     while Date() < end {
@@ -30,7 +30,7 @@ final class DuoShotsTests: XCTestCase {
   /// Re-open the (now downloaded) document after a relaunch.
   func testCOpenViewer() {
     wait("내 PDF 추가", 90)
-    let tile = app.staticTexts[title]; XCTAssertTrue(tile.waitForExistence(timeout: 60), "doc tile"); tile.tap()
+    let tile = app.staticTexts[title].firstMatch; XCTAssertTrue(tile.waitForExistence(timeout: 60), "doc tile"); tile.tap()
     wait("뒤로가기", 60); Thread.sleep(forTimeInterval: 6)
   }
 }
