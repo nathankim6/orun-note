@@ -12,8 +12,11 @@ import { DocumentView, DocHandle, PageBox, PageTile } from './DocumentView';
 import { IconButton, Muted, T } from '@/components/ui';
 import { Doc } from '@/data/types';
 import Svg, { Rect, Path } from 'react-native-svg';
+import { resizeRect, Edges } from './subDocGeometry';
 
 const MIN_W = 280, MIN_H = 260, HEADER_H = 44, BAR_H = 40, EDGE = 14, CORNER = 30;
+/** resize hit areas: 24pt edges (centred on the border, half outside the window), 32pt corners */
+const HIT = 24, HIT_CORNER = 32;
 type Frame = { x: number; y: number; w: number; h: number };
 /** Where the user last left the window (kept for the app session, so closing/reopening 서브교재 restores it). */
 let lastFrame: Frame | null = null;
@@ -25,7 +28,7 @@ const webCursor = (c: string) => (Platform.OS === 'web' ? ({ cursor: c } as any)
 
 /**
  * 서브교재: a floating, always-on-top reference window (another document or the same one) that stays put while the
- * main page scrolls. Drag the title bar to move it; drag the right edge, bottom edge or bottom-right corner to resize.
+ * main page scrolls. Drag the title bar to move it; drag any edge or corner to resize (left / top keep the opposite edge put).
  * The page area is the same document engine as the main view: scroll / flick to turn pages, pinch or double-tap to zoom
  * (Ctrl+wheel on desktop); the bottom bar has the page grid (모든 페이지 한눈에), previous / next and zoom out / in.
  */
@@ -59,18 +62,20 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
     .onStart(() => { sx.value = x.value; sy.value = y.value; })
     .onUpdate((e) => { x.value = clamp(sx.value + e.translationX, 0, Math.max(0, maxW - w.value)); y.value = clamp(sy.value + e.translationY, top, Math.max(top, maxH - h.value)); })
     .onEnd(() => { runOnJS(save)(x.value, y.value, w.value, h.value); }), [maxW, maxH, top, save]);
-  const makeResize = (horiz: boolean, vert: boolean) => Gesture.Pan().minDistance(0)
-    .onStart(() => { sw.value = w.value; sh.value = h.value; ew.value = w.value; eh.value = h.value; })
+  const makeResize = (edges: Edges) => Gesture.Pan().minDistance(0)
+    .onStart(() => { sx.value = x.value; sy.value = y.value; sw.value = w.value; sh.value = h.value; ew.value = w.value; eh.value = h.value; })
     .onUpdate((e) => {
-      if (horiz) w.value = clamp(sw.value + e.translationX, MIN_W, Math.max(MIN_W, maxW - x.value));
-      if (vert) h.value = clamp(sh.value + e.translationY, MIN_H, Math.max(MIN_H, maxH - y.value));
+      const r = resizeRect({ x: sx.value, y: sy.value, w: sw.value, h: sh.value }, edges, e.translationX, e.translationY, { minW: MIN_W, minH: MIN_H, maxW, maxH, minY: top });
+      x.value = r.x; y.value = r.y; w.value = r.w; h.value = r.h;
       // re-layout the page every ~10px of drag (the bitmap is only re-rendered once, when the drag ends)
       if (Math.abs(w.value - ew.value) + Math.abs(h.value - eh.value) >= 10) { ew.value = w.value; eh.value = h.value; runOnJS(live)(w.value, h.value); }
     })
     .onFinalize(() => { runOnJS(commit)(w.value, h.value); runOnJS(save)(x.value, y.value, w.value, h.value); });
-  const resizeR = useMemo(() => makeResize(true, false), [maxW, maxH, live, commit, save]);
-  const resizeB = useMemo(() => makeResize(false, true), [maxW, maxH, live, commit, save]);
-  const resizeRB = useMemo(() => makeResize(true, true), [maxW, maxH, live, commit, save]);
+  const deps = [maxW, maxH, top, live, commit, save];
+  const resizeL = useMemo(() => makeResize({ left: true }), deps), resizeR = useMemo(() => makeResize({ right: true }), deps);
+  const resizeT = useMemo(() => makeResize({ top: true }), deps), resizeB = useMemo(() => makeResize({ bottom: true }), deps);
+  const resizeLT = useMemo(() => makeResize({ left: true, top: true }), deps), resizeRT = useMemo(() => makeResize({ right: true, top: true }), deps);
+  const resizeLB = useMemo(() => makeResize({ left: true, bottom: true }), deps), resizeRB = useMemo(() => makeResize({ right: true, bottom: true }), deps);
   const style = useAnimatedStyle(() => ({ left: x.value, top: y.value, width: w.value, height: h.value }));
 
   // page area = window minus title bar, bottom bar and the 1px border (docked panes have no border)
@@ -138,10 +143,16 @@ export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, 
         {header}
       </GestureDetector>
       {body}
-      {/* resize handles: right edge, bottom edge, bottom-right corner */}
-      <GestureDetector gesture={resizeR}><View style={[{ position: 'absolute', top: HEADER_H, right: 0, bottom: CORNER, width: EDGE, alignItems: 'center', justifyContent: 'center' }, webCursor('ew-resize')]} collapsable={false}><View style={{ width: 4, height: 34, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.28)' }} /></View></GestureDetector>
-      <GestureDetector gesture={resizeB}><View style={[{ position: 'absolute', left: 0, right: CORNER, bottom: 0, height: EDGE, alignItems: 'center', justifyContent: 'center' }, webCursor('ns-resize')]} collapsable={false}><View style={{ width: 34, height: 4, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.28)' }} /></View></GestureDetector>
-      <GestureDetector gesture={resizeRB}><View style={[{ position: 'absolute', right: 0, bottom: 0, width: CORNER, height: CORNER, alignItems: 'flex-end', justifyContent: 'flex-end', padding: 5 }, webCursor('nwse-resize')]} collapsable={false}><Ionicons name="resize-outline" size={16} color={colors.primary} /></View></GestureDetector>
+      {/* resize handles: four edges (24pt bands) and four corners (32pt squares with a subtle grip) */}
+      <GestureDetector gesture={resizeL}><View style={[{ position: 'absolute', left: 0, top: HIT_CORNER, bottom: HIT_CORNER, width: HIT, justifyContent: 'center' }, webCursor('ew-resize')]} collapsable={false}><View style={{ marginLeft: 3, width: 4, height: 34, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.22)' }} /></View></GestureDetector>
+      <GestureDetector gesture={resizeR}><View style={[{ position: 'absolute', right: 0, top: HIT_CORNER, bottom: HIT_CORNER, width: HIT, alignItems: 'flex-end', justifyContent: 'center' }, webCursor('ew-resize')]} collapsable={false}><View style={{ marginRight: 3, width: 4, height: 34, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.28)' }} /></View></GestureDetector>
+      <GestureDetector gesture={resizeT}><View style={[{ position: 'absolute', top: 0, left: HIT_CORNER, right: HIT_CORNER, height: 10, alignItems: 'center' }, webCursor('ns-resize')]} collapsable={false}><View style={{ marginTop: 3, width: 34, height: 4, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.22)' }} /></View></GestureDetector>
+      <GestureDetector gesture={resizeB}><View style={[{ position: 'absolute', bottom: 0, left: HIT_CORNER, right: HIT_CORNER, height: HIT, alignItems: 'center', justifyContent: 'flex-end' }, webCursor('ns-resize')]} collapsable={false}><View style={{ marginBottom: 3, width: 34, height: 4, borderRadius: 2, backgroundColor: 'rgba(47,111,237,0.28)' }} /></View></GestureDetector>
+      {([['lt', resizeLT, true, true, 'nwse-resize', 0], ['rt', resizeRT, false, true, 'nesw-resize', 90], ['rb', resizeRB, false, false, 'nwse-resize', 180], ['lb', resizeLB, true, false, 'nesw-resize', 270]] as const).map(([k, g, isLeft, isTop, cur, rot]) => { const pos = { [isLeft ? 'left' : 'right']: 0, [isTop ? 'top' : 'bottom']: 0 }; return (
+        <GestureDetector key={k} gesture={g}><View style={[{ position: 'absolute', width: HIT_CORNER, height: HIT_CORNER, alignItems: isLeft ? 'flex-start' : 'flex-end', justifyContent: isTop ? 'flex-start' : 'flex-end', padding: 4 }, pos, webCursor(cur)]} collapsable={false}>
+          {/* corner grip: a small rounded L hugging the corner (rotated per corner) */}
+          <Svg width={14} height={14} viewBox="0 0 14 14" style={{ transform: [{ rotate: `${rot}deg` }] }}><Path d="M3 11V3h8" stroke={colors.primary} strokeOpacity={0.55} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" /></Svg>
+        </View></GestureDetector>); })}
     </Animated.View>
   );
 }
