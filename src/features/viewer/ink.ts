@@ -106,7 +106,7 @@ export function penOutline(points: Point[], width: number, live = false, tool: T
  * strokes do not break up. Pressure → wider and darker; a flat (tilted) stylus → wider and lighter (shading); ends taper.
  * Everything is derived from the stored points through `grain()`, so a stroke always renders the same.
  */
-export type PencilLayers = { core: string; dark: string; light: string; wash: string };
+export type PencilLayers = { core: string; dark: string; light: string; /** short graphite streaks along the stroke direction (stroke this path, width = streakW) */ streaks: string; streakW: number; wash: string };
 const pencilCache = new WeakMap<Point[], Map<number, PencilLayers>>();
 /** stylus pressure response: raw S Pen / Apple Pencil values are low when writing normally */
 export const pencilPressure = (p?: number) => (typeof p === 'number' && p > 0 ? Math.min(1, Math.pow(Math.min(1, p), 0.55)) : 0.55);
@@ -123,7 +123,7 @@ const speck = (x: number, y: number, r: number) => { const d = (2 * r).toFixed(1
 const PENCIL_MAX_SPECKS = 7000;
 export function pencilLayers(points: Point[], width: number, live = false): PencilLayers {
   if (!live) { const hit = pencilCache.get(points)?.get(width); if (hit) return hit; }
-  const W = Math.max(0.2, width); const res: PencilLayers = { core: '', dark: '', light: '', wash: '' };
+  const W = Math.max(0.2, width); const res: PencilLayers = { core: '', dark: '', light: '', streaks: '', streakW: W * 0.11, wash: '' };
   if (!points.length) return res;
   // resample the centre line at a fixed spacing (page units)
   const step = Math.max(0.16, W * 0.2);
@@ -142,7 +142,7 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
     }
   }
   const n = samples.length; const budget = Math.max(1, Math.min(10, Math.floor(PENCIL_MAX_SPECKS / n)));
-  let dark = '', light = '', coreW: number[] = [];
+  let dark = '', light = '', streaks = '', coreW: number[] = [];
   // ends taper over ~1.2 W (lead lands and lifts), like a real pencil
   const taperLen = Math.max(step * 2, W * 1.2);
   for (let i = 0; i < n; i++) {
@@ -151,13 +151,18 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
     const wf = pencilWidthFactor(q), w = W * wf * taper, R = w / 2, dk = pencilDarkness(q);
     coreW.push(Math.max(0.15, w * 0.42));
     // more graphite per step when the band is wider (shading with a flat lead covers more paper)
-    const count = Math.min(budget, Math.max(1, Math.round((3.5 + 4.5 * dk) * Math.max(1, wf / 0.9))));
+    const count = Math.min(budget, Math.max(1, Math.round((3 + 4 * dk) * Math.max(1, wf / 0.9))));
+    // local direction (graphite streaks follow the movement of the lead, like fibres)
+    const nb = samples[Math.min(n - 1, i + 1)], pa = samples[Math.max(0, i - 1)]; let dx = nb.x - pa.x, dy = nb.y - pa.y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     for (let j = 0; j < count; j++) {
-      const u1 = grain(seed + j * 13.1), u2 = grain(seed * 0.7 + j * 29.3 + 5), u3 = grain(seed * 1.3 + j * 17.7 + 11);
-      const rho = R * 1.25 * Math.sqrt(u1), ang = u2 * Math.PI * 2;
+      const u1 = grain(seed + j * 13.1), u2 = grain(seed * 0.7 + j * 29.3 + 5), u3 = grain(seed * 1.3 + j * 17.7 + 11), u4 = grain(seed * 2.1 + j * 7.9 + 3);
+      const rho = R * 1.3 * Math.sqrt(u1), ang = u2 * Math.PI * 2;
       const x = q.x + Math.cos(ang) * rho, y = q.y + Math.sin(ang) * rho;
-      const r = Math.max(0.04, w * (0.05 + 0.07 * u3) * (1 - 0.35 * (rho / (R * 1.25 + 1e-6))));
-      if (rho < R * 0.75 && u3 < 0.3 + 0.65 * dk) dark += speck(x, y, r); else light += speck(x, y, r);
+      if (u4 < 0.12 + 0.3 * dk && rho < R * 0.8) { dark += speck(x, y, Math.max(0.04, w * (0.05 + 0.06 * u3))); continue; }
+      if (u4 > 0.6) { light += speck(x, y, Math.max(0.04, w * (0.04 + 0.07 * u3))); continue; }
+      // a streak: short segment along the direction, a little longer towards the centre
+      const len = w * (0.12 + 0.35 * u3) * (1 - 0.3 * rho / (R * 1.3 + 1e-6));
+      streaks += `M${(x - dx * len / 2).toFixed(1)} ${(y - dy * len / 2).toFixed(1)}l${(dx * len).toFixed(1)} ${(dy * len).toFixed(1)}`;
     }
   }
   // faint continuous core (variable width) so strokes never break into dots; also the hit/selection outline (wash)
@@ -169,7 +174,7 @@ export function pencilLayers(points: Point[], width: number, live = false): Penc
   const washInput = samples.map((q) => [q.x, q.y, Math.min(1, pencilWidthFactor(q) * 0.5)]);
   const wash = samples.length > 1 ? strokeOutline(washInput, { size: W * 1.5, thinning: 1, smoothing: 0.5, streamline: 0.2, simulatePressure: false, easing: (x: number) => x, last: !live }) : [];
   res.wash = wash.length > 2 ? outlineToPath(wash) : circ(samples[0].x, samples[0].y, W * 0.5);
-  res.dark = dark; res.light = light;
+  res.dark = dark; res.light = light; res.streaks = streaks;
   if (!live) { let m = pencilCache.get(points); if (!m) { m = new Map(); pencilCache.set(points, m); } m.set(width, res); }
   return res;
 }

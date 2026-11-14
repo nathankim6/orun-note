@@ -62,7 +62,7 @@ console.log('PASS: v12 defaults + pencil, persistence guards, v11 modest default
   assert.ok(ink.pencilWidthFactor({ p: 0.9 }) > ink.pencilWidthFactor({ p: 0.1 }) && ink.pencilDarkness({ p: 0.9 }) > ink.pencilDarkness({ p: 0.1 }));
   assert.ok(ink.pencilWidthFactor({ p: 0.5, t: 1.3 }) > 2 * ink.pencilWidthFactor({ p: 0.5 }) && ink.pencilDarkness({ p: 0.5, t: 1.3 }) < ink.pencilDarkness({ p: 0.5 }));
   assert.ok(firm.dark.length > soft.dark.length, 'firm pressure deposits more dark specks');
-  const mid = ink.pencilLayers(line(0.5), 1.2); assert.ok(flat.light.length > mid.light.length && flat.dark.length < mid.dark.length, 'tilted pencil spreads lighter graphite');
+  const mid = ink.pencilLayers(line(0.5), 1.2); const share = (L) => L.dark.length / (L.dark.length + L.light.length + L.streaks.length); assert.ok(flat.streaks.length + flat.light.length > mid.streaks.length + mid.light.length && share(flat) < share(mid), 'tilted pencil spreads lighter graphite');
   assert.equal(ink.pencilLayers(line(0.5), 1.2).dark, ink.pencilLayers(line(0.5), 1.2).dark, 'deterministic');
   const long = ink.pencilLayers(Array.from({ length: 2000 }, (_, k) => ({ x: k * 0.5, y: 0 })), 1.2);
   assert.ok((long.dark.match(/M/g) || []).length + (long.light.match(/M/g) || []).length <= 7000, 'speck budget per stroke');

@@ -8,7 +8,7 @@ strokes.push({pts:Array.from({length:40},(_,k)=>({x:10+70*k/39,y:110+2*k/39,p:.2
 // goodnotes-like sine wave, no pressure data, width 2.4
 strokes.push({pts:Array.from({length:120},(_,k)=>({x:95+80*k/119,y:40+12*Math.sin(k/119*Math.PI*1.6)})),w:2.4});
 const S=6;let body='';
-for(const st of strokes){const L=ink.pencilLayers(st.pts,st.w,false);body+=`<path d="${L.core}" fill="#1C1C1E" fill-opacity="${0.8*0.42}"/><path d="${L.light}" fill="#1C1C1E" fill-opacity="${0.8*0.45}"/><path d="${L.dark}" fill="#1C1C1E" fill-opacity="${0.8*0.62}"/>`;}
+for(const st of strokes){const L=ink.pencilLayers(st.pts,st.w,false);body+=`<path d="${L.core}" fill="#1C1C1E" fill-opacity="${0.8*0.4}"/><path d="${L.streaks}" fill="none" stroke="#1C1C1E" stroke-width="${L.streakW}" stroke-linecap="round" stroke-opacity="${0.8*0.36}"/><path d="${L.light}" fill="#1C1C1E" fill-opacity="${0.8*0.42}"/><path d="${L.dark}" fill="#1C1C1E" fill-opacity="${0.8*0.6}"/>`;}
 let pen='';for(let n=1;n<=6;n++){const pts=Array.from({length:n},(_,k)=>({x:100+n*12+k*0.3,y:115}));pen+=`<path d="${ink.penOutline(pts,1,true,'pen')}" fill="#172033"/>`;}
 pen+=`<path d="${ink.penOutline(Array.from({length:30},(_,k)=>({x:100+k*0.9,y:105})),1,true,'pen')}" fill="#172033"/>`;
 console.log(`<svg xmlns="http://www.w3.org/2000/svg" width="${190*S}" height="${125*S}" style="background:#fbfaf6"><g transform="scale(${S})">${body}${pen}</g></svg>`);
