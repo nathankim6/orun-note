@@ -1,0 +1,23 @@
+name: derive-materials
+# Pre-renders teacher-uploaded textbooks into page images + word boxes (docs/derived-pages.md).
+on:
+  schedule: [{ cron: '*/30 * * * *' }]
+  workflow_dispatch:
+    inputs:
+      only: { description: 'material id (empty = all pending)', default: '' }
+      force: { description: 'regenerate even if already derived', type: boolean, default: false }
+concurrency: { group: derive-materials, cancel-in-progress: false }
+jobs:
+  derive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q pypdfium2 pillow
+      - name: generate
+        env: { ORUN_ADMIN_CODE: '${{ secrets.ORUN_ADMIN_CODE }}' }
+        run: |
+          test -n "$ORUN_ADMIN_CODE" || { echo "::error::ORUN_ADMIN_CODE secret missing"; exit 1; }
+          python3 scripts/derived/generate.py ${{ inputs.only && format('--only {0}', inputs.only) || '' }} ${{ inputs.force && '--force' || '' }}

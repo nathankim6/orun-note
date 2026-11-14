@@ -306,9 +306,9 @@ Deno.serve(async (req) => {
       case "download": {
         const id = String(body.materialId ?? "");
         if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
-        const { data: m } = await supa.from("materials").select("storage_path,title,file_name").eq("id", id).maybeSingle(); if (!m) return fail("교재를 찾을 수 없습니다", 404);
+        const { data: m } = await supa.from("materials").select("storage_path,title,file_name,derived").eq("id", id).maybeSingle(); if (!m) return fail("교재를 찾을 수 없습니다", 404);
         const { data: s, error } = await supa.storage.from(BUCKET).createSignedUrl(m.storage_path, 600); if (error || !s) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
-        return json({ ok: true, url: s.signedUrl, title: m.title, fileName: m.file_name });
+        return json({ ok: true, url: s.signedUrl, title: m.title, fileName: m.file_name, derived: m.derived ?? null });
       }
     }
     if (who.role !== "admin") return fail("관리자 전용 기능입니다", 403);
@@ -348,9 +348,41 @@ Deno.serve(async (req) => {
         await supa.from("materials").update({ cover_path: path }).eq("id", id); return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token }); }
       case "materials.coverClear": { const { data: m } = await supa.from("materials").select("cover_path").eq("id", String(body.id)).maybeSingle(); if (m?.cover_path) await supa.storage.from(BUCKET).remove([m.cover_path]); await supa.from("materials").update({ cover_path: null }).eq("id", String(body.id)); return json({ ok: true }); }
       case "materials.rename": { const { data, error } = await supa.from("materials").update({ title: nfc(body.title) }).eq("id", String(body.id)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
+      // ---- pre-rendered page images (docs/derived-pages.md) ----
+      case "materials.derivedUploadUrl": {
+        if (who.role !== "admin") return fail("권한이 없습니다", 403);
+        const id = String(body.materialId ?? ""); if (!/^[0-9a-f-]{36}$/.test(id)) return fail("materialId");
+        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
+        const uploads: { path: string; url: string; token: string }[] = [];
+        for (const name of files) {
+          const path = `derived/${id}/v1/${name}`;
+          const { data, error } = await supa.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true }); if (error || !data) return fail("업로드 URL 생성 실패: " + (error?.message ?? ""), 500);
+          uploads.push({ path, url: data.signedUrl, token: data.token });
+        }
+        return json({ ok: true, uploads });
+      }
+      case "materials.derivedComplete": {
+        if (who.role !== "admin") return fail("권한이 없습니다", 403);
+        const id = String(body.materialId ?? ""); const m = body.manifest ?? {};
+        const derived = { version: Number(m.version ?? 1), pages: Number(m.pages ?? 0), widths: Array.isArray(m.widths) ? m.widths.map(Number) : [1200, 2400], words: !!m.words, bytes: Number(m.bytes ?? 0), generatedAt: String(m.generatedAt ?? new Date().toISOString()), engine: String(m.engine ?? "").slice(0, 80) };
+        if (!(derived.pages > 0)) return fail("manifest.pages");
+        const { data, error } = await supa.from("materials").update({ derived }).eq("id", id).select().single(); if (error) return fail(error.message);
+        return json({ ok: true, material: data });
+      }
+      case "materials.derivedUrls": {
+        const id = String(body.materialId ?? "");
+        if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
+        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
+        if (!files.length) return json({ ok: true, urls: [] });
+        const paths = files.map((n: string) => `derived/${id}/v1/${n}`);
+        const { data, error } = await supa.storage.from(BUCKET).createSignedUrls(paths, 900); if (error || !data) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
+        return json({ ok: true, urls: data.filter((d: any) => d.signedUrl && !d.error).map((d: any) => ({ path: d.path, url: d.signedUrl })) });
+      }
       case "materials.delete": {
         const { data: m } = await supa.from("materials").select("storage_path,cover_path").eq("id", String(body.id)).maybeSingle();
         if (m) await supa.storage.from(BUCKET).remove([m.storage_path, ...(m.cover_path ? [m.cover_path] : [])]);
+        // pre-rendered pages live under derived/{id}/v1/ (up to a few hundred files; list is paged by 1000)
+        try { const { data: files } = await supa.storage.from(BUCKET).list(`derived/${String(body.id)}/v1`, { limit: 1000 }); const paths = (files ?? []).map((x: any) => `derived/${String(body.id)}/v1/${x.name}`); if (paths.length) await supa.storage.from(BUCKET).remove(paths); } catch { /* best effort */ }
         const { error } = await supa.from("materials").delete().eq("id", String(body.id)); if (error) return fail(error.message); return json({ ok: true });
       }
       case "stats": { const [{ count: l }, { count: m }, { count: p }, { data: log }] = await Promise.all([supa.from("student_links").select("*", { count: "exact", head: true }), supa.from("materials").select("*", { count: "exact", head: true }), supa.from("email_change_requests").select("*", { count: "exact", head: true }).eq("status", "pending"), supa.from("access_log").select("code,action,ok,at").order("at", { ascending: false }).limit(60)]);
