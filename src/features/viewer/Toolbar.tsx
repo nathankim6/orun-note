@@ -14,7 +14,7 @@ import { PencilStroke } from './PencilInk';
 import { ColorIcon, ColorIconName } from '@/components/ColorIcons';
 import { OrunTitle, ORUN_TITLE_RATIO } from '@/components/OrunTitle';
 import { OrunMark, ORUN_MARK_RATIO } from '@/components/OrunMark';
-const TITLE_H = 24; const MARK_H = 30; const MARK_GAP = 8;
+const TITLE_H = 22; const MARK_H = 30; const MARK_GAP = 10;
 import { ToolArt, ToolArtKind, ColorWheel } from './ToolArt';
 
 export const TEXT_FONTS: { k: string; label: string; family?: string }[] = [
