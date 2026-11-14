@@ -220,7 +220,7 @@ function Player({ video, onClose, onPlaybackStatus, floating = false, onFloating
                 ) : (
                   <>
                     <RoundBtn icon="rewind-10" lib="mci" label="10초 뒤로" onPress={() => skip(-10)} size={stageW < 420 ? 46 : 56} />
-                    <RoundBtn icon={st.playing ? 'pause' : 'play'} solid label={st.playing ? '일시정지' : '재생'} onPress={toggle} size={stageW < 420 ? 64 : 78} />
+                    <RoundBtn testID={st.playing ? 'review-video-pause' : 'review-video-play'} icon={st.playing ? 'pause' : 'play'} solid label={st.playing ? '일시정지' : '재생'} onPress={toggle} size={stageW < 420 ? 64 : 78} />
                     <RoundBtn icon="fast-forward-10" lib="mci" label="10초 앞으로" onPress={() => skip(10)} size={stageW < 420 ? 46 : 56} />
                   </>
                 )}

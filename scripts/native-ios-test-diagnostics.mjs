@@ -50,7 +50,9 @@ export function classifyReason(text) {
   if (has(value, /scheme[^\n]{0,120}(?:not found|does not exist|does not contain a scheme|is not currently configured)|unable to find (?:a )?scheme/i)) return 'missing_scheme';
   if (has(value, /(?:unable to find|no matching|failed to find)[^\n]{0,120}destination|destination[^\n]{0,120}(?:not found|not available|is invalid)/i)) return 'missing_destination';
   if (has(value, /\b(?:code ?sign|provisioning profile|signing certificate|development team|errsecinternalcomponent)\b[^\n]{0,160}\b(?:error|failed|failure|required|requires|not found|does not|doesn't|invalid|missing)\b|\b(?:error|failed|failure)\b[^\n]{0,160}\b(?:code ?sign|provisioning profile|signing certificate|development team|errsecinternalcomponent)\b/i)) return 'signing_failure';
-  if (has(value, /\b(?:linker command failed|ld: |undefined symbols for architecture|framework not found)\b/i)) return 'link_failure';
+  // A linker warning is not a link failure; xcodebuild can continue into a failing XCTest.
+  const linkErrors = value.split('\n').filter(line => !/^\s*ld:\s*warning:/i.test(line)).join('\n');
+  if (has(linkErrors, /\b(?:linker command failed|undefined symbols for architecture|framework not found)\b|^\s*ld:\s*(?:error:|library not found|symbol\(s\) not found)/im)) return 'link_failure';
   if (has(value, /\b(?:compilec|swiftcompile|swiftc|clang)\b[^\n]{0,160}\berror:|\bcompile failed\b/i)) return 'compile_failure';
   if (has(value, /\b(?:coresimulator|simctl|simulator)\b[^\n]{0,160}\b(?:unavailable|failed|not booted|cannot boot|shutdown|service)\b|unable to boot (?:the )?simulator/i)) return 'simulator_failure';
   if (has(value, /\b(?:test runner|xctest runner|runner)\b[^\n]{0,160}\b(?:failed to launch|could not launch|terminated|crashed)\b/i)) return 'runner_launch_failure';
@@ -104,7 +106,7 @@ export function sanitizeIosLaunchDiagnostic(input) {
   if (!input || typeof input !== 'object') return undefined;
   if (input.event === 'ios_launch_checkpoint') return ['before_launch', 'after_launch'].includes(input.stage) ? { event: 'ios_launch_checkpoint', stage: input.stage, appValidated: false } : undefined;
   if (input.event !== 'ios_xctest_issue') return undefined;
-  const reasons = ['app_not_installed', 'launch_denied', 'launch_timeout', 'automation_connection', 'app_exited', 'launch_failed', 'unknown'];
+  const reasons = ['app_not_installed', 'launch_denied', 'launch_timeout', 'automation_connection', 'app_exited', 'launch_failed', 'assertion_failure', 'unknown'];
   const row = { event: 'ios_xctest_issue', appValidated: false, driverFailure: input.isFailure !== false, reason: reasons.includes(input.reason) ? input.reason : 'unknown' };
   if (Number.isInteger(input.issueType) && input.issueType >= 0 && input.issueType <= 5) row.issueType = input.issueType;
   if (Number.isInteger(input.sourceLine) && input.sourceLine > 0 && input.sourceLine <= 100000) row.sourceLine = input.sourceLine;

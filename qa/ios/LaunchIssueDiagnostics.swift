@@ -2,11 +2,14 @@ import Foundation
 // QA runner only. Never return descriptions, paths, identifiers, userInfo, or attachment contents.
 enum LaunchIssueDiagnostics {
   static let domains: Set<String> = ["NSPOSIXErrorDomain", "CoreSimulatorErrorDomain", "DTXMessageErrorDomain", "IDETestOperationsObserverErrorDomain", "XCTestErrorDomain", "FBSOpenApplicationServiceErrorDomain", "FBSOpenApplicationErrorDomain", "FBProcessExit", "RBSRequestErrorDomain", "RBSServiceErrorDomain", "NSOSStatusErrorDomain", "NSCocoaErrorDomain", "NSMachErrorDomain", "NSLaunchdErrorDomain"]
-  static func reason(_ text: String) -> String {
+  static func reason(_ text: String, duringLaunch: Bool = false, isAssertion: Bool = false) -> String {
+    // Assertion descriptions can themselves contain "timeout" (e.g. playback wait).
+    // They are not evidence that the app failed to launch.
+    if isAssertion { return "assertion_failure" }
     let value = String(text.prefix(32768)).lowercased()
     if value.contains("not installed") || value.contains("application is unknown") { return "app_not_installed" }
     if value.contains("permission denied") || value.contains("request was denied") || value.contains("not authorized") { return "launch_denied" }
-    if value.contains("timed out") || value.contains("timeout") { return "launch_timeout" }
+    if duringLaunch && (value.contains("timed out") || value.contains("timeout")) { return "launch_timeout" }
     if value.contains("failed to establish communication") || value.contains("connection interrupted") || value.contains("connection invalidated") { return "automation_connection" }
     if value.contains("process exited") || value.contains("application crashed") || value.contains("application terminated") { return "app_exited" }
     if value.contains("failed to launch") || value.contains("unable to launch") { return "launch_failed" }
