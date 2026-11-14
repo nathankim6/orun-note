@@ -6,10 +6,11 @@ function load(file, mocks = {}) {
 }
 let options;
 const { defaultViewerPrefs: d } = load('src/store/settings.ts', {
+  '../data/representativeColors': load('src/data/representativeColors.ts'),
   zustand: { create: () => x => x }, 'zustand/middleware': { persist: (x, opts) => { options = opts; return x; } }, './persist': { persistOpts: () => ({}) },
 });
 assert.equal(d.toolPresets.pen.width, 1); assert.equal(d.fixedWidth, true);
-assert.equal(d.toolPresets.eraser.width, 3); assert.equal(d.toolPresets.vectorEraser.width, 3); assert.equal(options.version, 12);
+assert.equal(d.toolPresets.eraser.width, 3); assert.equal(d.toolPresets.vectorEraser.width, 3); assert.equal(options.version, 13);
 assert.equal(d.toolPresets.pencil.width, 1.2); assert.equal(d.toolPresets.pencil.opacity, 0.8); assert.equal(d.pagesPanelOpen, true);
 const old = { viewer: { fixedWidth: false, toolPresets: { pen: { color: 'red', width: 4, opacity: .8 }, eraser: { width: 14 }, vectorEraser: { width: 10 } }, favoritePens: [{tool:'pen', width:3, fixed:false}] } };
 const migrated = options.migrate(old, 9).viewer;
@@ -69,3 +70,9 @@ console.log('PASS: v12 defaults + pencil, persistence guards, v11 modest default
   assert.ok(ink.pencilLayers([{ x: 5, y: 5 }], 1.2).core.length > 0, 'single tap leaves a dot');
 }
 console.log('PASS: pen landing width, pencil pressure/tilt response, determinism, speck budget');
+
+const expectedColors=['#000000','#FDE68A','#BFDBFE','#FCA5A5','#BBF7D0'];
+assert.deepEqual(Array.from(d.favoriteColors),expectedColors);
+assert.deepEqual(Array.from(options.migrate({viewer:{favoriteColors:['#172033','#DC2626','#2F6FED','#22C55E','#F59E0B']}},12).viewer.favoriteColors),expectedColors);
+const customColors=['#123456','#654321','#123456'];assert.deepEqual(Array.from(options.migrate({viewer:{favoriteColors:customColors}},12).viewer.favoriteColors),customColors);assert.deepEqual(Array.from(options.migrate({viewer:{favoriteColors:[]}},12).viewer.favoriteColors),[]);
+console.log('PASS: v13 shared pastel defaults and untouched-palette migration; custom colors preserved');

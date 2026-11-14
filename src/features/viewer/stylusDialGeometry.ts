@@ -1,3 +1,4 @@
+import { DEFAULT_REPRESENTATIVE_COLORS } from '../../data/representativeColors';
 /** Coordinates are local to the full-size viewer overlay, not the PDF or its zoom transform. */
 export type DialPoint = { x: number; y: number };
 export type DialBounds = { width: number; height: number; top?: number; bottom?: number; left?: number; right?: number };
@@ -25,5 +26,5 @@ export function dialWidthRange(tool: string) {
 /** Show representative colors exactly as configured, including their original order and duplicates. */
 export function dialColors(_current: string, favorites?: string[], _count?: number) {
   // Matches defaultViewerPrefs.favoriteColors; explicit [] intentionally stays empty.
-  return [...(favorites ?? ['#172033', '#DC2626', '#2F6FED', '#22C55E', '#F59E0B'])];
+  return [...(favorites ?? DEFAULT_REPRESENTATIVE_COLORS)];
 }
