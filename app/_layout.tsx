@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { View, Platform } from 'react-native';
 import { useTheme } from '@/theme';
 import { useDocsStore } from '@/store/docs';
@@ -35,6 +35,12 @@ if (Platform.OS === 'web' && typeof document !== 'undefined' && !document.getEle
   document.head.appendChild(st);
 }
 
+/** Keeps all screens out of the left/right safe areas (see useContentSize). Background still fills the display. */
+function SideSafeArea({ children }: { children: React.ReactNode }) {
+  const insets = useSafeAreaInsets();
+  return <View style={{ flex: 1, marginLeft: insets.left, marginRight: insets.right }}>{children}</View>;
+}
+
 export default function RootLayout() {
   const { colors, dark } = useTheme(); const toast = useDocsStore((s) => s.toast); const showToast = useDocsStore((s) => s.showToast);
   const { role, hydrated, refreshMe } = useSession(); const segments = useSegments(); const router = useRouter();
@@ -49,6 +55,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <GlassBackground>
           <StatusBar style={dark ? 'light' : 'dark'} />
+          <SideSafeArea>
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: 'transparent' } }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
@@ -56,6 +63,7 @@ export default function RootLayout() {
             <Stack.Screen name="review-videos" options={{ animation: 'fade', gestureEnabled: false, contentStyle: { backgroundColor: '#F6F6FB' } }} />
             <Stack.Screen name="auth/callback" />
           </Stack>
+          </SideSafeArea>
           <Toast message={toast} />
           <UpdateGate />
           {(hidden || protectionPending) && <View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}><Logo size={48} /><T variant="caption" color={colors.textMuted} style={{ marginTop: 12 }}>콘텐츠 보호를 위해 화면을 가렸어요</T></View>}

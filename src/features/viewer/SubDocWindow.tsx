@@ -4,7 +4,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '@/theme';
+import { useTheme, useContentSize } from '@/theme';
 import { useDocsStore } from '@/store/docs';
 import { resolveUri } from '@/lib/files';
 import { PdfPage, prefetchPage } from './PdfPage';
@@ -34,7 +34,7 @@ const webCursor = (c: string) => (Platform.OS === 'web' ? ({ cursor: c } as any)
  */
 export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, split = false, onToggleSplit }: { mode: 'pick' | 'show'; docId: string | null; excludeId: string; onPick: (id: string) => void; onClose: () => void;
   /** 화면 2분할: render as a fixed pane of this size (no move / resize handles) */ docked?: { w: number; h: number } | null; split?: boolean; onToggleSplit?: () => void }) {
-  const { colors } = useTheme(); const { width: winW, height: winH } = useWindowDimensions(); const insets = useSafeAreaInsets(); const docs = useDocsStore((s) => s.docs);
+  const { colors } = useTheme(); const { width: winW, height: winH } = useContentSize(); const insets = useSafeAreaInsets(); const docs = useDocsStore((s) => s.docs);
   const doc = docId ? docs[docId] : null;
   const top = insets.top, bottom = insets.bottom;
   const fit = useCallback((f: Frame): Frame => {

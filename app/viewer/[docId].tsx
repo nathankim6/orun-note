@@ -4,7 +4,7 @@ import { useLocalSearchParams, usePathname, useRouter, router as rootRouter } fr
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { useTheme, useLayout } from '@/theme';
+import { useTheme, useLayout, useContentSize } from '@/theme';
 import { Badge, Button, Dialog, IconButton, ListItem, Muted, Row, Sheet, T } from '@/components/ui';
 import { Tool, Stroke, TextBox } from '@/data/types';
 import { useDocsStore } from '@/store/docs';
@@ -38,7 +38,7 @@ import { fmtBytes, fmtDate } from '@/utils/format';
 
 export default function Viewer() {
   const { docId: paramId } = useLocalSearchParams<{ docId: string }>();
-  const router = useRouter(); const viewerActive = usePathname().startsWith('/viewer/'); const { colors, dark } = useTheme(); const insets = useSafeAreaInsets(); const { width: winW, height: winH } = useWindowDimensions(); const { isTablet } = useLayout();
+  const router = useRouter(); const viewerActive = usePathname().startsWith('/viewer/'); const { colors, dark } = useTheme(); const insets = useSafeAreaInsets(); const { width: winW, height: winH } = useContentSize(); const { isTablet } = useLayout();
   const store = useDocsStore(); const toast = store.showToast; const settings = useSettingsStore(); const prefs = settings.viewer; const ink = useInkStore();
   const docId = store.activeTab && store.openTabs.includes(store.activeTab) ? store.activeTab : paramId!;
   useEffect(() => { if (paramId) store.openTab(paramId); }, [paramId]);

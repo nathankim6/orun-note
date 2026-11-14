@@ -124,7 +124,8 @@ function RoundBtn({ icon, lib = 'ion', size = 52, onPress, label, solid, iconSiz
 
 /** Full-screen dark player with custom controls. Rendered in the normal screen tree. */
 function Player({ video, onClose, onPlaybackStatus, floating = false, onFloatingChange }: { video: ReviewVideo; onClose: () => void; onPlaybackStatus?: (status: StageStatus) => void; floating?: boolean; onFloatingChange?: (floating: boolean) => void }) {
-  const { width: W, height: H } = useWindowDimensions(); const insets = useSafeAreaInsets();
+  // Content area = window minus side safe areas (the root layout already sits inside them), so geometry uses zero side insets.
+  const { width: winW0, height: H } = useWindowDimensions(); const safe = useSafeAreaInsets(); const W = Math.max(0, winW0 - (safe.left ?? 0) - (safe.right ?? 0)); const insets = { ...safe, left: 0, right: 0 };
   const stage = useRef<StageHandle>(null);
   const chosenRate = useRef(1);
   const [position, setPosition] = useState<{ x: number; y: number } | undefined>();
@@ -286,7 +287,7 @@ export function ReviewVideosScreen(props: ReviewVideosScreenProps) {
 }
 
 function ReviewVideosContent({ onClose, loadVideos = defaultLoadVideos, onPlaybackStatus, onFloatingChange }: ReviewVideosScreenProps) {
-  const { width: W } = useWindowDimensions(); const insets = useSafeAreaInsets();
+  const { width: winW1 } = useWindowDimensions(); const insets = useSafeAreaInsets(); const W = Math.max(0, winW1 - (insets.left ?? 0) - (insets.right ?? 0));
   const cred = useSession((s) => s.adminCode); const who = useSession((s) => s.student?.id ?? s.role ?? '');
   const key = `${who}|${cred ?? ''}`;
   const canCache = loadVideos === defaultLoadVideos;

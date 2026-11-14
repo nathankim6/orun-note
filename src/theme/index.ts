@@ -1,4 +1,5 @@
 import { Platform, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 /** Apple system colors (iOS / iPadOS light appearance). */
 export const ios = {
@@ -73,8 +74,19 @@ export function useTheme() {
   return { colors: lightColors, dark: false, spacing, radius, type };
 }
 
+/**
+ * Size of the app's content area: the window minus the left/right safe areas. The root layout keeps every screen
+ * inside those side insets (landscape notch, Android side navigation bar, iPhone Duo inner display whose status bar
+ * sits on the right edge), so width-based layout must use this, not the raw window width. Portrait phones and
+ * iPads have zero side insets, so their layout is unchanged. Follows window resizes (fold/unfold, Split View).
+ */
+export function useContentSize() {
+  const win = useWindowDimensions(); const insets = useSafeAreaInsets();
+  return { width: Math.max(0, win.width - (insets.left ?? 0) - (insets.right ?? 0)), height: win.height, windowWidth: win.width };
+}
+
 export function useLayout() {
-  const { width, height } = useWindowDimensions();
+  const { width, height } = useContentSize();
   const isTablet = Math.min(width, height) >= 600;
   const isWide = width >= 900;
   const columns = width >= 1200 ? 6 : width >= 900 ? 5 : width >= 600 ? 4 : 2;

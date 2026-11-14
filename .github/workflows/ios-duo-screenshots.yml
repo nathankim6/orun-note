@@ -1,0 +1,80 @@
+name: iPhone Duo compile + screenshots (QA only, no upload to Apple)
+# Builds the real app with the iOS 27.x SDK (iPhone Duo optimized), runs it on the iPhone Duo simulator and
+# captures the outer (folded) and inner (unfolded) displays at App Store screenshot sizes. Never signs for
+# distribution and never talks to App Store Connect.
+on:
+  workflow_dispatch: {}
+  push: { branches: [feat/iphone-duo] }
+permissions:
+  contents: read
+jobs:
+  duo:
+    runs-on: xcode-27
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '27.2' }
+      - run: xcodebuild -version && xcrun simctl list runtimes && xcrun simctl list devicetypes | grep -i duo
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx expo prebuild --platform ios --no-install
+      - run: cd ios && pod install
+      - name: Build for iPhone Duo simulator (ad-hoc local signing only)
+        run: |
+          cd ios
+          xcodebuild -workspace Paperly.xcworkspace -scheme Paperly -configuration Release -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath ../duo-build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER="" CODE_SIGN_ENTITLEMENTS="" build | tail -40
+          test -d ../duo-build/Build/Products/Release-iphonesimulator/Paperly.app
+          /usr/libexec/PlistBuddy -c 'Print :DTSDKName' ../duo-build/Build/Products/Release-iphonesimulator/Paperly.app/Info.plist
+      - name: Boot iPhone Duo, sign in (seeded admin session), download a textbook, capture both displays
+        env: { ORUN_ADMIN_CODE: '${{ secrets.ORUN_ADMIN_CODE }}', DUO_MATERIAL_ID: d5f755ef-b881-4afa-b334-08acd915549e, DUO_MATERIAL_TITLE: 흑석고 어휘 }
+        run: |
+          set -euo pipefail
+          test -n "$ORUN_ADMIN_CODE" || { echo "::error::ORUN_ADMIN_CODE secret missing"; exit 1; }
+          brew install artemnovichkov/tap/hinge
+          brew install xcodegen || true
+          RT=$(xcrun simctl list runtimes -j | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).runtimes.filter(x=>x.isAvailable&&/^iOS 27\.[12]/.test(x.name)).pop();console.log(r.identifier)})')
+          UDID=$(xcrun simctl create "Duo shots" "iPhone Duo" "$RT")
+          xcrun simctl boot "$UDID"; xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+          APP=duo-build/Build/Products/Release-iphonesimulator/Paperly.app
+          xcrun simctl install "$UDID" "$APP"
+          # test runner (separate xcodegen project; attaches to the running app, never launches/terminates it)
+          (cd qa/ios-duo && xcodegen generate)
+          xcodebuild -project qa/ios-duo/DuoShots.xcodeproj -scheme DuoShots -configuration Debug -destination "id=$UDID" -derivedDataPath duo-runner CODE_SIGNING_ALLOWED=NO build-for-testing | tail -5
+          XCTESTRUN=$(ls duo-runner/Build/Products/*.xctestrun | head -1)
+          run_test() { xcodebuild test-without-building -xctestrun "$XCTESTRUN" -destination "id=$UDID" -only-testing "DuoShotsTests/DuoShotsTests/$1" 2>&1 | grep -E "Test Case|error:|failed|passed" | tail -6; }
+          fold() { hinge -d "$UDID" "$@"; }
+          launch() { xcrun simctl terminate "$UDID" com.paperly.study 2>/dev/null || true; xcrun simctl launch --terminate-running-process "$UDID" com.paperly.study >/dev/null; sleep 10; }
+          shot() { sleep 4; xcrun simctl io "$UDID" screenshot --display="$1" --mask=black "duo-shots/$2.png"; }
+          mkdir -p duo-shots
+          hinge -d "$UDID" orient portrait; fold open
+          launch; xcrun simctl terminate "$UDID" com.paperly.study || true          # creates the data container
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.paperly.study data)
+          node scripts/duo-seed.mjs "$CONTAINER" session "$ORUN_ADMIN_CODE"
+          launch
+          run_test testALibrary
+          shot 3 inner-library
+          fold close; shot 1 outer-library
+          fold open; sleep 2
+          run_test testBDownloadAndOpen
+          shot 3 inner-viewer-plain
+          xcrun simctl terminate "$UDID" com.paperly.study || true; sleep 2
+          node scripts/duo-seed.mjs "$CONTAINER" ink "$DUO_MATERIAL_ID"
+          launch
+          run_test testCOpenViewer
+          shot 3 inner-viewer
+          fold close; shot 1 outer-viewer
+          fold open; hinge -d "$UDID" orient landscape-left; sleep 3; shot 3 inner-viewer-upright || true
+          for f in duo-shots/*.png; do sips -g pixelWidth -g pixelHeight -g hasAlpha "$f"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-duo-screenshots
+          path: duo-shots/*.png
+          if-no-files-found: warn
+          retention-days: 14
