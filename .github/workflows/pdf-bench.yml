@@ -1,0 +1,41 @@
+name: pdf-bench
+on:
+  workflow_dispatch:
+    inputs:
+      url: { description: 'signed PDF URL (short-lived)', required: true }
+      pages: { description: 'page indexes', default: '1 2 3 10' }
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ghostscript qpdf mupdf-tools poppler-utils python3-pip >/dev/null && pip3 install -q pypdfium2 pillow
+      - name: download
+        run: curl -sSL -o in.pdf "${{ inputs.url }}" && ls -la in.pdf && python3 scripts/pdf-bench/analyze.py in.pdf
+      - name: engines on original
+        run: python3 scripts/pdf-bench/bench.py in.pdf ${{ inputs.pages }}
+      - name: server-side simplification candidates
+        run: |
+          set -x
+          time gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dPDFSETTINGS=/printer -dCompatibilityLevel=1.4 -dNOTRANSPARENCY -sOutputFile=gs-flat.pdf in.pdf || true
+          time gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -sOutputFile=gs-ebook.pdf in.pdf || true
+          time mutool clean -gggg -z in.pdf mutool-clean.pdf || true
+          time qpdf --object-streams=generate --recompress-flate --compression-level=9 in.pdf qpdf.pdf || true
+          # image-PDF: rasterize at 200dpi JPEG (what a "pre-rendered" book would weigh)
+          time (mutool draw -r 200 -F png -o page-%d.png in.pdf 2,3,4 && python3 -c "
+          from PIL import Image; import glob,os
+          t=0
+          for p in sorted(glob.glob('page-*.png')):
+            im=Image.open(p).convert('RGB'); im.save(p[:-4]+'.jpg',quality=82); t+=os.path.getsize(p[:-4]+'.jpg')
+          print('avg jpg page KB @200dpi q82', t/3/1024)")
+          ls -la *.pdf
+      - name: engines on simplified
+        run: |
+          for f in gs-flat.pdf gs-ebook.pdf mutool-clean.pdf qpdf.pdf; do [ -s $f ] && echo "=== $f" && python3 scripts/pdf-bench/analyze.py $f && python3 scripts/pdf-bench/bench.py $f ${{ inputs.pages }} || true; done
+      - name: visual check of flattened output
+        run: |
+          mutool draw -r 72 -o orig-3.png in.pdf 3 && mutool draw -r 72 -o flat-3.png gs-flat.pdf 3 && python3 -c "
+          from PIL import Image, ImageChops; a=Image.open('orig-3.png').convert('RGB'); b=Image.open('flat-3.png').convert('RGB'); d=ImageChops.difference(a,b); print('bbox diff', d.getbbox(), 'mean', sum(d.convert('L').getdata())/ (d.width*d.height))" || true
+      - uses: actions/upload-artifact@v4
+        with: { name: pdf-bench-images, path: '*.png', retention-days: 2 }
