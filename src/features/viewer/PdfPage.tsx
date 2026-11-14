@@ -8,6 +8,7 @@ import type { PaperTemplate } from '@/data/types';
 import { RenderPriority, type RenderLease } from './renderScheduler';
 import { createPdfWork, readingPixels, previewPixels, detailPixels } from './pdfWork';
 import { createPreparationReporter, createImageLoadReporter } from './pdfDiagnostics';
+import { halfTile, noteTileTiming, tileIsSlow, tileImageStyle } from './tileProgress';
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
@@ -107,7 +108,7 @@ export function prefetchPage(uri: string | null, index: number, displayWidth: nu
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
 }
 export type { PageTile } from './pdfTileGeometry';
-type TileImage = { page: string; token: object; src: string; t: PageTile };
+type TileImage = { page: string; token: object; src: string; t: PageTile; px: { w: number; h: number } };
 /** Loaded tile stays underneath its replacement, including throughout motion. */
 export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; onFailure?: (key: string) => void }) {
   const allowed = useContext(PageQualityContext), page = uri + '|' + index;
@@ -121,28 +122,34 @@ export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri:
   const rr = PdfRenderer.hasRenderRegion() ? PdfRenderer.renderRegion : undefined;
   useEffect(() => {
     if (!tile || !rr || !allowed) return;
-    let alive = true; let lease: RenderLease | undefined;
+    let alive = true; const leases: RenderLease[] = [];
     const failed = () => { if (alive && identity.current.token === token) failureRef.current?.(pageTileKey(tile)); };
+    const present = (src: string, t: PageTile) => {
+      if (!alive || identity.current.token !== token) return;
+      // A same-session cache hit is already decoded. A prior A session's same URI is not:
+      // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
+      const decoded = shownRef.current;
+      if (decoded?.token === token && decoded.src === src) setPending(null);
+      else setPending({ page, token, src, t: tile, px: { w: t.w, h: t.h } });
+    };
     void (async () => {
       // Visible reads remain urgent. Speculative reading neighbours never delay a visible tile.
       await work.reading.whenIdle(RenderPriority.visible); if (!alive) return;
-      lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(tile), RenderPriority.tile,
-        () => rr(uri, index, tile.pxW, tile.x, tile.y, tile.w, tile.h));
-      const src = await lease.promise;
+      const render = async (t: PageTile) => {
+        const lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(t), RenderPriority.tile, () => rr(uri, index, t.pxW, t.x, t.y, t.w, t.h));
+        leases.push(lease); const started = Date.now(); const src = await lease.promise; noteTileTiming(uri, Date.now() - started); return src;
+      };
+      if (tileIsSlow(uri)) { const quick = await render(halfTile(tile)); if (!alive) return; if (quick) present(quick, halfTile(tile)); }
+      const src = await render(tile);
       if (!src) { failed(); return; }
-      if (alive && identity.current.token === token) {
-        // A same-session cache hit is already decoded. A prior A session's same URI is not:
-        // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
-        const decoded = shownRef.current;
-        if (decoded?.token === token && decoded.src === src) setPending(null);
-        else setPending({ page, token, src, t: tile });
-      }
+      present(src, tile);
     })().catch(failed);
-    return () => { alive = false; lease?.release(); };
+    return () => { alive = false; for (const l of leases) l.release(); };
   }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token]);
   const currentShown = shown?.token === token ? shown : null;
   const images = [currentShown, pending].filter((im, i) => im && im.token === token && (i === 0 || im.src !== currentShown?.src)) as TileImage[];
-  return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', left: t.nx * width, top: t.ny * height, width: t.nw * width, height: t.nh * height, opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
+  const dpr = PixelRatio.get();
+  return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', ...tileImageStyle(t, im.px, width, height, dpr), opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
     onLoad={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; shownRef.current = im; setShown(im); setPending(null); }}
     onError={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; setPending(null); failureRef.current?.(pageTileKey(im.t)); }} />; })}</>;
 }
