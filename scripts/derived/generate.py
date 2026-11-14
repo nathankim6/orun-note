@@ -10,8 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = 1
-WIDTHS = [1200, 2400]
-JPEG_Q = {1200: 82, 2400: 80}
+WIDTHS = [1200, 2000]
+JPEG_Q = {1200: 80, 2000: 76}  # ~250 KB + ~380 KB per page: a 132-page book is ~80 MB
 
 def cfg():
     src = (ROOT / 'src/lib/config.ts').read_text()
@@ -91,6 +91,12 @@ def render_page(args):
     page.close(); pdf.close()
     return index, [round(w_pt, 2), round(h_pt, 2)], files, round(t1 - t0, 3), len(ws)
 
+def engine_name():
+    try:
+        from importlib.metadata import version
+        return f'pypdfium2 {version("pypdfium2")} (pdfium)'
+    except Exception: return 'pypdfium2'
+
 # ---------- pipeline ----------
 def process(material, force, dry, workers):
     import pypdfium2 as pdfium
@@ -110,7 +116,7 @@ def process(material, force, dry, workers):
         files = {}; sizes = []
         for idx, size, fl, _, _ in results: sizes.append(size); files.update(fl)
         total = sum(files.values())
-        manifest = {'version': VERSION, 'materialId': mid, 'pages': n, 'widths': WIDTHS, 'words': True, 'sizes': sizes, 'bytes': total, 'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'engine': f'pdfium {pdfium.raw.FPDF_GetVersion() if hasattr(pdfium.raw, "FPDF_GetVersion") else ""} pypdfium2 {pdfium.V_PYPDFIUM2}'.strip()}
+        manifest = {'version': VERSION, 'materialId': mid, 'pages': n, 'widths': WIDTHS, 'words': True, 'sizes': sizes, 'bytes': total, 'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'engine': engine_name()}
         Path(outdir, 'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
         print(f'{mid}: {n} pages rendered in {render_s:.0f}s, {total/1048576:.1f} MB total ({total/n/1024:.0f} KB/page)', flush=True)
         if dry: return

@@ -352,7 +352,7 @@ Deno.serve(async (req) => {
       case "materials.derivedUploadUrl": {
         if (who.role !== "admin") return fail("권한이 없습니다", 403);
         const id = String(body.materialId ?? ""); if (!/^[0-9a-f-]{36}$/.test(id)) return fail("materialId");
-        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
+        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2000|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
         const uploads: { path: string; url: string; token: string }[] = [];
         for (const name of files) {
           const path = `derived/${id}/v1/${name}`;
@@ -372,7 +372,7 @@ Deno.serve(async (req) => {
       case "materials.derivedUrls": {
         const id = String(body.materialId ?? "");
         if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
-        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
+        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2000|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
         if (!files.length) return json({ ok: true, urls: [] });
         const paths = files.map((n: string) => `derived/${id}/v1/${n}`);
         const { data, error } = await supa.storage.from(BUCKET).createSignedUrls(paths, 900); if (error || !data) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
