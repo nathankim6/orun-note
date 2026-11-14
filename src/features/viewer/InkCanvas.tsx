@@ -10,7 +10,6 @@ import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
 import { PencilStroke } from './PencilInk';
-import { toolCard } from './toolCardState';
 import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
 import { useTheme } from '@/theme';
@@ -166,7 +165,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   const H = useRef<any>({});
   H.current = {
     down: (x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => {
-      if (!enabledRef.current || toolCard.open) { rejected.current = true; activeId.current = null; return; }
+      if (!enabledRef.current) { rejected.current = true; activeId.current = null; return; }
       rejected.current = false; activeId.current = 1; activeType.current = pt; pressureRef.current = pr > 0 ? pr : undefined; tiltRef.current = tl >= 0 ? tl : undefined;
       const pe: PseudoEvt = { x, y, absoluteX: ax, absoluteY: ay, pointerType: pt, stylusData: pressureRef.current ? { pressure: pressureRef.current, tilt: tiltRef.current } : undefined }; lastPe.current = pe; beginAt(pe);
     },
