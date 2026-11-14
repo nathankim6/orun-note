@@ -1,3 +1,4 @@
+import { rotatedSliderX } from './stylusDialGeometry';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Pressable, Text, ScrollView, StyleSheet, Image, useWindowDimensions } from 'react-native';
 import { Gesture, GestureDetector, ScrollView as GHScrollView } from 'react-native-gesture-handler';
@@ -29,17 +30,27 @@ const HL_PALETTE = ['#FACC15', '#FDE047', '#FB923C', '#F87171', '#F472B6', '#C08
  * Drag-or-tap slider (replaces the native slider): works with a finger, Apple Pencil, S Pen and mouse, inside the
  * horizontally scrolling option bar, and keeps tracking for the whole drag (the old one only reacted to taps).
  */
-export function DragSlider({ value, min, max, step = 0, onChange, height = 32, width, fill = '#2F6FED', thumb = '#2F6FED', track }: { value: number; min: number; max: number; step?: number; onChange: (v: number) => void; height?: number; width?: number; fill?: string | null; thumb?: string; track?: React.ReactNode }) {
+export function DragSlider({ value, min, max, step = 0, onChange, height = 32, width, fill = '#2F6FED', thumb = '#2F6FED', track, rotation = 0 }: { value: number; min: number; max: number; step?: number; onChange: (v: number) => void; height?: number; width?: number; fill?: string | null; thumb?: string; track?: React.ReactNode; rotation?: number }) {
   const [w, setW] = useState(0); const wRef = useRef(0); const cb = useRef(onChange); cb.current = onChange; const last = useRef<number | null>(null);
+  const sliderHost = useRef<React.ElementRef<typeof View>>(null);
+  const center = useRef<{x:number;y:number}|null>(null), pending = useRef<{x:number;y:number}|null>(null), capture = useRef(0);
   const PAD = 11;
   const toVal = (x: number) => { const W = Math.max(1, wRef.current - PAD * 2); let v = min + Math.min(1, Math.max(0, (x - PAD) / W)) * (max - min); if (step) v = Math.round(v / step) * step; return Math.min(max, Math.max(min, v)); };
   const emit = (x: number) => { const v = toVal(x); if (v !== last.current) { last.current = v; cb.current(v); } };
+  const projected = () => { const p = pending.current, c = center.current; if (p && c) emit(rotatedSliderX(p.x, p.y, c.x, c.y, wRef.current, rotation)); };
+  const begin = (e: {x:number;absoluteX:number;absoluteY:number}) => {
+    last.current = null;
+    if (!rotation) { emit(e.x); return; }
+    const id = ++capture.current; center.current = null; pending.current = {x:e.absoluteX,y:e.absoluteY};
+    sliderHost.current?.measureInWindow((x,y,width,height) => { if(id !== capture.current) return; center.current = {x:x+width/2,y:y+height/2}; projected(); });
+  };
+  const update = (e: {x:number;absoluteX:number;absoluteY:number}) => { if(!rotation) { emit(e.x); return; } pending.current={x:e.absoluteX,y:e.absoluteY}; projected(); };
   const g = useMemo(() => Gesture.Pan().minDistance(0).shouldCancelWhenOutside(false).hitSlop({ top: 10, bottom: 10, left: 6, right: 6 }).runOnJS(true)
-    .onBegin((e) => { last.current = null; emit(e.x); }).onUpdate((e) => emit(e.x)).onFinalize(() => { last.current = null; }), [min, max, step]);
+    .onBegin(begin).onUpdate(update).onFinalize(() => { last.current = null; }), [min, max, step, rotation]);
   const frac = max > min ? (Math.min(max, Math.max(min, value)) - min) / (max - min) : 0; const x = PAD + frac * Math.max(0, w - PAD * 2);
   return (
     <GestureDetector gesture={g}>
-      <View accessibilityRole="adjustable" accessibilityValue={{ min, max, now: value }} onLayout={(e) => { wRef.current = e.nativeEvent.layout.width; setW(e.nativeEvent.layout.width); }} style={{ height, justifyContent: 'center', width, flex: width ? undefined : 1 }} collapsable={false}>
+      <View ref={sliderHost} accessibilityRole="adjustable" accessibilityValue={{ min, max, now: value }} onLayout={(e) => { wRef.current = e.nativeEvent.layout.width; setW(e.nativeEvent.layout.width); }} style={{ height, justifyContent: 'center', width, flex: width ? undefined : 1 }} collapsable={false}>
         {track ?? <View style={{ position: 'absolute', left: PAD, right: PAD, height: 6, borderRadius: 3, backgroundColor: 'rgba(0,0,0,0.12)' }} />}
         {fill ? <View style={{ position: 'absolute', left: PAD, width: Math.max(0, x - PAD), height: 6, borderRadius: 3, backgroundColor: fill }} /> : null}
         <View pointerEvents="none" style={{ position: 'absolute', left: x - 11, width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 3, borderColor: thumb, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 }} />

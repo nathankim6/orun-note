@@ -2,7 +2,7 @@
 
 The viewer subscribes to the local `StylusShortcut` Expo module only while focused. Android S Pen barrel-button events (hover/contact), supported Apple Pencil double taps, and Apple Pencil Pro squeeze-end events open a non-modal quick palette. Unsupported pencils and web can use the toolbar's **펜 다이얼** button. OS-disabled Pencil gestures/system shortcuts remain respected; a native bridge does not imply every pen supports the shortcut.
 
-The palette reuses the toolbar's `ToolArt`. The latest requested design is a small semicircle with larger, thicker-looking tool artwork, a continuous width slider, and the user's representative colors (`viewer.favoriteColors`, unchanged order). Artwork proportions never change stroke width. Tool/color/width changes use the existing `onCfg` path and its per-tool persistence.
+The palette reuses the toolbar's `ToolArt`. The latest requested design is a compact translucent semicircle rotated as ONE whole -38 degrees toward upper-left, with enlarged thick tool artwork retaining its original radial fan, NO logo/footer, a continuous width slider WITHOUT a visible number, and the user's representative colors (`viewer.favoriteColors`, unchanged order). Artwork proportions never change stroke width. Tool/color/width changes use the existing `onCfg` path and its per-tool persistence.
 
 ## Input invariants
 
@@ -22,3 +22,9 @@ Before claiming hardware validation, test on Galaxy Tab with S Pen and an iPad w
 2. Pencil double tap / Pro squeeze with enabled system preference: opens once; disabled preference does not trigger it.
 3. Tool, slider and representative color selection; first outside pen down both closes and writes, fingers still never ink.
 4. Rotation, split view, app background/foreground, viewer exit, simultaneous palm contact, undo after cancelled erasing.
+
+## Glass implementation
+
+Expo BlurView uses a sibling BlurTargetView on Android, so the target never includes the palette itself. Android API31+ uses native Dimezis blur; older Android uses the supported translucent fallback to avoid expensive software blur. iOS uses ultra-thin material and web uses backdrop-filter. Shared directional gradients, a hairline reflection and a soft shadow retain the visual direction across platforms. Physical-device appearance/performance remains unverified.
+
+The palette position is clamped using its rotated bounding box. The slider projects absolute pointer coordinates back onto its rotated local axis; simply subtracting the screen-space left edge is not sufficient. The full-range diagonal drag was verified in the browser.

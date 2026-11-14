@@ -1,3 +1,4 @@
+import { BlurTargetView } from 'expo-blur';
 import { StylusDial } from '@/features/viewer/StylusDial';
 import { addStylusShortcutListener } from '../../modules/stylus-shortcut';
 import { cancelInkForStylusShortcut, onInkContact } from '@/features/viewer/stylusShortcutState';
@@ -72,6 +73,7 @@ export default function Viewer() {
   const [leftTab, setLeftTabState] = useState<LeftTab | null>(() => (isTablet && (useSettingsStore.getState().viewer.pagesPanelOpen ?? true) ? 'pages' : null));
   const setLeftTab = useCallback((t: LeftTab | null) => { setLeftTabState(t); if (isTablet && useSettingsStore.getState().hydrated) useSettingsStore.getState().setViewer({ pagesPanelOpen: !!t }); }, [isTablet]); const [sheet, setSheet] = useState<null | 'settings' | 'versions' | 'cycle' | 'more' | 'tabs' | 'info' | 'goto'>(null); const [hist, setHist] = useState({ canUndo: false, canRedo: false });
   const viewerRoot = useRef<React.ElementRef<typeof View>>(null);
+  const dialBlurTarget = useRef<React.ElementRef<typeof View>>(null);
   const [dialAnchor, setDialAnchor] = useState<{ x: number; y: number } | null>(null);
   const shortcutAllowed = viewerActive && !!doc && !!uri && !missing && !videosOpen && !sheet && !lookup && !(leftTab && !isTablet);
   const shortcutState = useRef({ allowed: shortcutAllowed, width: winW, height: winH });
@@ -187,7 +189,8 @@ export default function Viewer() {
 
   return (
     <DerivedPagesContext.Provider value={derivedInfo}>
-    <View ref={viewerRoot} collapsable={false} style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE', paddingTop: insets.top }}>
+    <View ref={viewerRoot} collapsable={false} style={{ flex: 1, backgroundColor: dark ? '#0F1012' : '#E9E9EE' }}>
+    <BlurTargetView ref={dialBlurTarget} style={{ flex: 1, paddingTop: insets.top }}>
       {/* The toolbar floats above the page so opening a tool's option row overlays the page instead of pushing it down. */}
       {!fullscreen && <View style={{ height: toolbarH }} />}
       {tabsH > 0 && (
@@ -241,7 +244,8 @@ export default function Viewer() {
       </View>
 
       {!isTablet && leftTab && <Sheet visible onClose={() => setLeftTab(null)} height="80%"><View style={{ height: winH * 0.7, marginHorizontal: -16 }}><LeftPanel tab={leftTab} setTab={setLeftTab} width={winW} onClose={() => setLeftTab(null)} doc={doc} uri={uri} pageIndex={pageIndex} onGoto={(i) => { goto(i); setLeftTab(null); }} onToggleBookmark={(i) => store.toggleBookmark(doc.id, i)} cycle={cycle} /></View></Sheet>}
-      {dialAnchor && <StylusDial anchor={dialAnchor} cfg={cfg} onCfg={onCfg} favorites={prefs.favoriteColors} onClose={() => setDialAnchor(null)} />}
+    </BlurTargetView>
+      {dialAnchor && <StylusDial blurTarget={dialBlurTarget} anchor={dialAnchor} cfg={cfg} onCfg={onCfg} favorites={prefs.favoriteColors} onClose={() => setDialAnchor(null)} />}
       <SettingsSheet visible={sheet === 'settings'} onClose={() => setSheet(null)} layout={layout} setLayout={(l) => { setLayout(l); settings.setViewer({ defaultLayoutMode: l }); }} />
       <VersionSheet visible={sheet === 'versions'} onClose={() => setSheet(null)} pageIndex={pageIndex} versions={pageInk?.versions ?? []} onRestore={(id) => { ink.restore(inkKey(doc.id, cycle, String(pageIndex)), id); setSheet(null); toast('복원 완료'); }} onSnapshot={() => { ink.snapshot(inkKey(doc.id, cycle, String(pageIndex)), '수동 저장'); toast('현재 필기를 버전으로 저장했어요'); }} />
       <CycleSheet visible={sheet === 'cycle'} onClose={() => setSheet(null)} cycle={cycle} maxCycle={doc.maxCycle} onSwitch={(c) => store.switchCycle(doc.id, c)} onNew={() => { const c = store.startNewCycle(doc.id); toast(`${c}회독을 시작했어요`); }} onResetInk={(scope) => { if (scope === 'all') ink.clearPackage(doc.id + ':'); else ink.clearPackage(`${doc.id}:${cycle}:`); toast('필기가 초기화되었습니다'); }} />
