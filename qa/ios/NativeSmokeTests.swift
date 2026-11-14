@@ -7,7 +7,7 @@ final class NativeSmokeTests: XCTestCase {
   override func record(_ issue: XCTIssue) {
     defer { super.record(issue) }
     let descriptions = String(issue.compactDescription.prefix(16384)) + "\n" + String((issue.detailedDescription ?? "").prefix(16384))
-    var row: [String: Any] = ["issueType": issue.type.rawValue, "isFailure": issue.isFailure, "associatedErrorPresent": issue.associatedError != nil, "reason": LaunchIssueDiagnostics.reason(descriptions), "errorChain": LaunchIssueDiagnostics.chain(issue.associatedError as NSError?, fallback: descriptions)]
+    var row: [String: Any] = ["issueType": issue.type.rawValue, "isFailure": issue.isFailure, "associatedErrorPresent": issue.associatedError != nil, "reason": LaunchIssueDiagnostics.reason(descriptions, duringLaunch: currentStep == "startup", isAssertion: issue.type == .assertionFailure), "errorChain": LaunchIssueDiagnostics.chain(issue.associatedError as NSError?, fallback: descriptions)]
     if let line = issue.sourceCodeContext.location?.lineNumber, line > 0 && line <= 100000 { row["sourceLine"] = line }
     emit("ios_xctest_issue", row)
   }
@@ -15,8 +15,9 @@ final class NativeSmokeTests: XCTestCase {
     var row = data; row["event"] = event
     if let bytes = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]), let text = String(data: bytes, encoding: .utf8) { print("QA_JSON " + text); fflush(stdout) }
   }
-  func element(_ label: String) -> XCUIElement {
-    app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR label == %@", label, label)).firstMatch
+  func element(_ label: String, identifierOnly: Bool = false) -> XCUIElement {
+    if identifierOnly { return app.descendants(matching: .any).matching(identifier: label).firstMatch }
+    return app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR label == %@", label, label)).firstMatch
   }
   func fail(_ reason: String) {
     // Emit fixed enums before XCTFail can abort execution. No assertion text/labels are exported.
@@ -30,7 +31,7 @@ final class NativeSmokeTests: XCTestCase {
     captureTelemetry()
     if element("qa-js-error").exists || element("review-videos-boundary-error").exists { fail("js_error") }
   }
-  @discardableResult func wait(_ label: String, _ seconds: Double = 25, contains: Bool = false) -> XCUIElement {
+  @discardableResult func wait(_ label: String, _ seconds: Double = 25, contains: Bool = false, identifierOnly: Bool = false) -> XCUIElement {
     let end = Date().addingTimeInterval(seconds)
     repeat {
       healthy()
@@ -49,14 +50,16 @@ final class NativeSmokeTests: XCTestCase {
           if flagCycle == cycleNumber && playerPhase { return unavailable }
         } else { fail("network_or_player_unavailable"); return unavailable }
       }
-      let target = contains ? app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch : element(label)
+      let target = contains ? app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch : element(label, identifierOnly: identifierOnly)
       if target.exists { return target }
       Thread.sleep(forTimeInterval: 0.25)
     } while Date() < end
     fail(label.hasPrefix("qa-ready") || label.hasPrefix("qa-state-playing") || label.hasPrefix("qa-progressing") ? "network_or_player_timeout" : "ui_timeout")
-    return element(label)
+    return element(label, identifierOnly: identifierOnly)
   }
   func tap(_ label: String) { let target = wait(label); if !target.isHittable { fail("not_hittable"); return }; target.tap() }
+  // Only the center control testID, never the identically labelled full-screen touch layer.
+  func tapID(_ id: String) { let target = wait(id, identifierOnly: true); if !target.isHittable { fail("not_hittable"); return }; target.tap() }
   func captureTelemetry() {
     guard app.state == .runningForeground else { return }
     let telemetry = element("qa-telemetry")
@@ -99,15 +102,15 @@ final class NativeSmokeTests: XCTestCase {
           continue
         }
         playback: do {
-          if element("컨트롤 표시").exists && !element("일시정지").exists { tap("컨트롤 표시") }
-          if element("일시정지").exists { currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
+          if element("컨트롤 표시").exists && !element("review-video-pause", identifierOnly: true).exists { tap("컨트롤 표시") }
+          if element("review-video-pause", identifierOnly: true).exists { currentStep = "pause"; tapID("review-video-pause"); wait("qa-state-paused-\(cycle)", 20, contains: true) }
           if limitedCycles.contains(cycle) { break playback }
-          currentStep = "play"; tap("재생"); wait("qa-state-playing-\(cycle)", 45, contains: true)
+          currentStep = "play"; tapID("review-video-play"); wait("qa-state-playing-\(cycle)", 45, contains: true)
           if limitedCycles.contains(cycle) { break playback }
           currentStep = "wait_progress"; wait("qa-progressing-\(cycle)", 60, contains: true)
           if limitedCycles.contains(cycle) { break playback }
-          if !element("일시정지").exists { tap("컨트롤 표시") }
-          currentStep = "pause"; tap("일시정지"); wait("qa-state-paused-\(cycle)", 20, contains: true)
+          if !element("review-video-pause", identifierOnly: true).exists { tap("컨트롤 표시") }
+          currentStep = "pause"; tapID("review-video-pause"); wait("qa-state-paused-\(cycle)", 20, contains: true)
         }
         currentStep = "player_close"; tap("review-video-player-close"); wait("QA Video 1 재생")
       }

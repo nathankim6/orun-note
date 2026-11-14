@@ -414,7 +414,7 @@ test('QA content-clock marker requires real finite progress and emits once per c
 test('iOS retains progression gate; Android keeps it unless the provider refused the embed (environment-limited)', () => {
   const android=fs.readFileSync('scripts/native-android-smoke.mjs','utf8'),ios=fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8');
   for(const [source,play,progress,pause] of [
-    [ios,'currentStep = "play"; tap("재생");','wait("qa-progressing-\\(cycle)", 60, contains: true)','currentStep = "pause"; tap("일시정지");'],
+    [ios,'currentStep = "play"; tapID("review-video-play");','wait("qa-progressing-\\(cycle)", 60, contains: true)','currentStep = "pause"; tapID("review-video-pause");'],
   ]) {const p=source.indexOf(play),g=source.indexOf(progress,p),end=source.indexOf(pause,p);assert(p>=0&&g>p&&end>g);assert(source.includes('qa-progressing'));}
   // Android keeps the real play/progress/pause gate when the provider lets the embed play, and only skips it for a
   // provider refusal (150/101/100/5) recorded as player_environment_limited.

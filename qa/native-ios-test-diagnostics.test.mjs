@@ -75,3 +75,11 @@ test('error chain is bounded, deduplicated and revalidated at public sanitizer b
   assert.deepEqual(extractErrorChain('Error Domain=NSPOSIXErrorDomain Code=153 Error Domain=NSPOSIXErrorDomain Code=153'), [{ domain: 'NSPOSIXErrorDomain', code: 153 }]);
   assert(!('errorChain' in sanitizeIosDriverStatus({ errorChain: [{ domain: 'PRIVATE', code: 4 }] })));
 });
+
+test('harmless ld warnings do not override a later XCTest assertion failure', () => {
+  const warning = "ld: warning: ignoring duplicate libraries: '-lc++'";
+  assert.equal(classifyReason(warning), 'unknown');
+  assert.equal(classifyReason(warning + "\nTest Case '-[NativeSmokeTests testNativeSmoke]' failed (53.0 seconds)."), 'assertion_failure');
+  assert.equal(classifyReason('ld: warning: framework not found OptionalFramework\n** BUILD SUCCEEDED **'), 'unknown');
+  for (const error of ['ld: framework not found RequiredFramework', 'ld: library not found for -lMissing', 'ld: error: undefined symbol', 'Undefined symbols for architecture arm64:', 'clang: error: linker command failed with exit code 1']) assert.equal(classifyReason(warning + '\n' + error), 'link_failure');
+});

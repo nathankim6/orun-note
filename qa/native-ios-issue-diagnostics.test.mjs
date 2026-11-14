@@ -36,3 +36,20 @@ test('failure after output cap remains sticky and cannot be hidden by forged pas
  rows.push({event:'ios_xctest_issue',isFailure:true,reason:'unknown'},{event:'suite_result',platform:'ios',result:'pass'});
  assert.equal(sanitize(rows).status,1);
 });
+
+test('playback assertion is retained as assertion_failure, never launch_timeout',()=>{
+ const result=sanitize([{event:'ios_launch_checkpoint',stage:'after_launch'},{event:'ios_xctest_issue',issueType:0,sourceLine:26,isFailure:true,reason:'assertion_failure',description:canary},{event:'suite_result',platform:'ios',result:'fail',reason:'network_or_player_timeout'}]);
+ assert.equal(result.status,1);assert.equal(result.rows.find(r=>r.event==='ios_xctest_issue').reason,'assertion_failure');assert(!JSON.stringify(result).includes(canary));
+ const swift=fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8');
+ assert(swift.includes('duringLaunch: currentStep == "startup", isAssertion: issue.type == .assertionFailure'));
+});
+
+test('iOS playback targets only unique center-control identifiers without changing waits',()=>{
+ const swift=fs.readFileSync('qa/ios/NativeSmokeTests.swift','utf8'),view=fs.readFileSync('src/features/viewer/ReviewVideos.tsx','utf8');
+ assert(swift.includes('app.descendants(matching: .any).matching(identifier: label).firstMatch'));
+ assert(swift.includes('let target = wait(id, identifierOnly: true)'));
+ assert(swift.includes('currentStep = "play"; tapID("review-video-play"); wait("qa-state-playing-\\(cycle)", 45, contains: true)'));
+ assert(swift.includes('wait("qa-progressing-\\(cycle)", 60, contains: true)'));
+ assert.equal((view.match(/testID=\{st\.playing \? 'review-video-pause' : 'review-video-play'\}/g)||[]).length,1);
+ assert(!swift.includes('tap("재생")'));assert(!swift.includes('tap("일시정지")'));
+});
