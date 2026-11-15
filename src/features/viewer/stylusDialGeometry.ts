@@ -4,7 +4,7 @@ export type DialPoint = { x: number; y: number };
 export type DialBounds = { width: number; height: number; top?: number; bottom?: number; left?: number; right?: number };
 const finite = (n: number, fallback: number) => Number.isFinite(n) ? n : fallback;
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(Math.max(lo, hi), n));
-export const STYLUS_DIAL_ANGLE = -38;
+export const STYLUS_DIAL_ANGLE = -90;
 const angle = Math.abs(STYLUS_DIAL_ANGLE) * Math.PI / 180;
 const cs = Math.cos(angle), sn = Math.sin(angle);
 export function dialVisualBounds(p: { left: number; top: number; width: number; height: number }) {
