@@ -11,7 +11,7 @@ for (const width of [240, 320, 375, 768, 1366]) for (const height of [240, 375, 
 }
 const nan = placeStylusDial({x: NaN, y: Infinity}, {width: 375, height: 812}); assert(Object.values(nan).every(Number.isFinite));
 assert(Math.abs(dialVisualBounds(placeStylusDial({x:500,y:700},{width:1000,height:1000})).top + dialVisualBounds(placeStylusDial({x:500,y:700},{width:1000,height:1000})).height - 676) < 1e-6);
-assert(Math.abs(dialVisualBounds(placeStylusDial({x:500,y:30},{width:1000,height:1000})).top - 54) < 1e-6); assert.equal(STYLUS_DIAL_ANGLE,-90);
+assert(Math.abs(dialVisualBounds(placeStylusDial({x:500,y:30},{width:1000,height:1000})).top - 54) < 1e-6); assert.equal(STYLUS_DIAL_ANGLE,0);
 assert.equal(JSON.stringify(dialWidthRange('pen')), JSON.stringify({min:0.5,max:12,step:0.1}));
 assert.equal(dialWidthRange('pencil').step, 0.1);
 assert.equal(dialWidthRange('highlighter').min, 6); assert.equal(dialWidthRange('highlighter').max, 40);

@@ -26,7 +26,7 @@ const TOOLS: { kind: ToolArtKind; label: string; x: number; angle: number; outer
   { kind: 'highlighter', label: '형광펜', x: .60, angle: 12, outer: false },
   { kind: 'eraser', label: '지우개', x: .80, angle: 35, outer: true },
 ];
-/** A translucent, softly arched glass palette. The entire semicircle faces left; tool art retains its radial fan. */
+/** A translucent, softly arched glass palette. The semicircle faces up with its flat edge below; tool art retains its radial fan. */
 export function StylusDial({ cfg, onCfg, onClose, anchor, favorites, blurTarget }: StylusDialProps) {
   const { colors, dark } = useTheme();
   const content = useContentSize(), insets = useSafeAreaInsets();

@@ -2,7 +2,7 @@
 
 The viewer subscribes to the local `StylusShortcut` Expo module only while focused. Android S Pen barrel-button events (hover/contact), supported Apple Pencil double taps, and Apple Pencil Pro squeeze-end events open a non-modal quick palette. Unsupported pencils and web can use the toolbar's **펜 다이얼** button. OS-disabled Pencil gestures/system shortcuts remain respected; a native bridge does not imply every pen supports the shortcut.
 
-The palette reuses the toolbar's `ToolArt`. The latest requested design is a compact translucent semicircle rotated as ONE whole -90 degrees toward the left (rounded face left, flat edge right), with enlarged thick tool artwork retaining its original radial fan, NO logo/footer, a continuous width slider WITHOUT a visible number, and the user's representative colors (`viewer.favoriteColors`, unchanged order). Artwork proportions never change stroke width. Tool/color/width changes use the existing `onCfg` path and its per-tool persistence.
+The palette reuses the toolbar's `ToolArt`. The latest requested design is a compact translucent semicircle rotated as ONE whole 0 degrees (rounded face up, flat edge below), with enlarged thick tool artwork retaining its original radial fan, NO logo/footer, a continuous width slider WITHOUT a visible number, and the user's representative colors (`viewer.favoriteColors`, unchanged order). Artwork proportions never change stroke width. Tool/color/width changes use the existing `onCfg` path and its per-tool persistence.
 
 ## Input invariants
 
