@@ -6,3 +6,17 @@ for (const skippedName of ['android','ios']) {
   assert.throws(()=>validateNativeQa(ok,{...options,jobs}));
 }
 console.log('PASS: one-success/one-skipped platform diagnostic cannot release');
+// Explicitly acknowledged CI-only iOS playback failure (user-approved 2026-11-16).
+const {validateNativeQaAcknowledged,parseQaRun}=require('./verify-native-qa');
+assert.deepEqual(parseQaRun('123:ack-youtube-ci-timeout'),{id:'123',acknowledged:true});
+assert.deepEqual(parseQaRun('123'),{id:'123',acknowledged:false});
+assert.equal(parseQaRun('abc'),null);
+assert.equal(parseQaRun('123:other'),null);
+const ackRun={...ok,conclusion:'failure'};
+const ackJobs=options.jobs.map(job=>job.name==='ios'?{...job,conclusion:'failure'}:job);
+assert.equal(validateNativeQaAcknowledged(ackRun,{...options,jobs:ackJobs}).iosConclusion,'failure');
+assert.throws(()=>validateNativeQaAcknowledged(ackRun,{...options,jobs:options.jobs.map(job=>({...job,conclusion:'failure'}))}));
+assert.throws(()=>validateNativeQaAcknowledged({...ackRun,head_sha:'old'},{...options,jobs:ackJobs}));
+assert.throws(()=>validateNativeQaAcknowledged({...ackRun,event:'pull_request'},{...options,jobs:ackJobs}));
+assert.throws(()=>validateNativeQaAcknowledged({...ackRun,status:'in_progress'},{...options,jobs:ackJobs}));
+console.log('PASS: acknowledged bypass still requires exact commit, dispatch trigger, android success and a recorded iOS result');
