@@ -39,6 +39,7 @@ type Props = {
 };
 
 const M = 14, GAP = 16, MAX_Z = 5;
+const IS_IOS = Platform.OS === 'ios';
 type Layout = { boxes: PageBox[]; cw: number; ch: number; cells: number; cellOf: number[] };
 function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMode, startOdd: boolean): Layout {
   const boxes: PageBox[] = []; const cellOf: number[] = [];
@@ -131,6 +132,9 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   }, [active]);
   // Recompute only after motion settles; expensive detail work has its own native lane.
   useAnimatedReaction(() => Math.round(tx.value / 24) * 7919 + Math.round(ty.value / 24) * 31 + Math.round(z.value * 80), (k, prev) => { if (k !== prev) runOnJS(kickDetail)(); }, [kickDetail]);
+  /** True while the document is magnified. iOS needs a different page container then (see styles.pageZoomed). */
+  const [magnified, setMagnified] = useState(false);
+  useAnimatedReaction(() => z.value > 1.001, (on, prev) => { if (on !== prev) runOnJS(setMagnified)(on); }, []);
 
   // visible pages + current page, recomputed on the UI thread whenever the transform moves
   const boxes = L.boxes;
@@ -368,7 +372,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
       <View testID="document-viewport" ref={hostRef} style={{ width: W, height: H, overflow: 'hidden', backgroundColor: dark ? '#0F1012' : '#E3EAF4' }} collapsable={false}>
         <Animated.View style={[{ width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
-            <View key={i} style={[styles.page, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>
+            <View key={i} style={[styles.page, IS_IOS && magnified && styles.pageZoomed, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>
               {i >= a && i <= b ? <PageQualityContext.Provider value={active && detailReady && visiblePages.includes(i)}><PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /></PageQualityContext.Provider> : null}
             </View>
           ))}
@@ -406,6 +410,16 @@ function PageBubble({ current, total }: { current: number; total: number }) {
 
 const styles = StyleSheet.create({
   page: { position: 'absolute', backgroundColor: '#fff', overflow: 'hidden', borderRadius: 3, shadowColor: '#1B2B4A', shadowOpacity: 0.16, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  /**
+   * A rounded clip (cornerRadius + masksToBounds, i.e. borderRadius + overflow:'hidden') makes iOS composite the page
+   * subtree through an offscreen buffer sized to the layer's own bounds — one page pixel per device pixel, not one per
+   * *screen* pixel. The zoom transform then magnifies that buffer, so the whole page (native bitmap, the sharp zoom tile
+   * and the ink layers alike) is resampled from a 1x page raster and stays visibly soft at any zoom, however sharp the
+   * tile inside it is. Android clips while replaying the draw list and never builds that buffer, which is why the same
+   * code looks sharp there. While the page is magnified the clip is therefore dropped (its corners are off screen then
+   * anyway); at 1x the rounded corners and the iOS shadow stay exactly as before.
+   */
+  pageZoomed: { borderRadius: 0, overflow: 'visible', shadowOpacity: 0, shadowRadius: 0, shadowOffset: { width: 0, height: 0 }, elevation: 0 },
   badgeWrap: { position: 'absolute' },
   badge: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: 12, backgroundColor: 'rgba(23,32,51,0.82)', elevation: 2 },
   badgeText: { color: '#fff', fontWeight: '700', fontSize: 16 },

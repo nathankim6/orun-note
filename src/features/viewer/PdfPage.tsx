@@ -127,8 +127,24 @@ export function prefetchPage(uri: string | null, index: number, displayWidth: nu
 }
 export type { PageTile } from './pdfTileGeometry';
 type TileImage = { page: string; token: object; src: string; t: PageTile; px: { w: number; h: number } };
+/** A tile that failed once must not leave a page on the soft base raster for the rest of the visit. */
+export const TILE_RETRY_MS = 1200, TILE_RETRIES = 3;
+/**
+ * Per-page zoom-tile failure clock: after a failed region the same tile is requested again (spaced, up to TILE_RETRIES)
+ * and only then does the page fall back for good. `attempt` is TileLayer's re-request trigger.
+ */
+function useTileFailure() {
+  const [failed, setFailed] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!failed || attempt >= TILE_RETRIES) return;
+    const timer = setTimeout(() => { setFailed(null); setAttempt(n => n + 1); }, TILE_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [failed, attempt]);
+  return { failed, attempt, fail: setFailed };
+}
 /** Loaded tile stays underneath its replacement, including throughout motion. */
-export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; onFailure?: (key: string) => void }) {
+export function TileLayer({ uri, index, tile, width, height, retry = 0, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; /** bumped to request the same region again after a failure */ retry?: number; onFailure?: (key: string) => void }) {
   const allowed = useContext(PageQualityContext), page = uri + '|' + index;
   const identity = useRef({ page, token: {} });
   if (identity.current.page !== page) identity.current = { page, token: {} };
@@ -163,7 +179,7 @@ export function TileLayer({ uri, index, tile, width, height, onFailure }: { uri:
       present(src, tile);
     })().catch(failed);
     return () => { alive = false; for (const l of leases) l.release(); };
-  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token]);
+  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token, retry]);
   const currentShown = shown?.token === token ? shown : null;
   const images = [currentShown, pending].filter((im, i) => im && im.token === token && (i === 0 || im.src !== currentShown?.src)) as TileImage[];
   const dpr = PixelRatio.get();
@@ -202,33 +218,35 @@ function RasterPdfPage(props: RasterProps) {
 /** Base page drawn by the native PdfPageView (in-memory bitmap at screen resolution); zoom tiles stay on top as before. */
 function NativePdfPage({ uri, index, width, height, renderScale = 1, tile, onFailure }: RasterProps & { uri: string; onFailure: () => void }) {
   const Surface = PdfPageSurface!; const page = uri + '|' + index;
-  const [ready, setReady] = useState<string | null>(null);
   const tileRequest = page + '|' + pageTileKey(tile);
-  const [failedTile, setFailedTile] = useState<string | null>(null);
+  const tileFailure = useTileFailure();
   const session = useRef<{ page: string; done?: () => void } | null>(null);
   if (session.current?.page !== page) { const s = surfaceLoads.begin(index); session.current = { page, done: s.ready('reading', nativePagePixels(width * renderScale, PixelRatio.get())) }; }
   const onPageReady = (e: { nativeEvent: PageReadyEvent }) => {
     if (e.nativeEvent.page !== index) return;
     if (!e.nativeEvent.ok) { onFailure(); return; }
     session.current?.done?.(); if (session.current) session.current.done = undefined;
-    setReady(page);
   };
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
     <Surface source={uri} index={index} pixelWidth={nativePagePixels(width * renderScale, PixelRatio.get())} style={{ width, height }} onPageReady={onPageReady} />
-    {ready === page && tile && PdfRenderer.hasRenderRegion() && failedTile !== tileRequest
-      ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}><TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(page + '|' + key)} /></View> : null}
+    {/* The sharp layer must not depend on the base bitmap: it is rendered by the same native module either way, and gating
+        it on a page-ready event used to leave the page permanently soft when that event was missed. */}
+    {tile && PdfRenderer.hasRenderRegion() && tileFailure.failed !== tileRequest
+      ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}><TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileFailure.attempt} onFailure={key => tileFailure.fail(page + '|' + key)} /></View> : null}
   </View>;
 }
 function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile }: RasterProps) {
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
   const tileRequest = uri + '|' + index + '|' + pageTileKey(tile);
-  const [failedTile, setFailedTile] = useState<string | null>(null);
-  const tileFirst = !!tile && PdfRenderer.hasRenderRegion() && failedTile !== tileRequest;
+  const tileFailure = useTileFailure();
+  const tileFirst = !!tile && PdfRenderer.hasRenderRegion() && tileFailure.failed !== tileRequest;
   // rs is cancelled here intentionally for the <=1200 reading image. Sharpness comes from the
   // actual viewport × zoom × DPR tile, not a capped full page stretched by the outer transform.
-  const { src, reading, detail, presented, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed && !tileFirst);
+  // A tile that failed is the exception: the page widens to the detail raster instead of staying on the
+  // small reading image, so a failed sharp layer can never leave the page visibly soft.
+  const { src, reading, detail, presented, err, onLoad } = usePageImage(uri, index, width * renderScale, allowed && (!tileFirst || tileFailure.failed === tileRequest));
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} onFailure={key => setFailedTile(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
+    {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileFailure.attempt} onFailure={key => tileFailure.fail(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
 export function clearImageCache() { work.reading.clear(); work.detail.clear(); PdfRenderer.clearPageBitmaps(); }
