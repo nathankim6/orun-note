@@ -34,3 +34,15 @@ const viewer=fs.readFileSync('app/viewer/[docId].tsx','utf8');assert(viewer.inde
 for (const degrees of [0,-38,38,-90]) { const a=degrees*Math.PI/180; for(const local of [0,11,73,135,146]) { const dx=local-73; const value=ctx.exports.rotatedSliderX(200+dx*Math.cos(a),300+dx*Math.sin(a),200,300,146,degrees);assert(Math.abs(value-local)<1e-8); } }
 assert(src.includes('rotation={STYLUS_DIAL_ANGLE}'), 'slider uses rotated pointer coordinates');
 console.log('PASS: screen-space slider projection matches local endpoints at all dial angles');
+
+// The palette itself is never a top-bar item: the pen tool button is its only on-screen trigger.
+const toolbar = fs.readFileSync('src/features/viewer/Toolbar.tsx', 'utf8');
+assert(!toolbar.includes('펜 다이얼') && !toolbar.includes('aperture-outline'), 'the palette must not be registered as a separate toolbar button');
+assert(toolbar.includes("toolBtn('pen', '펜', cfg.tool === 'pen', penPress"), 'the pen tool button summons the palette');
+assert(toolbar.includes('measureInWindow') && toolbar.includes('x: x + w / 2, y: y + h }'), 'the palette opens under the pen button it was summoned from');
+assert(toolbar.includes('{ slot: penSlot') && toolbar.includes('onLongPress: penLongPress'), 'the pen card stays reachable by long-pressing the pen button');
+assert(toolbar.includes('const summon = onStylusDial;') && toolbar.includes('if (readOnly || !summon) return false;'), 'read-only toolbars never summon the palette');
+assert(toolbar.includes("if (openPenPalette()) { if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); return; }") && toolbar.includes("pick('pen');"), 'pen press still selects the pen, and keeps the card path when no palette host exists');
+assert(viewer.includes('onStylusDial={(point) => openStylusDial(point)}'), 'the viewer receives the pen button position');
+assert(viewer.includes('{dialAnchor && <StylusDial'), 'the palette renders only after a summon');
+console.log('PASS: palette is summoned from the pen tool button only, never rendered as a top-bar item');

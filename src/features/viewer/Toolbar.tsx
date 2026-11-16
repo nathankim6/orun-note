@@ -62,7 +62,7 @@ const SHAPES: { k: ShapeKind; icon: any; label: string }[] = [{ k: 'line', icon:
 const RANGE: Record<string, { min: number; max: number }> = { pen: { min: 0.5, max: 12 }, pencil: { min: 0.5, max: 12 }, highlighter: { min: 6, max: 40 }, eraser: { min: 2, max: 40 }, vectorEraser: { min: 2, max: 40 }, shape: { min: 0.5, max: 12 }, text: { min: 8, max: 48 } };
 
 type Panel = null | 'pen' | 'highlighter' | 'color' | 'shape' | 'eraser' | 'text' | 'snap' | 'lasso';
-type Props = { onStylusDial?: () => void; cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; onVideos?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
+type Props = { /** summons the translucent pen palette; the pen tool button is its only on-screen caller */ onStylusDial?: (point?: { x?: number; y?: number }) => void; cfg: ToolConfig; onCfg: (p: Partial<ToolConfig>) => void; onCfgReplace?: (c: ToolConfig) => void; onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean; onClear: () => void; onClearAll?: () => void; onBack: () => void; onMore?: () => void; onInsertImage?: () => void; onSubDoc?: () => void; onVideos?: () => void; readOnly?: boolean; recentColors: string[]; zoomPad?: boolean; onZoomPad?: () => void; locked?: boolean; onLock?: () => void; textFont?: string; onTextFont?: (k: string) => void; /** bump to close the option bar (e.g. the page was touched) */ dismissKey?: number; onPanelChange?: (open: boolean) => void };
 
 /**
  * Main toolbar + a single compact option row right under it. Pen and highlighter are both top-level; tapping the
@@ -105,11 +105,33 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
   const Seg = ({ items, value, onChange }: { items: { k: string; label: string; icon?: any }[]; value: string; onChange: (k: string) => void }) => <View style={styles.seg}>{items.map((it) => <Pressable key={it.k} onPress={() => onChange(it.k)} style={[styles.segItem, value === it.k && { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } }]}>{it.icon && <MaterialCommunityIcons name={it.icon} size={14} color={value === it.k ? colors.primary : colors.textMuted} />}<Text style={{ fontSize: 12, fontWeight: '700', color: value === it.k ? colors.primary : colors.textMuted }}>{it.label}</Text></Pressable>)}</View>;
   const Footer = () => <Row gap={6} style={{ marginLeft: 'auto', paddingLeft: 10 }}><Pressable onPress={cancelPanel} style={styles.ghostBtn}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted }}>취소</Text></Pressable><Pressable onPress={applyPanel} style={[styles.ghostBtn, { backgroundColor: colors.primary }]}><Ionicons name="checkmark" size={14} color="#fff" /><Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>적용</Text></Pressable></Row>;
 
-  const toolBtn = (kind: ToolArtKind, label: string, active: boolean, onPress: () => void, color?: string) => (
-    <Pressable key={kind} accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress} hitSlop={{ top: 6, bottom: 0, left: 2, right: 2 }} style={styles.toolSlot}>
+  const toolBtn = (kind: ToolArtKind, label: string, active: boolean, onPress: () => void, color?: string, extra?: { slot?: React.RefObject<any>; onLongPress?: () => void; hint?: string }) => (
+    <Pressable key={kind} ref={extra?.slot} accessibilityLabel={label} accessibilityHint={extra?.hint} accessibilityState={{ selected: active }} onPress={onPress} onLongPress={extra?.onLongPress} delayLongPress={450} hitSlop={{ top: 6, bottom: 0, left: 2, right: 2 }} style={styles.toolSlot}>
       <View style={{ transform: [{ translateY: active ? 0 : 13 }] }}><ToolArt kind={kind} color={color} /></View>
     </Pressable>
   );
+  // The translucent semicircle pen palette is not an item of the top bar: pressing the pen tool button is the only
+  // on-screen way to summon it (a hardware pen button still opens it through the stylus shortcut). The palette covers
+  // the pen card, so a long press on the pen button keeps that card reachable.
+  const penSlot = useRef<any>(null);
+  const penHeld = useRef(false);
+  const openPenPalette = () => {
+    const summon = onStylusDial;
+    if (readOnly || !summon) return false;
+    const node = penSlot.current;
+    const open = (point?: { x: number; y: number }) => summon(point);
+    // Anchor the palette under the pen button it was summoned from, in window points (the viewer converts them):
+    // the button's bottom edge keeps the palette clear of the top bar.
+    if (node?.measureInWindow) node.measureInWindow((x: number, y: number, w: number, h: number) => open(Number.isFinite(x) && Number.isFinite(y) ? { x: x + w / 2, y: y + h } : undefined));
+    else open();
+    return true;
+  };
+  const penPress = () => {
+    if (penHeld.current) { penHeld.current = false; return; } // the long press already opened the pen card
+    if (openPenPalette()) { if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); return; }
+    pick('pen');
+  };
+  const penLongPress = () => { penHeld.current = true; if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); setPanel('pen'); };
   const penColor = cfg.tool === 'pen' ? cfg.color : viewer.toolPresets?.pen?.color ?? '#1C1C1E';
   const hlColor = cfg.tool === 'highlighter' ? cfg.color : viewer.toolPresets?.highlighter?.color ?? '#FACC15';
   const pencilColor = cfg.tool === 'pencil' ? cfg.color : viewer.toolPresets?.pencil?.color ?? '#1C1C1E';
@@ -166,12 +188,11 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
       <View style={styles.bar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.barContent}>
           <Pressable accessibilityLabel="뒤로가기" onPress={onBack} style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.55 }]}><Ionicons name="chevron-back" size={26} color="#007AFF" /><Image source={require('../../../assets/orun-mark.png')} style={{ width: 26, height: 26, borderRadius: 7 }} /></Pressable>
-          {onStylusDial && !readOnly && roundBtn('펜 다이얼', 'aperture-outline', onStylusDial)}
           {roundBtn('되돌리기', 'arrow-undo', onUndo, !canUndo)}
           {roundBtn('다시하기', 'arrow-redo', onRedo, !canRedo)}
           {!readOnly && <>
             <View style={styles.toolTray}>
-              {toolBtn('pen', '펜', cfg.tool === 'pen', () => pick('pen'), penColor)}
+              {toolBtn('pen', '펜', cfg.tool === 'pen', penPress, penColor, { slot: penSlot, onLongPress: penLongPress, hint: '길게 누르면 펜 설정 카드' })}
               {toolBtn('pencil', '연필', cfg.tool === 'pencil', () => pick('pencil'), pencilColor)}
               {toolBtn('highlighter', '형광펜', cfg.tool === 'highlighter', () => pick('highlighter'), hlColor)}
               {toolBtn('eraser', '지우개', isEraser, () => pick(cfg.tool === 'vectorEraser' ? 'vectorEraser' : 'eraser'))}
