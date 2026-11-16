@@ -1,12 +1,13 @@
 # Stylus quick dial
 
-The viewer subscribes to the local `StylusShortcut` Expo module only while focused. Android S Pen barrel-button events (hover/contact), supported Apple Pencil double taps, and Apple Pencil Pro squeeze-end events open a non-modal quick palette. Unsupported pencils and web can use the toolbar's **펜 다이얼** button. OS-disabled Pencil gestures/system shortcuts remain respected; a native bridge does not imply every pen supports the shortcut.
+The viewer subscribes to the local `StylusShortcut` Expo module only while focused. Android S Pen barrel-button events (hover/contact), supported Apple Pencil double taps, and Apple Pencil Pro squeeze-end events open a non-modal quick palette. Where the hardware button cannot fire (unsupported pencils, web, a finger-only iPhone), the viewer's **pen tool button** in the top bar summons the same palette; the palette is not an item of the top bar itself and, apart from the pen button and the hardware shortcut, nothing renders it. Pressing the pen button again closes it, and a long press on the pen button opens the full pen card that the palette would otherwise cover. OS-disabled Pencil gestures/system shortcuts remain respected; a native bridge does not imply every pen supports the shortcut.
 
 The palette reuses the toolbar's `ToolArt`. The latest requested design is a compact translucent semicircle rotated as ONE whole 0 degrees (rounded face up, flat edge below), with enlarged thick tool artwork retaining its original radial fan, NO logo/footer, a continuous width slider WITHOUT a visible number, and the user's representative colors (`viewer.favoriteColors`, unchanged order). Artwork proportions never change stroke width. Tool/color/width changes use the existing `onCfg` path and its per-tool persistence.
 
 ## Input invariants
 
 - Pen/Pencil writes and erases; fingers and palms remain navigation only.
+- The palette is not registered in the top bar. It opens from the pen tool button (or the hardware pen button) and is absent otherwise: no top-bar icon, no always-visible shape next to the logo.
 - A normal pen contact outside tool options dismisses options and begins that SAME stroke. It is not a sacrificial close-only contact.
 - S Pen button-held contact rejects ink on the UI thread, using per-contact Android `buttonState` from the RNGH patch. A button change without movement is included.
 - A shortcut cancels an unfinished stroke across mounted canvases. Cancelling an eraser restores the pre-gesture ink. Committed ink is not deleted.
