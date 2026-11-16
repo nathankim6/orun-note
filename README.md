@@ -26,3 +26,8 @@ npx expo prebuild         # ios/ android/ 생성 후 Xcode / Android Studio로 �
 빌드 (GitHub Actions)
 - `Android APK (Galaxy Tab sideload)`: push마다 서명된 APK 아티팩트 생성. 첫 실행 시 생성된 keystore 아티팩트를 보관해 `ANDROID_KEYSTORE_BASE64/PASSWORD/KEY_ALIAS/KEY_PASSWORD` 시크릿으로 넣으면 업데이트 설치가 가능.
 - `iOS build (iPad)`: `compile-check`는 서명 없이 컴파일 검증. `testflight` 잡은 수동 실행이며 README 상단의 시크릿이 필요.
+
+잠수함 패치 (expo-updates OTA)
+- JS·UI 수정만 스토어 재심사 없이 배포: `OTA JS patch (expo-updates)` 워크플로 실행 또는 `npx eas-cli@latest update --branch production --message "..."`.
+- 네이티브 코드·권한·아이콘 변경은 기존처럼 스토어 릴리스. 처음 한 번은 Expo 프로젝트 연결(`EXPO_PROJECT_ID` 변수, `EXPO_TOKEN` 시크릿, `eas channel:create production`)이 필요하고, 그 뒤에 빌드한 버전부터 적용된다.
+- 설정·동작·롤백: `docs/ota-updates.md`
