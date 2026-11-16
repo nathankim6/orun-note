@@ -17,6 +17,10 @@ const ackJobs=options.jobs.map(job=>job.name==='ios'?{...job,conclusion:'failure
 assert.equal(validateNativeQaAcknowledged(ackRun,{...options,jobs:ackJobs}).iosConclusion,'failure');
 assert.throws(()=>validateNativeQaAcknowledged(ackRun,{...options,jobs:options.jobs.map(job=>({...job,conclusion:'failure'}))}));
 assert.throws(()=>validateNativeQaAcknowledged({...ackRun,head_sha:'old'},{...options,jobs:ackJobs}));
+const allowed=['scripts/verify-native-qa.js','scripts/test-native-qa-gate.js'];
+assert.equal(validateNativeQaAcknowledged({...ackRun,head_sha:'old'},{...options,jobs:ackJobs,allowedFiles:allowed,compare:{status:'ahead',files:allowed.map(filename=>({filename}))}}).exactCommit,false);
+assert.throws(()=>validateNativeQaAcknowledged({...ackRun,head_sha:'old'},{...options,jobs:ackJobs,allowedFiles:allowed,compare:{status:'ahead',files:[{filename:'src/features/viewer/PdfPage.tsx'}]}}));
+assert.throws(()=>validateNativeQaAcknowledged({...ackRun,head_sha:'old'},{...options,jobs:ackJobs,allowedFiles:allowed,compare:{status:'diverged',files:[{filename:'scripts/verify-native-qa.js'}]}}));
 assert.throws(()=>validateNativeQaAcknowledged({...ackRun,event:'pull_request'},{...options,jobs:ackJobs}));
 assert.throws(()=>validateNativeQaAcknowledged({...ackRun,status:'in_progress'},{...options,jobs:ackJobs}));
 console.log('PASS: acknowledged bypass still requires exact commit, dispatch trigger, android success and a recorded iOS result');
