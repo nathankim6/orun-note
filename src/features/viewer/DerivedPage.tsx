@@ -1,7 +1,7 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { View, Image, PixelRatio } from 'react-native';
 import { PageQualityContext } from './pageQuality';
-import { useDerivedFile, requestZoomPage, zoomAvailable, zoomRecentlyFailed } from './derivedPages';
+import { useDerivedFile, requestZoomPage, zoomAvailable, zoomRecentlyFailed, noteZoomUse, zoomHabitual } from './derivedPages';
 import { pageImagePath, zoomImagePath, tierWidth, fullResImageStyle, zoomTierWanted, vectorTileWanted, tierIsEnough, ZOOM_WIDTH, type DerivedInfo } from './derivedPagesCore';
 import type { PageTile } from './pdfTileGeometry';
 
@@ -10,7 +10,9 @@ export type DerivedTierImage = { key: 'reading' | 'detail' | 'zoom'; uri: string
  * Which server rasters a page shows (pure, unit-tested). Lower tiers stay underneath a sharper one, so a tier that is
  * still decoding never leaves a hole and dropping the zoom image never flashes.
  *  - reading: always (the page itself)
- *  - detail:  once the page was settled and visible (sticky for this page)
+ *  - detail:  at once when the reading raster cannot cover the page box even un-magnified (tablets): the page is
+ *             sharp from the first frame instead of soft-then-sharp, and neighbours are decoded before the page turn.
+ *             Otherwise once the page was settled and visible (sticky for this page).
  *  - zoom:    while the magnified page needs more pixels than the detail raster has, and the file is on disk
  */
 export function derivedTiers(o: { reading: string; readingPx: number; detail: string | null; detailPx: number; detailOn: boolean; zoom: string | null; zoomOn: boolean }): DerivedTierImage[] {
@@ -30,8 +32,11 @@ export function wantsVectorTile(o: { neededPx: number; detailPx: number; zoomSta
   return o.zoomState === 'none' ? true : vectorTileWanted(o.neededPx, ZOOM_WIDTH);
 }
 
+/** The detail raster is the page's first image when the reading raster is too small for the un-magnified page box. */
+export const detailFirst = (basePx: number, readingPx: number) => basePx > 0 && !tierIsEnough(readingPx, basePx);
 type Props = {
   info: DerivedInfo; index: number; width: number; height: number; tile?: PageTile;
+  /** width of the page box in device pixels without magnification */ basePx?: number;
   /** renders the device-engine vector tile layer (PdfPage owns TileLayer; passed in to avoid an import cycle) */
   renderTile?: () => React.ReactNode;
 };
@@ -39,7 +44,7 @@ type Props = {
  * A textbook page shown from the server's pre-rendered images only (docs/derived-pages.md): reading → detail → zoom.
  * The device PDF engine is not involved unless the magnification exceeds every server raster.
  */
-export function DerivedPdfPage({ info, index, width, height, tile, renderTile }: Props) {
+export function DerivedPdfPage({ info, index, width, height, tile, basePx = 0, renderTile }: Props) {
   const allowed = useContext(PageQualityContext), dpr = PixelRatio.get();
   const reading = pageImagePath(info, index, 'reading')!, detail = pageImagePath(info, index, 'detail'), zoom = zoomImagePath(info, index);
   const readingPx = tierWidth(info, 'reading') ?? 1200, detailPx = tierWidth(info, 'detail') ?? readingPx;
@@ -47,20 +52,26 @@ export function DerivedPdfPage({ info, index, width, height, tile, renderTile }:
   const canZoom = zoomAvailable(info);
   const zoomFile = useDerivedFile(canZoom ? zoom : null, 0);
   // Sticky per page: a page that was settled once keeps its detail raster through later motion.
-  const [detailOn, setDetailOn] = useState(false);
-  useEffect(() => { if (allowed && !detailOn) setDetailOn(true); }, [allowed, detailOn]);
+  const [settled, setSettled] = useState(false);
+  useEffect(() => { if (allowed && !settled) setSettled(true); }, [allowed, settled]);
+  const detailOn = settled || detailFirst(basePx, readingPx);
   // Magnification is known from the settled viewport tile (pxW = whole page width in device px at this zoom).
   const neededPx = tile?.pxW ?? 0;
   const zoomWanted = canZoom && zoomTierWanted(neededPx, detailPx);
   // Keep the zoom raster through motion (tile is only recomputed when settled); drop it once it is no longer needed.
   const zoomOnRef = useRef(false);
   if (tile) zoomOnRef.current = zoomWanted; else if (!canZoom) zoomOnRef.current = false;
-  useEffect(() => { if (zoomWanted && allowed && zoomFile !== 'present') requestZoomPage(info, index); }, [zoomWanted, allowed, zoomFile, info, index]);
+  // A reader who magnified once is likely to do it again: from then on the zoom image of each page they settle on is
+  // fetched ahead, so the next magnification is sharp without waiting for the network.
+  useEffect(() => { if (zoomWanted) noteZoomUse(); }, [zoomWanted]);
+  useEffect(() => { if (allowed && zoomFile !== 'present' && (zoomWanted || (canZoom && zoomHabitual()))) requestZoomPage(info, index); }, [zoomWanted, allowed, zoomFile, canZoom, info, index]);
   const tiers = derivedTiers({ reading, readingPx, detail: detailFile === 'present' ? detail : null, detailPx, detailOn, zoom: zoomFile === 'present' ? zoom : null, zoomOn: zoomOnRef.current });
   const zoomState = !canZoom || (!!zoom && zoomFile !== 'present' && zoomRecentlyFailed(zoom)) ? 'none' : zoomFile === 'present' ? 'present' : 'coming';
   const vector = !!tile && !!renderTile && wantsVectorTile({ neededPx, detailPx, zoomState });
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} style={fullResImageStyle(t.px, width, height, dpr)} resizeMode="stretch" fadeDuration={0} />)}
+    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} // The reading raster keeps the plain layout (thumbnails and page strips decode it at their own small size); the
+      // sharper tiers are laid out at their pixel size so no source pixel is dropped under the zoom transform.
+      style={t.key === 'reading' ? { position: 'absolute', left: 0, top: 0, width, height } : fullResImageStyle(t.px, width, height, dpr)} resizeMode="stretch" fadeDuration={0} />)}
     {vector ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}>{renderTile!()}</View> : null}
   </View>;
 }

@@ -24,6 +24,7 @@ type Native = {
   /** Native page surface prefetch (synchronous enqueue). Missing on builds without PdfPageView. */
   warmPages?(uri: string, indices: number[], width: number): void;
   clearPageBitmaps?(): void;
+  takeMemoryWarnings?(): number;
 };
 export type PageReadyEvent = { ok: boolean; page: number; width?: number; ms?: number; cached?: boolean };
 export type PdfPageSurfaceProps = ViewProps & { source: string; index: number; pixelWidth: number; onPageReady?: (e: { nativeEvent: PageReadyEvent }) => void };
@@ -50,6 +51,8 @@ export const PdfRenderer = {
   hasPageView: () => surface !== null,
   warmPages: (uri: string, indices: number[], width: number) => { try { impl.warmPages?.(uri, indices, Math.round(width)); } catch { /* prefetch is optional */ } },
   clearPageBitmaps: () => { try { impl.clearPageBitmaps?.(); } catch { /* optional */ } },
+  /** iOS: memory warnings since the last call (0 elsewhere / on older binaries). */
+  takeMemoryWarnings: (): number => { try { const n = impl.takeMemoryWarnings?.(); return typeof n === 'number' && Number.isFinite(n) ? n : 0; } catch { return 0; } },
   /** Encrypts and stores a picked PDF inside app-private storage. Returns the stored (encrypted) URI. */
   importFile: (srcUri: string, id: string) => impl.importFile(srcUri, id),
   deleteFile: (uri: string) => impl.deleteFile(uri).catch(() => {}),

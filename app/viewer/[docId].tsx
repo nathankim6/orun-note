@@ -1,6 +1,7 @@
 import { BlurTargetView } from 'expo-blur';
 import { StylusDial } from '@/features/viewer/StylusDial';
 import { addStylusShortcutListener, takeStylusDiagnostics, stylusDiagnosticsSummary } from '../../modules/stylus-shortcut';
+import { PdfRenderer } from '../../modules/pdf-renderer';
 import { cancelInkForStylusShortcut, onInkContact } from '@/features/viewer/stylusShortcutState';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
@@ -40,7 +41,7 @@ import { SettingsSheet, VersionSheet, CycleSheet, GuideOverlay } from '@/feature
 import { resolveUri } from '@/lib/files';
 import { fmtBytes, fmtDate } from '@/utils/format';
 
-let stylusDiagnosticsSent = false;
+let stylusDiagnosticsSent = false; let memoryReports = 0;
 export default function Viewer() {
   const { docId: paramId } = useLocalSearchParams<{ docId: string }>();
   const router = useRouter(); const viewerActive = usePathname().startsWith('/viewer/'); const { colors, dark } = useTheme(); const insets = useSafeAreaInsets(); const { width: winW, height: winH } = useContentSize(); const { isTablet } = useLayout();
@@ -79,7 +80,7 @@ export default function Viewer() {
   const shortcutAllowed = viewerActive && !!doc && !!uri && !missing && !videosOpen && !sheet && !lookup && !(leftTab && !isTablet);
   const shortcutState = useRef({ allowed: shortcutAllowed, width: winW, height: winH });
   shortcutState.current = { allowed: shortcutAllowed, width: winW, height: winH };
-  const shortcutFocused = useRef(false);
+  const shortcutFocused = useRef(false); const hasDerived = useRef(false); hasDerived.current = !!doc?.derived;
   const openStylusDial = useCallback((point?: { x?: number; y?: number }) => {
     const st = shortcutState.current; if (!st.allowed || !shortcutFocused.current || AppState.currentState === 'background') return;
     cancelInkForStylusShortcut(); setDismissKey((k) => k + 1);
@@ -97,6 +98,8 @@ export default function Viewer() {
     return () => {
       // Before the observer is removed: what this pen actually sent (counts / button codes only), once per app session.
       // It is the only way to learn which form a pen-button press takes on a device we cannot hold.
+      // iOS memory warnings while this document was open (each one drops every PDF cache): at most two reports a session.
+      const warnings = PdfRenderer.takeMemoryWarnings(); if (warnings > 0 && memoryReports < 2) { memoryReports++; reportError('render', `ios memory warnings=${warnings} while viewing (derived=${hasDerived.current})`); }
       if (!stylusDiagnosticsSent) void takeStylusDiagnostics().then((d) => { const text = stylusDiagnosticsSummary(d, Platform.OS); if (text && !stylusDiagnosticsSent) { stylusDiagnosticsSent = true; reportError('render', text); } });
       shortcutFocused.current = false; sub.remove(); offContact(); bg.remove(); setDialAnchor(null);
     };

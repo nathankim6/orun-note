@@ -63,6 +63,7 @@ pages.setDownloadActive('file:///x/', true); pages.setDownloadActive('file:///x/
 assert.equal(pages.zoomAvailable(info), true); assert.equal(mkPages('android').zoomAvailable(info), false, 'Android keeps its own tile renderer'); assert.equal(pages.zoomAvailable(null), false);
 
 // ---- tier selection and the vector-tile decision ----
+assert.equal(pages.zoomHabitual(), false); pages.noteZoomUse(); assert.equal(pages.zoomHabitual(), true);
 const D = load('src/features/viewer/DerivedPage.tsx', { react: { ...reactMock, useContext: () => false, createElement: () => null }, 'react-native': { View: 'View', Image: 'Image', PixelRatio: { get: () => 2 } }, './pageQuality': { PageQualityContext: {} }, './derivedPages': pages, './derivedPagesCore': core });
 const base = { reading: 'r', readingPx: 1200, detail: 'd', detailPx: 2000 };
 eq(D.derivedTiers({ ...base, detailOn: false, zoom: 'z', zoomOn: false }).map(t => t.key), ['reading'], 'a moving / off-screen page shows the reading raster only');
@@ -70,6 +71,8 @@ eq(D.derivedTiers({ ...base, detailOn: true, zoom: null, zoomOn: true }).map(t =
 eq(D.derivedTiers({ ...base, detailOn: true, zoom: 'z', zoomOn: true }).map(t => [t.key, t.px]), [['reading', 1200], ['detail', 2000], ['zoom', 3600]], 'lower tiers stay underneath');
 eq(D.derivedTiers({ ...base, detail: null, detailOn: true, zoom: 'z', zoomOn: true }).map(t => t.key), ['reading', 'zoom']);
 eq(D.derivedTiers({ reading: 'r', readingPx: 1500, detail: 'r', detailPx: 1500, detailOn: true, zoom: null, zoomOn: false }).map(t => t.key), ['reading'], 'single-width set: no duplicate layer');
+// tablets: the detail raster is the first image (no soft-then-sharp page); phones keep the light reading raster
+assert.equal(D.detailFirst(1612, 1200), true, 'iPad 11 portrait page box'); assert.equal(D.detailFirst(2048, 1200), true); assert.equal(D.detailFirst(1170, 1200), false, 'iPhone'); assert.equal(D.detailFirst(1340, 1200), false, 'inside the sharpness margin'); assert.equal(D.detailFirst(0, 1200), false);
 const V = D.wantsVectorTile;
 assert.equal(V({ neededPx: ipad(1), detailPx: 2000, zoomState: 'none' }), false, 'zoom 1: never the device engine');
 assert.equal(V({ neededPx: ipad(2.2), detailPx: 2000, zoomState: 'coming' }), false, 'while the zoom image downloads the engine is not started');

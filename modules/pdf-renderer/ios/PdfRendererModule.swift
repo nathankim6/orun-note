@@ -129,6 +129,7 @@ public class PdfRendererModule: Module {
   private var destroyed = false
   private let timingLock = NSLock()
   private var renderTimings: [[String: Any]] = []
+  private var memoryWarnings = 0 // timingLock
   private let maxRenderTimings = 20
 
   private func beginOperation() throws {
@@ -477,6 +478,7 @@ public class PdfRendererModule: Module {
       // Drop open documents (PDFKit caches) when iOS is short on memory; they reopen on demand.
       module.memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak module] _ in
         guard let m = module else { return }
+        m.timingLock.lock(); m.memoryWarnings += 1; m.timingLock.unlock()
         m.queue.async { m.cache.removeAll(); m.lru.removeAll() }
         m.readingQueue.async { m.clearReadingDocuments() }
         m.dropParsedPages()
@@ -614,6 +616,11 @@ public class PdfRendererModule: Module {
       }, on: self.readingQueue)
     }
     Function("clearPageBitmaps") { PageBitmaps.shared.clear() }
+    /// Memory warnings iOS sent since the last call (each one drops every PDF cache; frequent ones mean thrashing).
+    Function("takeMemoryWarnings") { () -> Int in
+      self.timingLock.lock(); defer { self.timingLock.unlock() }
+      let n = self.memoryWarnings; self.memoryWarnings = 0; return n
+    }
 
     AsyncFunction("takeRenderTimings") { () -> [[String: Any]] in
       self.timingLock.lock(); defer { self.timingLock.unlock() }

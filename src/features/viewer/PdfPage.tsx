@@ -219,7 +219,7 @@ function RasterPdfPage(props: RasterProps) {
   const derivedFile = useDerivedFile(readPath);
   if (readPath && derivedFile === 'present') {
     const { uri, index, width, height, tile } = props; const tileRetry = tileFailure.attempt;
-    return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile}
+    return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile} basePx={width * (props.renderScale ?? 1) * PixelRatio.get()}
       renderTile={uri && tile && PdfRenderer.hasRenderRegion() && tileFailure.failed !== page + '|' + pageTileKey(tile)
         ? () => <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileRetry} onFailure={key => tileFailure.fail(page + '|' + key)} /> : undefined} />;
   }

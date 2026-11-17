@@ -29,3 +29,24 @@ Before claiming hardware validation, test on Galaxy Tab with S Pen and an iPad w
 Expo BlurView uses a sibling BlurTargetView on Android, so the target never includes the palette itself. Android API31+ uses native Dimezis blur; older Android uses the supported translucent fallback to avoid expensive software blur. iOS uses ultra-thin material and web uses backdrop-filter. Shared directional gradients, a hairline reflection and a soft shadow retain the visual direction across platforms. Physical-device appearance/performance remains unverified.
 
 The palette position is clamped using its rotated bounding box. The slider projects absolute pointer coordinates back onto its rotated local axis; simply subtracting the screen-space left edge is not sufficient. The full-range diagonal drag was verified in the browser.
+
+## Pen-button delivery (1.6.20)
+
+Hardware could not be held, so the bridge now observes every form a barrel-button press is known to take and reports
+what a device really sent:
+
+- Android `MotionEvent` on a stylus pointer: `BUTTON_STYLUS_PRIMARY/SECONDARY`, and the generic
+  `BUTTON_SECONDARY/TERTIARY` bits (a stylus has no mouse buttons); `ACTION_BUTTON_PRESS/RELEASE`; Samsung's legacy
+  button-contact actions 211/212/213. Stylus-button **key** events 308–310 are forwarded too (311, the tail button,
+  belongs to the system). Everything stays pass-through.
+- A contact with any of those bits set never deposits ink (`PEN_BUTTON_BITS` in `InkCanvas`).
+- `takeStylusDiagnostics()` returns counts and button/key codes only. The viewer sends one line per app session to the
+  diagnostics channel when a pen-button-like signal was seen ("stylus shortcut android emitted=… buttonStates=[…]"),
+  or, on iOS, when a Pencil tap/squeeze arrived ("… tap=… tapPreferenceOff=…"). A device whose presses arrive but do not
+  open the palette is visible there as `emitted=0` with non-empty codes.
+- On Galaxy devices the system's own Air command can be bound to the same button; when it opens, this app's window
+  loses focus and the press is counted under `unfocused`.
+
+The viewer lab drives this path on an emulator with a `uinput` virtual stylus (evdev `BTN_TOOL_PEN`, `BTN_TOUCH`,
+`BTN_STYLUS`): hover + barrel button, button held during contact, and plain strokes against the open pen card and
+palette. That is the AOSP input path, not a Samsung S Pen.

@@ -43,3 +43,22 @@ downscale to 1200 → words from pdfium text page (char boxes merged into words,
   `renderRegion` (slow path) – unchanged. Preview tier is skipped for derived pages.
 - `words.ts`: `p{i}-words.json` preferred over `PdfRenderer.getWords`.
 - Materials without `derived` (older uploads, personal PDFs) behave exactly as today.
+
+## Zoom tier (1.6.20)
+
+`derived/{materialId}/v1/p{index}-3600.jpg` — width 3600 px, JPEG q72 (~0.9 MB per page), rendered from the vector page
+by the same generator. It exists because the device PDF engine cannot serve magnified textbook pages interactively
+(docs/ios-zoom-sharpness.md).
+
+- **Not in `manifest.widths`.** Apps up to 1.6.19 download every listed width for every page and use the largest as
+  their detail image; a 3600 px entry there would triple their download and memory. The tier is addressed by
+  convention instead. Its presence is announced by the token `z3600` appended to `manifest.engine`
+  (`zoomMarked`); the generator adds only this tier to a material that already has the base set.
+- The edge function's upload/download whitelists already accept `p{n}-3600.jpg`; nothing was redeployed.
+- **Client (iOS):** fetched per page on demand through `materials.derivedUrls` when the magnified page needs more
+  than the detail image (`zoomTierWanted`), and ahead of time for pages the reader settles on once they magnified
+  anything in this session. A material without the tier is detected by the first probe returning no URL and is not
+  asked again in that session. At most 56 zoom files are kept per material (oldest removed down to 40). The
+  Wi-Fi-only setting applies. Android keeps its own vector tiles (bitmap size limits; pdfium has no cold cost cliff).
+- Download queue: files are requested in batches of 36 (was 250) and re-ordered around the open page before every
+  batch, and the existence check after a restart also starts at the open page.

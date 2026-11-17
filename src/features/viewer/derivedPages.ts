@@ -98,6 +98,10 @@ export const zoomRecentlyFailed = (path: string) => (zoomRetryAt.get(path) ?? 0)
 /** iOS only for now: Android magnifies through its own tile renderer and has stricter bitmap limits. */
 export const zoomTierPlatform = () => Platform.OS === 'ios';
 export const zoomAvailable = (info: DerivedInfo | null | undefined) => zoomTierPlatform() && !!info && !!info.dir && !zoomOff.has(info.dir);
+let zoomHabit = false;
+/** The reader magnified a textbook page in this app session. */
+export const noteZoomUse = () => { zoomHabit = true; };
+export const zoomHabitual = () => zoomHabit;
 /** Asks for the zoom image of one page (no-op when unavailable, already present, or recently failed). */
 export function requestZoomPage(info: DerivedInfo | null | undefined, index: number) {
   const path = zoomImagePath(info, index); if (!path || !zoomAvailable(info) || present.has(path)) return;

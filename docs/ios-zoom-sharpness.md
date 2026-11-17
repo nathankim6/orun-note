@@ -1,38 +1,61 @@
-# Zoom sharpness on iOS (page compositing)
+# Zoom sharpness on iOS
 
-The viewer magnifies a document with ONE transform on the page container (`DocumentView`), and sharpens it with a
-viewport tile rendered by the native renderer (`PdfPage.TileLayer` → `PdfRenderer.renderRegion`). Both platforms share
-that code. iOS still looked soft at any zoom while Android looked sharp; the difference is in how each platform
-composites the magnified page, not in the tile geometry.
+## What was actually wrong (1.6.20 investigation)
 
-## What iOS does differently
+Three things, each measured, none of them the tile geometry:
 
-A layer with BOTH `cornerRadius` and `masksToBounds` (RN: `borderRadius` + `overflow: 'hidden'`) clips its sublayers
-through an implicit mask. Core Animation therefore renders that subtree into an offscreen buffer sized by the layer's
-own bounds × `contentsScale` — one page pixel per device pixel — and composites the *buffer* with whatever ancestor
-transform applies. The zoom transform then magnifies that 1x page raster, so every layer inside the page (native page
-bitmap, the sharp zoom tile, the ink SVGs) is resampled from a 1x page raster and stays visibly soft, however sharp
-the tile inside it is. Rectangular clips (`overflow: 'hidden'` without a radius) and transforms alone do not do this,
-which is why panning and ordinary scroll views stay crisp.
+1. **PDFKit cannot interpret the textbooks interactively.** The materials are Chrome "save as PDF" files (producer
+   `Skia/PDF`): every page is one page-sized transparency group whose content is painted through page-sized tiling
+   patterns and soft masks. Measured with PDFKit on an Apple-silicon Mac on 흑석고1 분석워크북 / 어법팩 해설 / 흑석고 어휘:
+   - the **first** draw of a page costs ~2.3–3.0 s **whatever the output size** (a 64×64 px window at 3× zoom costs
+     the same as a full page), and adds **~385 MB** of memory that stays for as long as the `PDFPage` lives;
+   - every later draw of the same `PDFPage` takes ~0.13 s at any zoom.
+   Student iPads on 1.6.17 reported 6–15 s for that first draw (`crash_reports`, "PDF image load … requestedWidth=2400").
+2. **The app kept up to 12 interpreted pages** (≈4.6 GB). iOS answers with memory warnings, the module then drops
+   every cache, and the next page / zoom tile starts from a cold 6–15 s again. The page looked blurry for as long as
+   that took, i.e. practically always while zoomed.
+3. **The server's pre-rendered pages were not used reliably.** `RasterPdfPage` asked an in-memory index whether the
+   JPEG was on disk; that index is empty after every app start, so a downloaded textbook still went to PDFKit until
+   something re-rendered the page. And when the JPEG was used, only the 1200 px reading image was ever shown (the
+   2000 px one was gated behind "no tile available", which is never true), so the magnified page was a 1200 px image
+   stretched until a PDFKit tile arrived.
 
-Android clips while replaying the display list and never materializes such a buffer, so the identical page tree and
-tile land at full device resolution there.
+## What the app does now
 
-## Rules
+- **Textbook pages come from server rasters only** (`DerivedPage.tsx`): reading 1200 px → detail 2000 px → **zoom
+  3600 px** (fetched per page on demand, docs/derived-pages.md). The file state is reactive and starts as *pending*
+  until one disk stat returned, so a page never starts a PDFKit draw just because the index was still empty. On
+  tablets the detail image is the page's first image (no soft-then-sharp page turn).
+- **PDFKit is the last resort**: a vector tile is requested only when the magnified page needs more than the best
+  server raster × 1.3 (≈ beyond 290 % on an 11" iPad), or when a material has no zoom tier / the device is offline.
+- **Interpreted pages are capped at 2** (`maxParsedPages`).
+- The page wrapper no longer changes element type at 120 % zoom (it used to remount the page: white flash, tile
+  lost, undo history lost), and the sharper layers are requested 350 ms after the last movement on iOS (800 ms on
+  Android, whose vector tiles are expensive for every request).
+- Images above the reading tier are laid out at their own pixel size and scaled into the page box
+  (`fullResImageStyle`), the same rule `tileImageStyle` uses, so the platform never decodes them to a smaller size.
 
-- While the document is magnified (`z > 1.001`) the page container drops `borderRadius`/`overflow` and the iOS shadow
-  (`DocumentView.styles.pageZoomed`, iOS only). The rounded card and its shadow stay exactly as before at 1x, where the
-  corners are on screen and no magnification happens.
-- Do not introduce a new rounded-clipping ancestor (or `shouldRasterize`) between the document viewport and the page
-  content. A rounded corner inside an untransformed subtree (e.g. the 간편 입력창 pad, which magnifies by *laying out*
-  larger instead of transforming) is unaffected.
-- The sharp tile must not depend on the base page bitmap. It mounts on its own and a failed region is retried
-  (`useTileFailure`, 3 attempts, 1.2 s apart) before the page falls back — and the image path's fallback is the detail
-  raster, never the ≤1200 px reading raster.
+Earlier rule kept: while magnified, the iOS page container drops `borderRadius` + `overflow` and its shadow
+(`DocumentView.styles.pageZoomed`). Do not add a rounded-clipping ancestor or `shouldRasterize` between the
+document viewport and the page content.
+
+## Numbers to remember (11" iPad, page box 806 pt = 1612 device px at 100 %)
+
+| magnification | device px needed | shown from |
+|---|---|---|
+| 100–139 % | 1612–2240 | detail 2000 px |
+| 140–250 % | 2257–4030 | zoom 3600 px |
+| 251–290 % | –4680 | zoom 3600 px (≥ 77 % of native) |
+| > 290 % | > 4680 | zoom 3600 px, then a PDFKit tile on top |
 
 ## Evidence boundary
 
-`scripts/test-ios-zoom-blur.js` pins the container rule (iOS + magnified only, clip and shadow removed, 1x unchanged),
-the tile retry wiring, and that a retried tile re-requests the identical region and can then be shown. It cannot
-measure device pixels: the visual result needs a look on an iPhone/iPad at 2–5x zoom (PDF text should stay crisp with
-no settle delay), because no simulator assertion here proves offscreen compositing behaviour.
+- `scripts/test-zoom-tiers.js`, `test-ios-zoom-blur.js`, `test-derived-pages.js`: selection, ordering, download and
+  wiring rules (pure JS).
+- **Viewer lab** (`.github/workflows/viewer-lab.yml`, `qa/lab`): the real DocumentView / PdfPage tree on an iOS
+  simulator with a synthetic resolution target; screenshots at 220 % and 360 % are analysed for how many bar gratings
+  stay resolved (`scripts/lab-analyze.mjs`). This proves compositing and decode behaviour on iOS, not the speed of a
+  particular iPad.
+- PDFKit timings above are from a Mac and from field reports; no physical iPad was measured for 1.6.20. The app now
+  reports iOS memory warnings per viewing session (`crash_reports`, "ios memory warnings=…") so the field result of
+  the cap can be checked.
