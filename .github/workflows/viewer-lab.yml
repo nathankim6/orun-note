@@ -1,0 +1,82 @@
+name: Viewer lab (QA only, synthetic page)
+# Mounts the real document surface / page renderer / ink canvas / toolbar / pen palette around a SYNTHETIC page and
+# drives them on a simulator and an emulator: screenshots of a magnified page on iOS (what the screen really shows),
+# real stylus + stylus-button input on Android. Never builds for distribution; never touches a store or user data.
+on:
+  workflow_dispatch: {}
+  push: { branches: ['lab/**'] }
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: xcode-27
+    timeout-minutes: 85
+    env: { NATIVE_SMOKE_QA: '1', CI: '1' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '27.2' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Unit gates for the changed paths
+        run: |
+          node scripts/test-zoom-tiers.js
+          node scripts/test-ios-zoom-blur.js
+          node scripts/test-derived-pages.js
+          node modules/stylus-shortcut/tests/bridge.test.cjs
+      - name: Lab entry (this checkout is disposable)
+        run: |
+          node scripts/lab-generate-pdf.mjs
+          printf "import './qa/lab/entry';\n" > index.ts
+      - run: npx expo prebuild --platform ios --no-install
+      - run: cd ios && pod install
+      - name: Build, run the scripted magnification steps, analyse the screenshots
+        timeout-minutes: 70
+        run: bash scripts/lab-ios.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: viewer-lab-ios, path: lab-out/ios, if-no-files-found: warn, retention-days: 5 }
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env: { NATIVE_SMOKE_QA: '1', CI: '1' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - run: npm ci
+      - name: Allow emulator KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Lab entry (this checkout is disposable)
+        run: |
+          node scripts/lab-generate-pdf.mjs
+          printf "import './qa/lab/entry';\n" > index.ts
+      - name: Prebuild and build the lab APK
+        timeout-minutes: 50
+        run: npx expo prebuild --platform android --no-install && cd android && ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=x86_64
+      - name: Stylus / stylus-button input on a real emulator
+        timeout-minutes: 20
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          profile: pixel_tablet
+          cores: 4
+          ram-size: 4096M
+          pre-emulator-launch-script: node scripts/native-configure-avd.mjs
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader -feature -Vulkan -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb install android/app/build/outputs/apk/release/app-release.apk
+            node scripts/lab-drive-android.mjs lab-out/android
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: viewer-lab-android, path: lab-out/android, if-no-files-found: warn, retention-days: 5 }

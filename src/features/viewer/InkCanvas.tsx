@@ -10,6 +10,12 @@ import { TEXT_FONTS } from './Toolbar';
 import { PdfWord } from '../../../modules/pdf-renderer';
 import { wordAt, wordsBetween, cleanWord } from './words';
 import { penSession } from './penSession';
+/**
+ * Pointer button bits that mean "the pen's barrel button is held" (never the tip): the stylus buttons (32, 64) and
+ * the generic secondary / tertiary bits (2, 4) that some pens and the web report instead. Such a contact opens the
+ * tool palette and must not deposit ink.
+ */
+const PEN_BUTTON_BITS = 2 | 4 | 32 | 64;
 import { PencilStroke } from './PencilInk';
 import { ToolConfig, penOutline, isInkPen, polyPath, recognizeShape, pathFromPoints, shapePath, strokesHit, eraseVector, pointInPolygon, snapLine, boundsOf, dist, cleanHighlight } from './ink';
 import { uid } from '@/store/persist';
@@ -204,7 +210,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
       const pt = manual ? (t as any).pointerType : e.pointerType;
       if (pt !== PointerType.STYLUS && !(Platform.OS === 'web' && pt === PointerType.MOUSE)) return; // finger / palm: never writes or erases — and keep listening for the pen
       // S Pen barrel-button contact opens tools, never deposits a dot.
-      if (((t as any).buttons & 96) !== 0) { sm.fail(); return; }
+      if (((t as any).buttons & PEN_BUTTON_BITS) !== 0) { sm.fail(); return; }
       penId.value = t.id; pressSV.value = -1;
       const now = Date.now(); penSession.value = { ...penSession.value, writing: true, byPen: pt === PointerType.STYLUS, at: now, since: now };
       if (manual) sm.begin(); // iOS cannot transition directly from Undetermined to Active on the first touch event
@@ -215,7 +221,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     .onTouchesMove((e, sm) => {
       'worklet';
       const id = penId.value; if (id === -1) return;
-      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { if (((t as any).buttons & 96) !== 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.end(); else sm.fail(); return; } const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
+      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { if (((t as any).buttons & PEN_BUTTON_BITS) !== 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.end(); else sm.fail(); return; } const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
     })
     .onTouchesUp((e, sm) => {
       'worklet';

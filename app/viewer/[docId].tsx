@@ -1,6 +1,6 @@
 import { BlurTargetView } from 'expo-blur';
 import { StylusDial } from '@/features/viewer/StylusDial';
-import { addStylusShortcutListener } from '../../modules/stylus-shortcut';
+import { addStylusShortcutListener, takeStylusDiagnostics, stylusDiagnosticsSummary } from '../../modules/stylus-shortcut';
 import { cancelInkForStylusShortcut, onInkContact } from '@/features/viewer/stylusShortcutState';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
@@ -40,6 +40,7 @@ import { SettingsSheet, VersionSheet, CycleSheet, GuideOverlay } from '@/feature
 import { resolveUri } from '@/lib/files';
 import { fmtBytes, fmtDate } from '@/utils/format';
 
+let stylusDiagnosticsSent = false;
 export default function Viewer() {
   const { docId: paramId } = useLocalSearchParams<{ docId: string }>();
   const router = useRouter(); const viewerActive = usePathname().startsWith('/viewer/'); const { colors, dark } = useTheme(); const insets = useSafeAreaInsets(); const { width: winW, height: winH } = useContentSize(); const { isTablet } = useLayout();
@@ -93,7 +94,12 @@ export default function Viewer() {
     const sub = addStylusShortcutListener((event) => openStylusDial(event));
     const offContact = onInkContact(() => { setDialAnchor(null); if (panelOpen.current) setDismissKey((k) => k + 1); });
     const bg = AppState.addEventListener('change', (state) => { if (state !== 'active') setDialAnchor(null); });
-    return () => { shortcutFocused.current = false; sub.remove(); offContact(); bg.remove(); setDialAnchor(null); };
+    return () => {
+      // Before the observer is removed: what this pen actually sent (counts / button codes only), once per app session.
+      // It is the only way to learn which form a pen-button press takes on a device we cannot hold.
+      if (!stylusDiagnosticsSent) void takeStylusDiagnostics().then((d) => { const text = stylusDiagnosticsSummary(d, Platform.OS); if (text && !stylusDiagnosticsSent) { stylusDiagnosticsSent = true; reportError('render', text); } });
+      shortcutFocused.current = false; sub.remove(); offContact(); bg.remove(); setDialAnchor(null);
+    };
   }, [openStylusDial]));
   useEffect(() => { setDialAnchor(null); }, [docId, videosOpen, sheet, lookup, pageIndex]);
   const inkRefs = useRef<Record<string, InkHandle | null>>({}); const scrollRef = useRef<any>(null);

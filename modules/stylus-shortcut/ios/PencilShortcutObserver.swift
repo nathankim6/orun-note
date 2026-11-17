@@ -5,6 +5,17 @@ import UIKit
 final class PencilShortcutObserver: NSObject, UIPencilInteractionDelegate {
   private var interaction: UIPencilInteraction?
   private let emit: ([String: Any]) -> Void
+  /// Counts only (field diagnosis of which Pencil gestures arrive and why one was not forwarded).
+  private var counts: [String: Int] = [:]
+  private func count(_ key: String) { counts[key, default: 0] += 1 }
+  func takeDiagnostics() -> [String: Any] {
+    var out: [String: Any] = counts
+    out["preferredTap"] = UIPencilInteraction.preferredTapAction.rawValue
+    if #available(iOS 17.5, *) { out["preferredSqueeze"] = UIPencilInteraction.preferredSqueezeAction.rawValue }
+    out["attached"] = interaction?.view?.window != nil
+    counts = [:]
+    return out
+  }
   init(emit: @escaping ([String: Any]) -> Void) { self.emit = emit }
 
   func attach(to view: UIView) {
@@ -26,7 +37,8 @@ final class PencilShortcutObserver: NSObject, UIPencilInteractionDelegate {
   private func send(_ kind: String, location: CGPoint? = nil) {
     guard let pencil = interaction, pencil.isEnabled,
           let view = pencil.view, let window = view.window,
-          window.isKeyWindow, UIApplication.shared.applicationState == .active else { return }
+          window.isKeyWindow, UIApplication.shared.applicationState == .active else { count("notKeyOrActive"); return }
+    count("emitted")
     var body: [String: Any] = ["kind": kind]
     if let location = location {
       let inWindow = view.convert(location, to: window)
@@ -37,20 +49,23 @@ final class PencilShortcutObserver: NSObject, UIPencilInteractionDelegate {
     emit(body)
   }
   func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-    guard UIPencilInteraction.preferredTapAction != .ignore else { return }
+    count("tap")
+    guard UIPencilInteraction.preferredTapAction != .ignore else { count("tapPreferenceOff"); return }
     send("pencil-double-tap")
   }
   @available(iOS 17.5, *)
   func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+    count("tap")
     guard UIPencilInteraction.preferredTapAction != .ignore,
-          UIPencilInteraction.preferredTapAction != .runSystemShortcut else { return }
+          UIPencilInteraction.preferredTapAction != .runSystemShortcut else { count("tapPreferenceOff"); return }
     send("pencil-double-tap", location: tap.hoverPose?.location)
   }
   @available(iOS 17.5, *)
   func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-    guard squeeze.phase == .ended,
-          UIPencilInteraction.preferredSqueezeAction != .ignore,
-          UIPencilInteraction.preferredSqueezeAction != .runSystemShortcut else { return }
+    guard squeeze.phase == .ended else { return }
+    count("squeeze")
+    guard UIPencilInteraction.preferredSqueezeAction != .ignore,
+          UIPencilInteraction.preferredSqueezeAction != .runSystemShortcut else { count("squeezePreferenceOff"); return }
     send("pencil-squeeze", location: squeeze.hoverPose?.location)
   }
 }

@@ -20,6 +20,10 @@ public class StylusShortcutModule: Module {
     OnAppEntersBackground { [weak self] in
       DispatchQueue.main.async { self?.detach() }
     }
+    /// Counts of the Pencil gestures UIKit delivered since the last call (no positions, no content).
+    AsyncFunction("takeDiagnostics") { [weak self] (promise: Promise) in
+      DispatchQueue.main.async { promise.resolve(self?.observer?.takeDiagnostics() ?? [:]) }
+    }
     OnDestroy { [weak self] in
       guard let self = self else { return }
       // Serialize after any queued start so a pending attach cannot escape cleanup.
