@@ -6,6 +6,7 @@ import { withPagePrefetchWindow } from './PdfPage';
 import { viewportPageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
 import { createIdleQualityGate } from './idleQuality';
+import { PDF_DETAIL_IDLE_MS, IOS_DETAIL_IDLE_MS } from './pdfWork';
 import { lastLookupAt } from './InkCanvas';
 import { penSession, PALM_WINDOW_MS } from './penSession';
 
@@ -39,6 +40,11 @@ type Props = {
 };
 
 const M = 14, GAP = 16, MAX_Z = 5;
+/**
+ * Pause after the last movement before sharper layers are requested. Android keeps the long pause (its vector tiles
+ * are expensive for every request); on iOS the sharper layers are mostly server images, so the page sharpens sooner.
+ */
+const DETAIL_IDLE_MS = Platform.OS === 'ios' ? IOS_DETAIL_IDLE_MS : PDF_DETAIL_IDLE_MS;
 const IS_IOS = Platform.OS === 'ios';
 type Layout = { boxes: PageBox[]; cw: number; ch: number; cells: number; cellOf: number[] };
 function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMode, startOdd: boolean): Layout {
@@ -124,6 +130,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   useEffect(() => {
     if (!active) { setDetailReady(false); detailActivityRef.current = () => {}; return; }
     const gate = createIdleQualityGate({
+      idleMs: DETAIL_IDLE_MS,
       onReady: ready => { setDetailReady(ready); if (ready) computeTilesRef.current(); },
       isBusy: () => { const ps = penSession.value; return ps.writing && Date.now() - ps.since < 20000; },
     });
@@ -388,9 +395,11 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
 
 /** Renders page content at `rs`× resolution and scales it back down so it stays crisp under the outer zoom transform. */
 function PageSlot({ box, rs, render }: { box: PageBox; rs: number; render: () => React.ReactNode }) {
-  if (rs === 1) return <>{render()}</>;
+  // One wrapper at every density. A bare fragment at 1x and a scaled view above it are different element types, so
+  // crossing 120 % zoom used to remount the whole page: its images were decoded again (a white, then blurry, page) and
+  // the ink layer lost its in-memory state (undo history, selection).
   const W = box.w * rs, H = box.h * rs;
-  return <View style={{ position: 'absolute', left: 0, top: 0, width: W, height: H, transform: [{ translateX: -(W - box.w) / 2 }, { translateY: -(H - box.h) / 2 }, { scale: 1 / rs }] }}>{render()}</View>;
+  return <View style={{ position: 'absolute', left: 0, top: 0, width: W, height: H, transform: rs === 1 ? undefined : [{ translateX: -(W - box.w) / 2 }, { translateY: -(H - box.h) / 2 }, { scale: 1 / rs }] }}>{render()}</View>;
 }
 
 const ZoomBadge = forwardRef<{ show: (t: string | null) => void }, { right: number; top: number }>(function ZoomBadge({ right, top }, ref) {

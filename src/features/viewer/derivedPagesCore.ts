@@ -53,3 +53,48 @@ export function parseManifest(raw: unknown): DerivedManifest | null {
   if (!(pages > 0) || !(version > 0) || !widths.length) return null;
   return { version, pages, widths, words: !!m.words, bytes: Number(m.bytes ?? 0) || undefined, generatedAt: typeof m.generatedAt === 'string' ? m.generatedAt : undefined, engine: typeof m.engine === 'string' ? m.engine : undefined };
 }
+
+// ---------- zoom tier (docs/derived-pages.md, "Zoom tier") ----------
+/**
+ * A third, larger server image per page, fetched on demand for the page the reader magnifies. It is NOT part of
+ * `manifest.widths` (older clients download every listed width for every page and treat the largest as their detail
+ * image), so it is addressed by convention and probed through `materials.derivedUrls`.
+ */
+export const ZOOM_WIDTH = 3600;
+export const zoomName = (index: number) => imageName(index, ZOOM_WIDTH);
+export function zoomImagePath(info: DerivedInfo | null | undefined, index: number): string | null {
+  if (!info || !info.dir || index < 0 || index >= info.pages) return null; return info.dir + zoomName(index);
+}
+/** Marker the generator appends to `manifest.engine` once the zoom tier of a material is uploaded. */
+export const zoomMarked = (engine: string | null | undefined) => new RegExp('\\bz' + ZOOM_WIDTH + '\\b').test(String(engine ?? ''));
+/**
+ * `neededPx` = width of the whole page in device pixels at the current magnification. A raster that is at least ~90 %
+ * of that is indistinguishable from a sharper one, so the next tier is only wanted beyond that margin.
+ */
+export const SHARP_MARGIN = 1.12;
+export const tierIsEnough = (rasterPx: number, neededPx: number) => rasterPx > 0 && neededPx <= rasterPx * SHARP_MARGIN;
+/** The on-demand zoom image is wanted once the detail raster stops covering the magnified page. */
+export const zoomTierWanted = (neededPx: number, detailPx: number) => neededPx > 0 && !tierIsEnough(detailPx, neededPx);
+/**
+ * A vector tile from the device PDF engine is the last resort: on Chrome-printed textbooks one page costs the engine
+ * seconds and hundreds of MB (docs/ios-zoom-sharpness.md), so it is only asked for when the best server raster is
+ * clearly exceeded.
+ */
+export const VECTOR_TILE_MARGIN = 1.3;
+export const vectorTileWanted = (neededPx: number, bestRasterPx: number) => neededPx > bestRasterPx * VECTOR_TILE_MARGIN;
+/**
+ * Lays an image out at its own pixel size (÷ dpr) and scales it down into the page box, so the platform image
+ * pipeline (which decodes to the laid-out size) keeps every source pixel when the page is magnified by an ancestor
+ * transform. Images with fewer pixels than the box are laid out at the box size as usual.
+ */
+export function fullResImageStyle(pxW: number, boxW: number, boxH: number, dpr: number) {
+  const natural = pxW / Math.max(1, dpr);
+  if (!(natural > boxW) || !(boxW > 0) || !(boxH > 0)) return { position: 'absolute', left: 0, top: 0, width: boxW, height: boxH } as const;
+  return { position: 'absolute', left: 0, top: 0, width: natural, height: (natural * boxH) / boxW, transform: [{ scale: boxW / natural }], transformOrigin: 'top left' } as const;
+}
+/** Zoom files kept on disk per material; the oldest are removed beyond `ZOOM_KEEP_MAX` down to `ZOOM_KEEP`. */
+export const ZOOM_KEEP = 40, ZOOM_KEEP_MAX = 56;
+export function zoomFilesToPrune(files: { name: string; mtime: number }[]): string[] {
+  const zoom = files.filter((x) => x.name.endsWith(`-${ZOOM_WIDTH}.jpg`)); if (zoom.length <= ZOOM_KEEP_MAX) return [];
+  return zoom.sort((a, b) => a.mtime - b.mtime).slice(0, zoom.length - ZOOM_KEEP).map((x) => x.name);
+}

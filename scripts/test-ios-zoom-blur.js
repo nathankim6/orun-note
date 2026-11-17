@@ -61,7 +61,7 @@ const R = {
 const jsx = (type, props, key) => ({ type, props, key });
 const G = load('src/features/viewer/pdfTileGeometry.ts'), S = load('src/features/viewer/renderScheduler.ts'), W = load('src/features/viewer/pdfWork.ts', { './renderScheduler': S });
 const P = load('src/features/viewer/PdfPage.tsx', {
-  'react': R, './derivedPages': { DerivedPagesContext: {}, pageImage: async () => null, forUri: () => null, isPresentSync: () => false, pageImagePath: () => null },
+  'react': R, './derivedPages': { DerivedPagesContext: {}, pageImage: async () => null, forUri: () => null, isPresentSync: () => false, pageImagePath: () => null , useDerivedFile: () => 'absent' }, './DerivedPage': { DerivedPdfPage: 'DerivedPdfPage' },
   './derivedPagesCore': { tierWidth: () => null }, './nativePageView': load('src/features/viewer/nativePageView.ts'),
   './tileProgress': load('src/features/viewer/tileProgress.ts'), 'react/jsx-runtime': { jsx, jsxs: jsx },
   'react-native': { Image: 'Image', Platform: { OS: 'ios' }, PixelRatio: { get: () => 3 } },

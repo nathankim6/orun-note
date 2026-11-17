@@ -7,6 +7,7 @@ export const readingPixels = (displayWidth: number) => Math.min(1200, bucket(dis
 export const previewPixels = (displayWidth: number) => Math.max(240, readingPixels(displayWidth) / 2.5);
 export const detailPixels = (displayWidth: number, ratio: number) => Math.min(2400, bucket(displayWidth * Math.min(2.5, ratio)));
 export const PDF_DETAIL_IDLE_MS = 800;
+export const IOS_DETAIL_IDLE_MS = 350;
 export function createPdfWork(onComplete?: (lane: PdfLane, timing: RenderTiming) => void | Promise<void>) {
   // Separate JS workers AND native renderer instances. A 4-second detail job must not head-of-line block reading.
   const reading = createRenderScheduler(64, 3, { onComplete: t => onComplete?.('reading', t) });

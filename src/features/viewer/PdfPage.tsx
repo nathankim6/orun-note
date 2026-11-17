@@ -12,7 +12,8 @@ import { halfTile, noteTileTiming, tileIsSlow, tileImageStyle } from './tileProg
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
-import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath } from './derivedPages';
+import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath, useDerivedFile } from './derivedPages';
+import { DerivedPdfPage } from './DerivedPage';
 import { tierWidth } from './derivedPagesCore';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
@@ -208,10 +209,23 @@ const surfaceLoads = createImageLoadReporter(Platform.OS + '-native', reportErro
 function RasterPdfPage(props: RasterProps) {
   const page = props.uri + '|' + props.index;
   const [nativeFailed, setNativeFailed] = useState<string | null>(null);
-  // a server pre-rendered page (docs/derived-pages.md) is a JPEG on disk: cheaper than any native drawing, so it wins
+  const tileFailure = useTileFailure();
+  // A server pre-rendered page (docs/derived-pages.md) is a JPEG on disk: cheaper than any device drawing, so it wins.
+  // The file state is reactive and starts as 'pending' until the disk answered: deciding from an in-memory index that
+  // is empty after every app restart sent downloaded textbooks back to the device PDF engine (6–15 s and ~385 MB per
+  // page on iPads, docs/ios-zoom-sharpness.md).
   const derived = useContext(DerivedPagesContext);
-  const derivedReady = !!props.uri && !!derived && !!pageImagePath(derived, props.index, 'reading') && isPresentSync(pageImagePath(derived, props.index, 'reading')!);
-  if (props.uri && !derivedReady && useNativeSurface(nativePages, Platform.OS, props.width * (props.renderScale ?? 1)) && nativeFailed !== page)
+  const readPath = props.uri && derived ? pageImagePath(derived, props.index, 'reading') : null;
+  const derivedFile = useDerivedFile(readPath);
+  if (readPath && derivedFile === 'present') {
+    const { uri, index, width, height, tile } = props; const tileRetry = tileFailure.attempt;
+    return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile}
+      renderTile={uri && tile && PdfRenderer.hasRenderRegion() && tileFailure.failed !== page + '|' + pageTileKey(tile)
+        ? () => <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileRetry} onFailure={key => tileFailure.fail(page + '|' + key)} /> : undefined} />;
+  }
+  // The download manager is about to deliver this page: wait for it (bounded) rather than start a device render.
+  if (readPath && derivedFile === 'pending') return <View style={{ width: props.width, height: props.height, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }} pointerEvents="none"><ActivityIndicator color="#C7CCD6" /></View>;
+  if (props.uri && useNativeSurface(nativePages, Platform.OS, props.width * (props.renderScale ?? 1)) && nativeFailed !== page)
     return <NativePdfPage {...props} uri={props.uri} onFailure={() => setNativeFailed(page)} />;
   return <ImagePdfPage {...props} />;
 }

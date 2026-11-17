@@ -10,8 +10,8 @@ import { api } from '@/lib/api';
 import { useDocsStore } from '@/store/docs';
 import { useSettingsStore } from '@/store/settings';
 import type { Doc } from '@/data/types';
-import { chunk, derivedFileNames, derivedRelDir, MANIFEST_NAME, orderForPriority, parseManifest, tierWidth, URL_BATCH, type DerivedInfo, type DerivedManifest } from '@/features/viewer/derivedPagesCore';
-import { exists, markPresent } from '@/features/viewer/derivedPages';
+import { chunk, derivedFileNames, derivedRelDir, MANIFEST_NAME, orderForPriority, parseManifest, tierWidth, zoomName, zoomFilesToPrune, type DerivedInfo, type DerivedManifest } from '@/features/viewer/derivedPagesCore';
+import { exists, markPresent, setDownloadActive, setZoomRequester, markZoomUnavailable, noteZoomFailure } from '@/features/viewer/derivedPages';
 
 export type DerivedProgress = { done: number; total: number; bytes: number; state: 'checking' | 'downloading' | 'done' | 'deferred' | 'error'; error?: string };
 type ProgressState = { byMaterial: Record<string, DerivedProgress>; set: (id: string, p: DerivedProgress | null) => void };
@@ -19,6 +19,14 @@ type ProgressState = { byMaterial: Record<string, DerivedProgress>; set: (id: st
 export const useDerivedProgress = create<ProgressState>()((set) => ({ byMaterial: {}, set: (id, p) => set((s) => { const n = { ...s.byMaterial }; if (p) n[id] = p; else delete n[id]; return { byMaterial: n }; }) }));
 
 const CONCURRENCY = 6;
+/**
+ * Files per signed-URL request. The queue is re-ordered around the page being read before every batch, so the batch
+ * must stay small: with the previous 250 a jump to another chapter waited behind up to ~100 MB of other pages (and
+ * that page was drawn by the slow device renderer meanwhile).
+ */
+export const PRIORITY_BATCH = 36;
+// Last credential and local directory per material, so on-demand requests (zoom images) need no viewer plumbing.
+const creds = new Map<string, string | null>(); const materialOfDir = new Map<string, string>();
 const running = new Map<string, Promise<void>>();
 const priority = new Map<string, number | null>();
 type Fetcher = (code: string | null, materialId: string, files: string[]) => Promise<{ urls: { path: string; url: string }[] }>;
@@ -29,7 +37,8 @@ const docsDir = () => FileSystem.documentDirectory ?? '';
 export const derivedDir = (materialId: string, version: number) => docsDir() + derivedRelDir(materialId, version);
 export function infoFor(doc: Pick<Doc, 'materialId' | 'derived'> | null | undefined): DerivedInfo | null {
   if (!doc?.materialId || !doc.derived || Platform.OS === 'web') return null;
-  const d = doc.derived; return { version: d.version, pages: d.pages, widths: d.widths, words: d.words, dir: derivedDir(doc.materialId, d.version) };
+  const d = doc.derived; const dir = derivedDir(doc.materialId, d.version); materialOfDir.set(dir, doc.materialId);
+  return { version: d.version, pages: d.pages, widths: d.widths, words: d.words, dir };
 }
 async function onCellularOnly(): Promise<boolean> {
   if (!useSettingsStore.getState().derivedWifiOnly) return false;
@@ -62,25 +71,26 @@ export function prioritise(materialId: string, page: number | null) { priority.s
  */
 export function ensureDerived(code: string | null, doc: Doc, opts: { page?: number | null; serverDerived?: unknown } = {}): Promise<void> {
   if (Platform.OS === 'web' || !doc.materialId || doc.kind === 'blank') return Promise.resolve();
-  const id = doc.materialId; if (opts.page !== undefined) priority.set(id, opts.page);
+  const id = doc.materialId; if (opts.page !== undefined) priority.set(id, opts.page); creds.set(id, code);
   const live = running.get(id); if (live) return live;
   const run = (async () => {
-    const progress = useDerivedProgress.getState().set;
+    const progress = useDerivedProgress.getState().set; let activeDir: string | null = null;
     try {
       // a manifest handed over by `download` saves one round trip
       if (!doc.derived && opts.serverDerived) { const m = parseManifest(opts.serverDerived); if (m) { useDocsStore.getState().update(doc.id, { derived: m }); doc = { ...doc, derived: m }; } }
       const m = await ensureManifest(code, doc); if (!m) return;
       const dir = derivedDir(id, m.version); await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+      materialOfDir.set(dir, id); activeDir = dir; setDownloadActive(dir, true);
       const all = derivedFileNames(m); progress(id, { done: 0, total: all.length, bytes: 0, state: 'checking' });
       const missing: string[] = []; let done = 0;
-      for (const batch of chunk(all, 24)) { const ok = await Promise.all(batch.map((n) => exists(dir + n))); batch.forEach((n, i) => { if (ok[i]) done++; else missing.push(n); }); }
+      for (const batch of chunk(orderForPriority(all, priority.get(id) ?? doc.lastPage ?? null, tierWidth(m, 'reading')), 24)) { const ok = await Promise.all(batch.map((n) => exists(dir + n))); batch.forEach((n, i) => { if (ok[i]) done++; else missing.push(n); }); }
       if (!missing.length) { progress(id, { done: all.length, total: all.length, bytes: 0, state: 'done' }); return; }
       if (await onCellularOnly()) { progress(id, { done, total: all.length, bytes: 0, state: 'deferred' }); return; }
       let bytes = 0; const reading = tierWidth(m, 'reading');
       let queue = missing;
       while (queue.length) {
         queue = orderForPriority(queue, priority.get(id) ?? doc.lastPage ?? null, reading); // the reader may have moved
-        const batch = queue.splice(0, URL_BATCH);
+        const batch = queue.splice(0, PRIORITY_BATCH);
         const { urls } = await fetchImpl(code, id, batch); const byName = new Map(urls.map((u) => [u.path.slice(u.path.lastIndexOf('/') + 1), u.url]));
         let next = 0; const failures: string[] = [];
         const worker = async () => { for (;;) { const n = batch[next++]; if (!n) return; const url = byName.get(n); if (!url) { failures.push(n); continue; }
@@ -94,7 +104,7 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       progress(id, { done, total: all.length, bytes, state: 'done' });
     } catch (e: any) {
       useDerivedProgress.getState().set(id, { done: 0, total: 0, bytes: 0, state: 'error', error: String(e?.message ?? e) });
-    } finally { running.delete(id); }
+    } finally { running.delete(id); if (activeDir) setDownloadActive(activeDir, false); }
   })();
   running.set(id, run); return run;
 }
@@ -108,3 +118,32 @@ export async function ensureAllDerived(code: string | null) {
 export async function removeDerived(materialId?: string) {
   if (!materialId || Platform.OS === 'web') return; await FileSystem.deleteAsync(docsDir() + `derived/${materialId}/`, { idempotent: true }).catch(() => {});
 }
+
+// ---------- zoom tier: one larger image per page, fetched when the reader magnifies that page ----------
+const zoomRunning = new Map<string, Promise<void>>(); const zoomSeen = new Set<string>();
+async function pruneZoom(dir: string) {
+  try {
+    const names = (await FileSystem.readDirectoryAsync(dir)).filter((n) => n.endsWith('.jpg'));
+    const stats = await Promise.all(names.map(async (name) => { const i: any = await FileSystem.getInfoAsync(dir + name); return { name, mtime: Number(i?.modificationTime ?? 0) }; }));
+    for (const name of zoomFilesToPrune(stats)) await FileSystem.deleteAsync(dir + name, { idempotent: true }).catch(() => {});
+  } catch { /* best effort */ }
+}
+/** Downloads the zoom image of one page. Never throws; a material without a zoom tier is remembered for the session. */
+export function ensureZoomPage(dir: string, index: number): Promise<void> {
+  if (Platform.OS === 'web') return Promise.resolve();
+  const id = materialOfDir.get(dir); if (!id) return Promise.resolve();
+  const name = zoomName(index), dest = dir + name; const live = zoomRunning.get(dest); if (live) return live;
+  const run = (async () => {
+    try {
+      if (await exists(dest)) { zoomSeen.add(dir); return; }
+      if (await onCellularOnly()) { noteZoomFailure(dest, 60000); return; }
+      const { urls } = await fetchImpl(creds.get(id) ?? null, id, [name]); const u = urls[0];
+      // No URL for the very first page asked: this material has no zoom tier (yet). Later gaps are per page.
+      if (!u) { if (zoomSeen.has(dir)) noteZoomFailure(dest, 300000); else markZoomUnavailable(dir); return; }
+      await download(u.url, dest); zoomSeen.add(dir); void pruneZoom(dir);
+    } catch { noteZoomFailure(dest); } finally { zoomRunning.delete(dest); }
+  })();
+  zoomRunning.set(dest, run); return run;
+}
+setZoomRequester((dir, index) => { void ensureZoomPage(dir, index); });
+/** test seam */ export const _zoom = { registerDir(dir: string, materialId: string, code: string | null = null) { materialOfDir.set(dir, materialId); creds.set(materialId, code); } };

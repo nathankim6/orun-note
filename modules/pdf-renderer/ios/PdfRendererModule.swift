@@ -63,7 +63,10 @@ public class PdfRendererModule: Module {
   private let parsedLock = NSLock()
   private var parsed: [String: ParsedPage] = [:]
   private var parsedLRU: [String] = []
-  private let maxParsedPages = 12
+  // Measured on Chrome-printed textbooks (docs/ios-zoom-sharpness.md): one interpreted page holds ~385 MB inside
+  // CoreGraphics. Twelve of them cannot fit an iPad, so iOS kept sending memory warnings, every cache was dropped and
+  // each page was interpreted again (6–15 s). Two pages (the one being read and its predecessor) is what fits.
+  private let maxParsedPages = 2
   private func parsedKey(_ uri: String, _ index: Int) -> String { "\(uri)|\(index)" }
   /// The shared parsed page for (uri, index), creating it from `open()` (the calling lane's document) when absent.
   private func parsedPage(_ uri: String, _ index: Int, open: () throws -> PDFDocument) throws -> ParsedPage {

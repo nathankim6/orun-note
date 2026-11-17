@@ -1,17 +1,24 @@
 """Pre-render server materials into page images + word boxes (docs/derived-pages.md).
 
-Usage: python3 scripts/derived/generate.py [--only MATERIAL_ID] [--force] [--dry]
+Usage: python3 scripts/derived/generate.py [--only MATERIAL_ID] [--force] [--dry] [--no-zoom]
+A material that already has the base set (reading/detail/words) but no zoom tier gets only the zoom images added.
 Env:   ORUN_ADMIN_CODE (required), DOCS_FN (optional), ANON_KEY (optional; read from src/lib/config.ts)
 Nothing is written to the repository. Signed URLs are masked in Actions logs.
 """
 import argparse, io, json, math, os, re, sys, tempfile, time, urllib.request, urllib.error
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = 1
 WIDTHS = [1200, 2000]
 JPEG_Q = {1200: 80, 2000: 76}  # ~250 KB + ~380 KB per page: a 132-page book is ~80 MB
+# Zoom tier (docs/derived-pages.md): one larger image per page that the app fetches on demand when a page is magnified.
+# Deliberately NOT listed in manifest "widths": older apps download every listed width for every page and use the
+# largest as their detail image. Its presence is announced by a marker in manifest "engine" instead.
+ZOOM_WIDTH = 3600
+ZOOM_Q = 72
+ZOOM_MARK = f'z{ZOOM_WIDTH}'
 
 def cfg():
     src = (ROOT / 'src/lib/config.ts').read_text()
@@ -74,22 +81,29 @@ def words_for(page):
     flush(); tp.close(); return out
 
 def render_page(args):
-    path, index, outdir = args
+    """base=True: reading/detail images + words (the set every app version uses). zoom=True: the on-demand zoom image.
+    Each tier is rendered from the vector page at its own scale (never upscaled, never derived from a JPEG)."""
+    path, index, outdir, base, zoom = args
     import pypdfium2 as pdfium
     from PIL import Image
     pdf = pdfium.PdfDocument(path); page = pdf[index]
     w_pt, h_pt = page.get_width(), page.get_height()
-    t0 = time.time()
-    big = page.render(scale=WIDTHS[-1] / w_pt, draw_annots=True, rev_byteorder=True).to_pil().convert('RGB')
+    files = {}; zoom_files = {}; nwords = 0; t0 = time.time()
+    if zoom:
+        z = page.render(scale=ZOOM_WIDTH / w_pt, draw_annots=True, rev_byteorder=True).to_pil().convert('RGB')
+        if z.width != ZOOM_WIDTH: z = z.resize((ZOOM_WIDTH, round(z.height * ZOOM_WIDTH / z.width)), Image.LANCZOS)
+        p = Path(outdir) / f'p{index}-{ZOOM_WIDTH}.jpg'; z.save(p, 'JPEG', quality=ZOOM_Q, optimize=True, progressive=False); zoom_files[p.name] = p.stat().st_size
+        del z
+    if base:
+        big = page.render(scale=WIDTHS[-1] / w_pt, draw_annots=True, rev_byteorder=True).to_pil().convert('RGB')
+        for w in sorted(WIDTHS, reverse=True):
+            im = big if w == big.width else big.resize((w, round(big.height * w / big.width)), Image.LANCZOS)
+            p = Path(outdir) / f'p{index}-{w}.jpg'; im.save(p, 'JPEG', quality=JPEG_Q[w], optimize=True, progressive=False); files[p.name] = p.stat().st_size
+        ws = words_for(page); nwords = len(ws)
+        p = Path(outdir) / f'p{index}-words.json'; p.write_text(json.dumps(ws, ensure_ascii=False, separators=(',', ':'))); files[p.name] = p.stat().st_size
     t1 = time.time()
-    files = {}
-    for w in sorted(WIDTHS, reverse=True):
-        im = big if w == big.width else big.resize((w, round(big.height * w / big.width)), Image.LANCZOS)
-        p = Path(outdir) / f'p{index}-{w}.jpg'; im.save(p, 'JPEG', quality=JPEG_Q[w], optimize=True, progressive=False); files[p.name] = p.stat().st_size
-    ws = words_for(page)
-    p = Path(outdir) / f'p{index}-words.json'; p.write_text(json.dumps(ws, ensure_ascii=False, separators=(',', ':'))); files[p.name] = p.stat().st_size
     page.close(); pdf.close()
-    return index, [round(w_pt, 2), round(h_pt, 2)], files, round(t1 - t0, 3), len(ws)
+    return index, [round(w_pt, 2), round(h_pt, 2)], files, round(t1 - t0, 3), nwords, zoom_files
 
 def engine_name():
     try:
@@ -98,11 +112,14 @@ def engine_name():
     except Exception: return 'pypdfium2'
 
 # ---------- pipeline ----------
-def process(material, force, dry, workers):
+def process(material, force, dry, workers, no_zoom=False):
     import pypdfium2 as pdfium
     mid = material['id']; title = material['title']
     d = material.get('derived') or {}
-    if not force and d.get('version', 0) >= VERSION: print(f'skip {mid} ({title}): derived v{d.get("version")}'); return
+    have_base = not force and d.get('version', 0) >= VERSION and int(d.get('pages') or 0) > 0
+    have_zoom = have_base and ZOOM_MARK in str(d.get('engine') or '').split()
+    if have_base and (have_zoom or no_zoom): print(f'skip {mid} ({title}): derived v{d.get("version")}{" + " + ZOOM_MARK if have_zoom else ""}'); return
+    base = not have_base; zoom = not no_zoom
     dl = call('download', materialId=mid); mask(dl['url'])
     with tempfile.TemporaryDirectory() as tmp:
         pdf_path = os.path.join(tmp, 'in.pdf'); t = time.time(); st, data = http('GET', dl['url'], timeout=600); Path(pdf_path).write_bytes(data)
@@ -111,35 +128,46 @@ def process(material, force, dry, workers):
         outdir = os.path.join(tmp, 'out'); os.makedirs(outdir)
         t = time.time(); results = []
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            for r in ex.map(render_page, [(pdf_path, i, outdir) for i in range(n)]): results.append(r); print(f'  p{r[0]} render {r[3]}s words {r[4]} sizes {list(r[2].values())}', flush=True)
+            for r in ex.map(render_page, [(pdf_path, i, outdir, base, zoom) for i in range(n)]): results.append(r); print(f'  p{r[0]} render {r[3]}s words {r[4]} sizes {list(r[2].values())} zoom {list(r[5].values())}', flush=True)
         results.sort(key=lambda r: r[0]); render_s = time.time() - t
-        files = {}; sizes = []
-        for idx, size, fl, _, _ in results: sizes.append(size); files.update(fl)
-        total = sum(files.values())
-        manifest = {'version': VERSION, 'materialId': mid, 'pages': n, 'widths': WIDTHS, 'words': True, 'sizes': sizes, 'bytes': total, 'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'engine': engine_name()}
-        Path(outdir, 'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
-        print(f'{mid}: {n} pages rendered in {render_s:.0f}s, {total/1048576:.1f} MB total ({total/n/1024:.0f} KB/page)', flush=True)
+        files = {}; sizes = []; zoom_total = 0
+        for idx, size, fl, _, _, zf in results: sizes.append(size); files.update(fl); zoom_total += sum(zf.values())
+        mark = (' ' + ZOOM_MARK) if zoom else ''
+        if base:
+            total = sum(files.values())
+            manifest = {'version': VERSION, 'materialId': mid, 'pages': n, 'widths': WIDTHS, 'words': True, 'sizes': sizes, 'bytes': total, 'generatedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'engine': engine_name() + mark}
+            Path(outdir, 'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')))
+        else:
+            # zoom tier added to an existing set: the stored manifest stays as it is, only the engine marker is appended
+            if int(d.get('pages') or 0) != n: raise RuntimeError(f'page count changed: derived {d.get("pages")} vs pdf {n}')
+            total = int(d.get('bytes') or 0)
+            manifest = {'version': d.get('version', VERSION), 'materialId': mid, 'pages': n, 'widths': d.get('widths') or WIDTHS, 'words': bool(d.get('words')), 'bytes': total, 'generatedAt': d.get('generatedAt') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'engine': (str(d.get('engine') or engine_name()) + mark)[:80]}
+        print(f'{mid}: {n} pages rendered in {render_s:.0f}s (base={base} zoom={zoom}), base {total/1048576:.1f} MB, zoom {zoom_total/1048576:.1f} MB ({zoom_total/max(1,n)/1024:.0f} KB/page)', flush=True)
         if dry: return
         names = sorted(os.listdir(outdir)); t = time.time()
+        def put(u):
+            mask(u['url']); name = u['path'].rsplit('/', 1)[1]; body = Path(outdir, name).read_bytes()
+            ctype = 'application/json' if name.endswith('.json') else 'image/jpeg'
+            http('PUT', u['url'], data=body, headers={'Content-Type': ctype, 'x-upsert': 'true'}); return name
         for i in range(0, len(names), 250):
             batch = names[i:i + 250]; up = call('materials.derivedUploadUrl', materialId=mid, files=batch)
-            for u in up['uploads']:
-                mask(u['url']); name = u['path'].rsplit('/', 1)[1]; body = Path(outdir, name).read_bytes()
-                ctype = 'application/json' if name.endswith('.json') else 'image/jpeg'
-                http('PUT', u['url'], data=body, headers={'Content-Type': ctype, 'x-upsert': 'true'})
+            got = {u['path'].rsplit('/', 1)[1] for u in up['uploads']}
+            if got != set(batch): raise RuntimeError(f'upload URLs refused for {sorted(set(batch) - got)[:3]}')  # never mark a tier that was not stored
+            with ThreadPoolExecutor(max_workers=8) as tp: list(tp.map(put, up['uploads']))
         print(f'{mid}: uploaded {len(names)} files in {time.time()-t:.0f}s', flush=True)
         done = call('materials.derivedComplete', materialId=mid, manifest=manifest)
         print(f'{mid}: derived = {json.dumps(done["material"].get("derived"))}', flush=True)
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--only'); ap.add_argument('--force', action='store_true'); ap.add_argument('--dry', action='store_true'); ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2)))
+    ap = argparse.ArgumentParser(); ap.add_argument('--only'); ap.add_argument('--force', action='store_true'); ap.add_argument('--dry', action='store_true'); ap.add_argument('--no-zoom', action='store_true', help='base tiers only')
+    ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2)))
     a = ap.parse_args()
     mask(os.environ.get('ORUN_ADMIN_CODE'))
     mats = [m for m in call('list')['materials'] if m.get('ready')]
     if a.only: mats = [m for m in mats if m['id'] == a.only]
     print(f'{len(mats)} ready materials', flush=True)
     for m in mats:
-        try: process(m, a.force, a.dry, a.workers)
+        try: process(m, a.force, a.dry, a.workers, a.no_zoom)
         except Exception as e: print(f'::error::{m["id"]} failed: {type(e).__name__}: {e}', flush=True)
 
 if __name__ == '__main__': main()

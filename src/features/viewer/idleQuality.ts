@@ -1,6 +1,6 @@
 import { PDF_DETAIL_IDLE_MS } from './pdfWork';
 export function createIdleQualityGate(options: {
-  onReady: (ready: boolean) => void; isBusy: () => boolean;
+  onReady: (ready: boolean) => void; isBusy: () => boolean; /** quiet time before ready (default PDF_DETAIL_IDLE_MS) */ idleMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
 }) {
@@ -12,7 +12,7 @@ export function createIdleQualityGate(options: {
     options.onReady(true);
   };
   return {
-    activity() { if (disposed) return; options.onReady(false); if (timer != null) clear(timer); timer = set(idle, PDF_DETAIL_IDLE_MS); },
+    activity() { if (disposed) return; options.onReady(false); if (timer != null) clear(timer); timer = set(idle, options.idleMs ?? PDF_DETAIL_IDLE_MS); },
     dispose() { disposed = true; if (timer != null) clear(timer); timer = null; },
   };
 }
