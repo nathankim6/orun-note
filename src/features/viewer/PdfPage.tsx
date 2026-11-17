@@ -254,7 +254,9 @@ function NativePdfPage({ uri, index, width, height, renderScale = 1, tile: tileP
   const tileFailure = useTileFailure();
   const session = useRef<{ page: string; done?: () => void } | null>(null);
   if (session.current?.page !== page) { const s = surfaceLoads.begin(index); session.current = { page, done: s.ready('reading', nativePagePixels(width * renderScale, PixelRatio.get())) }; }
+  useEffect(() => { (globalThis as { __labNote?: (l: string) => void }).__labNote?.(`native page mount i=${index} ${Math.round(width)}x${Math.round(height)}pt px=${nativePagePixels(width * renderScale, PixelRatio.get())} sharp=${sharp ?? 'inline'}`); return () => (globalThis as { __labNote?: (l: string) => void }).__labNote?.('native page unmount i=' + index); }, []);
   const onPageReady = (e: { nativeEvent: PageReadyEvent }) => {
+    (globalThis as { __labNote?: (l: string) => void }).__labNote?.('native page ready ' + JSON.stringify(e.nativeEvent));
     if (e.nativeEvent.page !== index) return;
     if (!e.nativeEvent.ok) { onFailure(); return; }
     session.current?.done?.(); if (session.current) session.current.done = undefined;
