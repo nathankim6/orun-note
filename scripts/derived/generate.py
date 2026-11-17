@@ -35,7 +35,7 @@ def call(action, **payload):
     req = urllib.request.Request(fn, data=body, headers={'Content-Type': 'application/json', 'apikey': anon, 'Authorization': 'Bearer ' + anon})
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(req, timeout=60) as r: j = json.loads(r.read())
+            with urllib.request.urlopen(req, timeout=120) as r: j = json.loads(r.read())
             if not j.get('ok'): raise RuntimeError(f'{action}: {j.get("error")}')
             return j
         except (urllib.error.URLError, TimeoutError) as e:
@@ -149,8 +149,9 @@ def process(material, force, dry, workers, no_zoom=False):
             mask(u['url']); name = u['path'].rsplit('/', 1)[1]; body = Path(outdir, name).read_bytes()
             ctype = 'application/json' if name.endswith('.json') else 'image/jpeg'
             http('PUT', u['url'], data=body, headers={'Content-Type': ctype, 'x-upsert': 'true'}); return name
-        for i in range(0, len(names), 250):
-            batch = names[i:i + 250]; up = call('materials.derivedUploadUrl', materialId=mid, files=batch)
+        # 100 per request: the function signs the upload URLs one by one, and 250 of them ran into the 60 s read timeout
+        for i in range(0, len(names), 100):
+            batch = names[i:i + 100]; up = call('materials.derivedUploadUrl', materialId=mid, files=batch)
             got = {u['path'].rsplit('/', 1)[1] for u in up['uploads']}
             if got != set(batch): raise RuntimeError(f'upload URLs refused for {sorted(set(batch) - got)[:3]}')  # never mark a tier that was not stored
             with ThreadPoolExecutor(max_workers=8) as tp: list(tp.map(put, up['uploads']))
