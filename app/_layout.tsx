@@ -15,6 +15,7 @@ import { UpdateGate } from '@/components/UpdateGate';
 import { supabase } from '@/lib/supabase';
 import { GlassBackground } from '@/components/Glass';
 import { reportError, flushNativeCrashes } from '@/lib/diag';
+import { useOtaUpdateResumeCheck } from '@/lib/otaUpdates';
 
 const ErrorUtilsAny = (globalThis as any).ErrorUtils;
 if (ErrorUtilsAny && !(globalThis as any).__paperlyErrorHandlerInstalled) {
@@ -46,6 +47,7 @@ export default function RootLayout() {
   const { role, hydrated, refreshMe } = useSession(); const segments = useSegments(); const router = useRouter();
   const captureProtected = captureProtectionRequired(role, hydrated);
   const { hidden, attempts, protectionPending } = useContentProtection(captureProtected);
+  useOtaUpdateResumeCheck();
   useEffect(() => { if (captureProtected && attempts > 0) showToast('보안 정책에 따라 화면 캡처가 차단되었어요'); }, [captureProtected, attempts]);
   useEffect(() => { if (hydrated) flushNativeCrashes(); }, [hydrated]);
   useEffect(() => { if (!hydrated) return; refreshMe(); const { data } = supabase.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' || ev === 'TOKEN_REFRESHED' || ev === 'SIGNED_OUT') refreshMe(); }); return () => data.subscription.unsubscribe(); }, [hydrated]);
