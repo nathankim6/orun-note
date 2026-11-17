@@ -105,7 +105,7 @@ if (ready) {
   { const was = !!state()?.dial; sh('input', 'keyevent', '308'); const s = await until(x => !!x.dial !== was, 4000); check('stylus button key (308) reaches the app', !!s, '', true); if (state()?.dial) { link('cmd=dial'); await until(x => x.dial === false, 4000); } }
   const mark = state()?.at ?? 0; link('cmd=diag'); const diag = await until(s => s.stylusDiagnostics != null && s.at > mark, 8000);
   check('bridge diagnostics', !!diag?.stylusDiagnostics, JSON.stringify(diag?.stylusDiagnostics), true);
-  if (uinputWorks) check('diagnostics saw the stylus button bit (32)', Array.isArray(diag?.stylusDiagnostics?.buttonStates) && diag.stylusDiagnostics.buttonStates.includes(32) && diag.stylusDiagnostics.emitted >= 2, JSON.stringify(diag?.stylusDiagnostics));
+  if (uinputWorks) check('diagnostics saw the stylus button bit (32)', Array.isArray(diag?.stylusDiagnostics?.buttonStates) && diag.stylusDiagnostics.buttonStates.includes(32) && diag.stylusDiagnostics.emitted >= 1, JSON.stringify(diag?.stylusDiagnostics)); // counters restart at every read
   // magnification through the same pipeline (Android keeps its vector tile path): evidence screenshots only
   link('cmd=zoom&z=2.2'); await sleep(6000); await shot('zoom-2.2'); link('cmd=zoom&z=1'); await sleep(1200);
   pencil.close();
