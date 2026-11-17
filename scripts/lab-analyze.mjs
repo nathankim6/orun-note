@@ -29,8 +29,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dir = process.argv[2]; const rows = [];
   for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.png')).sort()) {
     const meta = path.join(dir, f.replace(/\.png$/, '.json')); if (!fs.existsSync(meta)) continue;
-    try { const st = JSON.parse(fs.readFileSync(meta, 'utf8')); const img = decodePng(fs.readFileSync(path.join(dir, f))); const rects = st.target?.rects ?? [];
-      rows.push({ shot: f.replace(/\.png$/, ''), size: `${img.width}x${img.height}`, gratings: rects.map(r => ({ barPt: r.bar, barPx: +r.barPx.toFixed(2), modulation: (m => m == null ? null : +m.toFixed(2))(modulation(img, r)) })) }); }
+    try { const st = JSON.parse(fs.readFileSync(meta, 'utf8')); const img = decodePng(fs.readFileSync(path.join(dir, f))); const shot = f.replace(/\.png$/, '');
+      const measure = rects => rects.map(r => ({ barPt: r.bar, barPx: +r.barPx.toFixed(2), modulation: (m => m == null ? null : +m.toFixed(2))(modulation(img, r)) }));
+      // a compositing-matrix shot carries one set of gratings per cell; any other shot the page's own target
+      if (Array.isArray(st.matrix) && shot.startsWith('matrix')) for (const cell of st.matrix) rows.push({ shot: `${shot}:${cell.name}`, size: `${img.width}x${img.height}`, gratings: measure(cell.rects ?? []) });
+      else rows.push({ shot, size: `${img.width}x${img.height}`, gratings: measure(st.target?.rects ?? []) }); }
     catch (e) { rows.push({ shot: f, error: String(e.message ?? e) }); }
   }
   fs.writeFileSync(path.join(dir, 'analysis.json'), JSON.stringify(rows, null, 1));

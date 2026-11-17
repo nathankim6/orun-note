@@ -41,7 +41,7 @@ for (const [name, body] of [['native', native], ['image', image]]) {
   assert(/tileFailure\.failed !== tileRequest/.test(body), name + ' path must re-enable the tile after a retry');
 }
 assert(/allowed && \(!tileFirst \|\| tileFailure\.failed === tileRequest\)/.test(page), 'a failed tile must expose the detail raster');
-assert(page.includes('retry]);'), 'TileLayer must re-request when the retry counter changes');
+assert(/\[uri, index, tile\?\.pxW, tile\?\.x, tile\?\.y, tile\?\.w, tile\?\.h, allowed, token, retry, sourceKey, needed\]\);/.test(page), 'TileLayer must re-request when the retry counter (or its pixel source) changes');
 
 // 3. Behaviour: a failed tile is really requested again when the retry counter is bumped.
 function load(file, mocks = {}) {
@@ -61,7 +61,7 @@ const R = {
 const jsx = (type, props, key) => ({ type, props, key });
 const G = load('src/features/viewer/pdfTileGeometry.ts'), S = load('src/features/viewer/renderScheduler.ts'), W = load('src/features/viewer/pdfWork.ts', { './renderScheduler': S });
 const P = load('src/features/viewer/PdfPage.tsx', {
-  'react': R, './derivedPages': { DerivedPagesContext: {}, pageImage: async () => null, forUri: () => null, isPresentSync: () => false, pageImagePath: () => null , useDerivedFile: () => 'absent' }, './DerivedPage': { DerivedPdfPage: 'DerivedPdfPage' },
+  'react': R, './derivedPages': { DerivedPagesContext: {}, pageImage: async () => null, forUri: () => null, isPresentSync: () => false, pageImagePath: () => null , useDerivedFile: () => 'absent' }, './DerivedPage': { DerivedPdfPage: 'DerivedPdfPage', useDerivedSharpSource: () => ({ needed: false, source: undefined, vector: false }) }, './SharpFrame': { SharpFrame: 'SharpFrame', sharpTileRect: () => ({ left: 0, top: 0, width: 1, height: 1, exact: true }) },
   './derivedPagesCore': { tierWidth: () => null }, './nativePageView': load('src/features/viewer/nativePageView.ts'),
   './tileProgress': load('src/features/viewer/tileProgress.ts'), 'react/jsx-runtime': { jsx, jsxs: jsx },
   'react-native': { Image: 'Image', Platform: { OS: 'ios' }, PixelRatio: { get: () => 3 } },

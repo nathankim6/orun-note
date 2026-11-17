@@ -1,7 +1,7 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, Image, PixelRatio, Text, Platform } from 'react-native';
 import { PdfRenderer, PdfPageSurface, type PageReadyEvent } from '../../../modules/pdf-renderer';
-import { nativePagePixels, useNativeSurface, createWarmBatcher } from './nativePageView';
+import { nativePagePixels, useNativeSurface, createWarmBatcher, NATIVE_PAGE_MAX_PX } from './nativePageView';
 import { useTheme } from '@/theme';
 import { reportError } from '@/lib/diag';
 import type { PaperTemplate } from '@/data/types';
@@ -13,7 +13,8 @@ import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
 import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath, useDerivedFile } from './derivedPages';
-import { DerivedPdfPage } from './DerivedPage';
+import { DerivedPdfPage, useDerivedSharpSource } from './DerivedPage';
+import { SharpFrame, sharpTileRect, type SharpMotion, type TileAt } from './SharpFrame';
 import { tierWidth } from './derivedPagesCore';
 
 const work = createPdfWork(createPreparationReporter(Platform.OS, () => PdfRenderer.takeRenderTimings(), reportError));
@@ -127,7 +128,11 @@ export function prefetchPage(uri: string | null, index: number, displayWidth: nu
     () => PdfRenderer.renderReading(uri, index, width), { page, width, index }).release;
 }
 export type { PageTile } from './pdfTileGeometry';
-type TileImage = { page: string; token: object; src: string; t: PageTile; px: { w: number; h: number } };
+type TileImage = { page: string; token: object; src: string; t: PageTile; px: { w: number; h: number }; at?: TileAt };
+/** Screen-space placement for TileLayer (iOS document surface): the page box at zoom 1 and the live transform. */
+export type TileOverlay = { box: { x: number; y: number; w: number; h: number }; motion: SharpMotion };
+/** Where the tile's pixels come from when it is not the device PDF engine (a window of a server page raster). */
+export type TileSource = { key: string; render: (t: PageTile) => Promise<string> };
 /** A tile that failed once must not leave a page on the soft base raster for the rest of the visit. */
 export const TILE_RETRY_MS = 1200, TILE_RETRIES = 3;
 /**
@@ -145,7 +150,9 @@ function useTileFailure() {
   return { failed, attempt, fail: setFailed };
 }
 /** Loaded tile stays underneath its replacement, including throughout motion. */
-export function TileLayer({ uri, index, tile, width, height, retry = 0, onFailure }: { uri: string; index: number; tile?: PageTile; width: number; height: number; /** bumped to request the same region again after a failure */ retry?: number; onFailure?: (key: string) => void }) {
+export function TileLayer({ uri, index, tile, width, height, retry = 0, onFailure, overlay, source, needed = true }: { uri: string; index: number; tile?: PageTile; width: number; height: number; /** bumped to request the same region again after a failure */ retry?: number; onFailure?: (key: string) => void;
+  /** draw in viewport space, outside the zoom transform (iOS); default: inside the page */ overlay?: TileOverlay; source?: TileSource;
+  /** false: the page under the tile is already sharp enough at this magnification, so nothing is requested and nothing stays */ needed?: boolean }) {
   const allowed = useContext(PageQualityContext), page = uri + '|' + index;
   const identity = useRef({ page, token: {} });
   if (identity.current.page !== page) identity.current = { page, token: {} };
@@ -155,8 +162,10 @@ export function TileLayer({ uri, index, tile, width, height, retry = 0, onFailur
   const shownRef = useRef(shown); shownRef.current = shown;
   const failureRef = useRef(onFailure); failureRef.current = onFailure;
   const rr = PdfRenderer.hasRenderRegion() ? PdfRenderer.renderRegion : undefined;
+  const sourceRef = useRef(source); sourceRef.current = source; const sourceKey = source?.key ?? '';
+  useEffect(() => { if (!needed) { setShown(null); setPending(null); } }, [needed]);
   useEffect(() => {
-    if (!tile || !rr || !allowed) return;
+    if (!tile || !(rr || source) || !allowed || !needed) return;
     let alive = true; const leases: RenderLease[] = [];
     const failed = () => { if (alive && identity.current.token === token) failureRef.current?.(pageTileKey(tile)); };
     const present = (src: string, t: PageTile) => {
@@ -165,25 +174,32 @@ export function TileLayer({ uri, index, tile, width, height, retry = 0, onFailur
       // its Image was unmounted during A -> B -> A, so the new session must receive onLoad.
       const decoded = shownRef.current;
       if (decoded?.token === token && decoded.src === src) setPending(null);
-      else setPending({ page, token, src, t: tile, px: { w: t.w, h: t.h } });
+      else setPending({ page, token, src, t: tile, px: { w: t.w, h: t.h }, at: tile.at });
     };
     void (async () => {
       // Visible reads remain urgent. Speculative reading neighbours never delay a visible tile.
       await work.reading.whenIdle(RenderPriority.visible); if (!alive) return;
       const render = async (t: PageTile) => {
-        const lease = work.detail.acquire('tile|' + page + '|' + pageTileKey(t), RenderPriority.tile, () => rr(uri, index, t.pxW, t.x, t.y, t.w, t.h));
+        const from = sourceRef.current;
+        const lease = work.detail.acquire('tile|' + page + '|' + (from ? from.key + '|' : '') + pageTileKey(t), RenderPriority.tile, () => from ? from.render(t) : rr!(uri, index, t.pxW, t.x, t.y, t.w, t.h));
         leases.push(lease); const started = Date.now(); const src = await lease.promise; noteTileTiming(uri, Date.now() - started); return src;
       };
-      if (tileIsSlow(uri)) { const quick = await render(halfTile(tile)); if (!alive) return; if (quick) present(quick, halfTile(tile)); }
+      if (!sourceRef.current && tileIsSlow(uri)) { const quick = await render(halfTile(tile)); if (!alive) return; if (quick) present(quick, halfTile(tile)); }
       const src = await render(tile);
       if (!src) { failed(); return; }
       present(src, tile);
     })().catch(failed);
     return () => { alive = false; for (const l of leases) l.release(); };
-  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token, retry]);
+  }, [uri, index, tile?.pxW, tile?.x, tile?.y, tile?.w, tile?.h, allowed, token, retry, sourceKey, needed]);
   const currentShown = shown?.token === token ? shown : null;
   const images = [currentShown, pending].filter((im, i) => im && im.token === token && (i === 0 || im.src !== currentShown?.src)) as TileImage[];
   const dpr = PixelRatio.get();
+  const onTileLoad = (im: TileImage) => { if (identity.current.token !== im.token || pendingRef.current !== im) return; shownRef.current = im; setShown(im); setPending(null); };
+  const onTileError = (im: TileImage) => { if (identity.current.token !== im.token || pendingRef.current !== im) return; setPending(null); failureRef.current?.(pageTileKey(im.t)); };
+  // Viewport space: each image sits in a frame that is the identity while the document rests where the tile was made.
+  if (overlay) return <>{images.map(im => im.at ? <SharpFrame key={im.src} at={im.at} motion={overlay.motion}>
+    <Image source={{ uri: im.src }} style={{ position: 'absolute', ...(({ exact: _exact, ...r }) => r)(sharpTileRect(overlay.box, im.t, im.px, im.at, dpr)), opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0} onLoad={() => onTileLoad(im)} onError={() => onTileError(im)} />
+  </SharpFrame> : null)}</>;
   return <>{images.map(im => { const t = im.t; return <Image key={im.src} source={{ uri: im.src }} style={{ position: 'absolute', ...tileImageStyle(t, im.px, width, height, dpr), opacity: im === pending ? 0 : 1 }} resizeMode="stretch" fadeDuration={0}
     onLoad={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; shownRef.current = im; setShown(im); setPending(null); }}
     onError={() => { if (identity.current.token !== im.token || pendingRef.current !== im) return; setPending(null); failureRef.current?.(pageTileKey(im.t)); }} />; })}</>;
@@ -200,11 +216,12 @@ export function BlankPaper({ width, height, template = 'plain' }: { width: numbe
   if (t === 'music') { const staffGap = width / 70; const block = staffGap * 4 + width / 14; for (let y = height * 0.08, j = 0; y + staffGap * 4 < height * 0.95; y += block, j++) for (let i = 0; i < 5; i++) hline(y + i * staffGap, `m${j}_${i}`, 'rgba(23,32,51,0.35)'); }
   return <View style={{ width, height, backgroundColor: '#fff', overflow: 'hidden' }} pointerEvents="none">{els}</View>;
 }
-export function PdfPage(props: { uri: string | null; index: number; width: number; height: number; renderScale?: number; template?: PaperTemplate; tile?: PageTile }) {
+export function PdfPage(props: { uri: string | null; index: number; width: number; height: number; renderScale?: number; template?: PaperTemplate; tile?: PageTile;
+  /** 'none': draw the page only; a PdfSharp in the document's screen-space layer sharpens it (iOS document surface) */ sharp?: 'inline' | 'none' }) {
   if (props.uri === 'blank:') return <BlankPaper width={props.width} height={props.height} template={props.template} />;
   return <RasterPdfPage {...props} />;
 }
-type RasterProps = { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile };
+type RasterProps = { uri: string | null; index: number; width: number; height: number; renderScale?: number; tile?: PageTile; sharp?: 'inline' | 'none' };
 const surfaceLoads = createImageLoadReporter(Platform.OS + '-native', reportError);
 function RasterPdfPage(props: RasterProps) {
   const page = props.uri + '|' + props.index;
@@ -219,7 +236,7 @@ function RasterPdfPage(props: RasterProps) {
   const derivedFile = useDerivedFile(readPath);
   if (readPath && derivedFile === 'present') {
     const { uri, index, width, height, tile } = props; const tileRetry = tileFailure.attempt;
-    return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile} basePx={width * (props.renderScale ?? 1) * PixelRatio.get()}
+    return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile} basePx={width * (props.renderScale ?? 1) * PixelRatio.get()} sharp={props.sharp}
       renderTile={uri && tile && PdfRenderer.hasRenderRegion() && tileFailure.failed !== page + '|' + pageTileKey(tile)
         ? () => <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileRetry} onFailure={key => tileFailure.fail(page + '|' + key)} /> : undefined} />;
   }
@@ -230,7 +247,8 @@ function RasterPdfPage(props: RasterProps) {
   return <ImagePdfPage {...props} />;
 }
 /** Base page drawn by the native PdfPageView (in-memory bitmap at screen resolution); zoom tiles stay on top as before. */
-function NativePdfPage({ uri, index, width, height, renderScale = 1, tile, onFailure }: RasterProps & { uri: string; onFailure: () => void }) {
+function NativePdfPage({ uri, index, width, height, renderScale = 1, tile: tileProp, sharp, onFailure }: RasterProps & { uri: string; onFailure: () => void }) {
+  const tile = sharp === 'none' ? undefined : tileProp;
   const Surface = PdfPageSurface!; const page = uri + '|' + index;
   const tileRequest = page + '|' + pageTileKey(tile);
   const tileFailure = useTileFailure();
@@ -249,7 +267,8 @@ function NativePdfPage({ uri, index, width, height, renderScale = 1, tile, onFai
       ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}><TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileFailure.attempt} onFailure={key => tileFailure.fail(page + '|' + key)} /></View> : null}
   </View>;
 }
-function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile }: RasterProps) {
+function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile: tileProp, sharp }: RasterProps) {
+  const tile = sharp === 'none' ? undefined : tileProp;
   const allowed = useContext(PageQualityContext), { colors } = useTheme();
   const tileRequest = uri + '|' + index + '|' + pageTileKey(tile);
   const tileFailure = useTileFailure();
@@ -263,4 +282,23 @@ function ImagePdfPage({ uri, index, width, height, renderScale = 1, tile }: Rast
     {src ? <><PdfImageLayers reading={reading} detail={detail} width={width} height={height} onLoad={onLoad} />{uri && presented ? <TileLayer uri={uri} index={index} tile={tile} width={width} height={height} retry={tileFailure.attempt} onFailure={key => tileFailure.fail(uri + '|' + index + '|' + key)} /> : null}</> : <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>{err ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>페이지를 불러오지 못했어요</Text> : <ActivityIndicator color={colors.primary} />}</View>}
   </View>;
 }
+/**
+ * The sharp part of one page for the document's screen-space layer (iOS): a window of the page at exact screen pixels,
+ * from the best server raster on disk or, failing that, the device PDF engine. Rendered OUTSIDE the zoom transform.
+ */
+export function PdfSharp({ uri, index, tile, box, motion }: { uri: string | null; index: number; tile?: PageTile; box: { x: number; y: number; w: number; h: number }; motion: SharpMotion }) {
+  const page = uri + '|' + index; const dpr = PixelRatio.get();
+  const derived = useContext(DerivedPagesContext);
+  const readPath = uri && uri !== 'blank:' && derived ? pageImagePath(derived, index, 'reading') : null;
+  const file = useDerivedFile(readPath);
+  const plan = useDerivedSharpSource(readPath && file === 'present' ? derived : null, index, tile, box.w * dpr);
+  const failure = useTileFailure();
+  if (!uri || uri === 'blank:' || failure.failed === page + '|' + pageTileKey(tile)) return null;
+  // A document without server pages shows the native page bitmap at screen resolution: a vector tile only adds
+  // pixels once the page is magnified.
+  const textbook = !!readPath && file !== 'absent';
+  const needed = textbook ? plan.needed : !!tile && PdfRenderer.hasRenderRegion() && tile.pxW > Math.min(NATIVE_PAGE_MAX_PX, nativePagePixels(box.w, dpr)) * 1.05;
+  return <TileLayer uri={uri} index={index} tile={tile} width={box.w} height={box.h} retry={failure.attempt} onFailure={key => failure.fail(page + '|' + key)} overlay={{ box, motion }} source={textbook ? plan.source : undefined} needed={needed} />;
+}
+export type { SharpMotion } from './SharpFrame';
 export function clearImageCache() { work.reading.clear(); work.detail.clear(); PdfRenderer.clearPageBitmaps(); }

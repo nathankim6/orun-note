@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useContentSize } from '@/theme';
 import { useDocsStore } from '@/store/docs';
 import { resolveUri } from '@/lib/files';
-import { PdfPage, prefetchPage } from './PdfPage';
+import { PdfPage, PdfSharp, prefetchPage, type SharpMotion } from './PdfPage';
 import { DocumentView, DocHandle, PageBox, PageTile } from './DocumentView';
 import { IconButton, Muted, T } from '@/components/ui';
 import { Doc } from '@/data/types';
@@ -17,6 +17,8 @@ import { DerivedPagesContext } from './derivedPages';
 import { infoFor, ensureDerived } from '@/features/library/derivedDownload';
 import { useSession } from '@/store/session';
 
+/** iOS: page image in its own layer, sharp part outside the zoom transform (docs/ios-zoom-sharpness.md). */
+const LAYERED_SURFACE = Platform.OS === 'ios';
 const MIN_W = 280, MIN_H = 260, HEADER_H = 44, BAR_H = 40, EDGE = 14, CORNER = 30;
 /** resize hit areas: 24pt edges (centred on the border, half outside the window), 32pt corners */
 const HIT = 24, HIT_CORNER = 32;
@@ -101,8 +103,11 @@ function SubDocWindowBody({ mode, docId, excludeId, onPick, onClose, docked, spl
   const pageSizes = useMemo(() => (doc ? doc.pages.map((p) => ({ width: p.width, height: p.height })) : []), [doc?.id, doc?.pageCount]);
   const renderSub = useCallback((pi: number, b: PageBox, rs: number, tile?: PageTile) => {
     const pg = doc?.pages[pi]; if (!doc || !pg) return null; const w = b.w * rs, h = b.h * rs;
+    if (LAYERED_SURFACE) return null; // the paper and sharp layers below draw the page (iOS)
     return <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}><PdfPage uri={uri} index={pg.index} width={w} height={h} renderScale={1 / rs} tile={tile} template={doc.template} /></View>;
   }, [doc, uri]);
+  const renderSubPaper = useCallback((pi: number, b: PageBox, tile?: PageTile) => { const pg = doc?.pages[pi]; return doc && pg ? <PdfPage uri={uri} index={pg.index} width={b.w} height={b.h} tile={tile} template={doc.template} sharp="none" /> : null; }, [doc, uri]);
+  const renderSubSharp = useCallback((pi: number, b: PageBox, tile: PageTile | undefined, motion: SharpMotion) => { const pg = doc?.pages[pi]; return doc && pg ? <PdfSharp uri={uri} index={pg.index} tile={tile} box={b} motion={motion} /> : null; }, [doc, uri]);
   const goto = (i: number) => { if (!doc) return; const t = Math.max(0, Math.min(doc.pageCount - 1, i)); docRef.current?.goto(t); setPage(t); };
   const showList = !doc || mode === 'pick' || docId === '';
 
@@ -128,7 +133,7 @@ function SubDocWindowBody({ mode, docId, excludeId, onPick, onClose, docked, spl
         </ScrollView>
       ) : (
         <View style={{ flex: 1, backgroundColor: '#E6EDF7' }}>
-          {uri ? <DocumentView ref={docRef} key={doc.id} width={viewW} height={viewH} pages={pageSizes} mode="vertical" initialPage={page} renderPage={renderSub} mouseDrag doubleTapZoom noKeys
+          {uri ? <DocumentView ref={docRef} key={doc.id} width={viewW} height={viewH} pages={pageSizes} mode="vertical" initialPage={page} renderPage={renderSub} renderPaper={LAYERED_SURFACE ? renderSubPaper : undefined} renderSharp={LAYERED_SURFACE ? renderSubSharp : undefined} mouseDrag doubleTapZoom noKeys
             onPageChange={setPage} onZoomSettled={(z) => setZoomPct(Math.round(z * 100))} onPrefetch={(i, b, rank) => { const pg = doc.pages[i]; if (pg && uri) prefetchPage(uri, pg.index, b.w, rank); }} />
             : <View style={{ width: viewW, height: viewH }} />}
           {grid && <SubPageGrid doc={doc} uri={uri} page={page} width={viewW} height={viewH} onPick={(i) => { setGrid(false); goto(i); }} />}

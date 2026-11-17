@@ -25,6 +25,8 @@ type Native = {
   warmPages?(uri: string, indices: number[], width: number): void;
   clearPageBitmaps?(): void;
   takeMemoryWarnings?(): number;
+  /** iOS: window of a page raster on disk, resampled to exact pixels (renderRegion contract). Missing elsewhere / on older builds. */
+  cropImage?(path: string, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string>;
 };
 export type PageReadyEvent = { ok: boolean; page: number; width?: number; ms?: number; cached?: boolean };
 export type PdfPageSurfaceProps = ViewProps & { source: string; index: number; pixelWidth: number; onPageReady?: (e: { nativeEvent: PageReadyEvent }) => void };
@@ -66,6 +68,10 @@ export const PdfRenderer = {
   cachedReading: (uri: string, index: number, width: number): Promise<string | null> => typeof impl.cachedReading === 'function' ? impl.cachedReading(uri, index, Math.min(1200, Math.round(width))).catch(() => null) : Promise.resolve(null),
   takeRenderTimings: (): Promise<Record<string, unknown>[]> => typeof impl.takeRenderTimings === 'function' ? impl.takeRenderTimings().catch(() => []) : Promise.resolve([]),
   renderPage: (uri: string, index: number, width: number) => impl.renderPage(uri, index, Math.round(width)),
+  hasCropImage: () => typeof impl.cropImage === 'function',
+  /** The `w`×`h` px window at (`x`,`y`) of a page raster file as it looks when the page is `pageWidthPx` wide (iOS). */
+  cropImage: (path: string, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string> =>
+    impl.cropImage ? impl.cropImage(path, Math.round(pageWidthPx), Math.round(x), Math.round(y), Math.max(1, Math.round(w)), Math.max(1, Math.round(h))) : Promise.reject(new Error('cropImage is not available in this app build')),
   /** Renders only the `w`×`h` px window whose top-left is (`x`,`y`) of the page as it looks when the whole page is `pageWidthPx`
    *  wide (clamped to the page) — sharp tiles for zoomed-in views without rasterizing the whole page. JPEG, cached like renderPage. */
   renderRegion: (uri: string, index: number, pageWidthPx: number, x: number, y: number, w: number, h: number): Promise<string> =>

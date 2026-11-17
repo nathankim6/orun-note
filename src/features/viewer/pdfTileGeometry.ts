@@ -1,6 +1,7 @@
 /** Shared Android/iOS region contract. Limits mirror Android's detail-service admission checks. */
 export const PDF_MAX_PAGE_WIDTH = 16384, PDF_MAX_TILE_AXIS = 4096, PDF_MAX_TILE_PIXELS = 12_000_000;
-export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number };
+export type PageTile = { pxW: number; x: number; y: number; w: number; h: number; nx: number; ny: number; nw: number; nh: number;
+  /** document transform (zoom, offset) the window was computed for; only the screen-space sharp layer reads it */ at?: { z: number; tx: number; ty: number } };
 /** Crop bounds are in displayed page coordinates, before DPR. Scale the entire coordinate space,
  * never just the crop: this preserves coverage and placement at every native limit. */
 export function boundedPageTile(pageW: number, pageH: number, left: number, top: number, right: number, bottom: number, dpr: number): PageTile | undefined {

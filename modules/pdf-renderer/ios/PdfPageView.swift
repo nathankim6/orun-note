@@ -57,7 +57,11 @@ public final class PdfPageView: ExpoView {
     backgroundColor = .white
     clipsToBounds = true
     imageView.contentMode = .scaleToFill
-    imageView.layer.minificationFilter = .trilinear
+    // Plain bilinear sampling. With the trilinear filter Core Animation samples a pre-shrunk copy of the bitmap whenever
+    // an ancestor scales the view down, even when an outer zoom transform magnifies it again: the magnified page was
+    // then drawn from a half / quarter resolution copy (viewer lab, docs/ios-zoom-sharpness.md).
+    imageView.layer.minificationFilter = .linear
+    imageView.layer.magnificationFilter = .linear
     addSubview(imageView)
   }
 

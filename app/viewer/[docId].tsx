@@ -15,7 +15,7 @@ import { Tool, Stroke, TextBox } from '@/data/types';
 import { useDocsStore } from '@/store/docs';
 import { inkKey, useInkStore } from '@/store/ink';
 import { useSettingsStore } from '@/store/settings';
-import { PdfPage, prefetchPage, PageTile } from '@/features/viewer/PdfPage';
+import { PdfPage, prefetchPage, PageTile, PdfSharp, type SharpMotion } from '@/features/viewer/PdfPage';
 import { DocumentView, DocHandle, PageBox } from '@/features/viewer/DocumentView';
 import { ZoomPad, PadFrame, PadRegion } from '@/features/viewer/ZoomPad';
 import type { InkOpts } from '@/features/viewer/InkCanvas';
@@ -42,6 +42,8 @@ import { resolveUri } from '@/lib/files';
 import { fmtBytes, fmtDate } from '@/utils/format';
 
 let stylusDiagnosticsSent = false; let memoryReports = 0;
+/** iOS draws the page images outside the density wrapper and their sharp part outside the zoom transform. */
+const LAYERED_SURFACE = Platform.OS === 'ios';
 export default function Viewer() {
   const { docId: paramId } = useLocalSearchParams<{ docId: string }>();
   const router = useRouter(); const viewerActive = usePathname().startsWith('/viewer/'); const { colors, dark } = useTheme(); const insets = useSafeAreaInsets(); const { width: winW, height: winH } = useContentSize(); const { isTablet } = useLayout();
@@ -179,10 +181,14 @@ export default function Viewer() {
   const activeInk = inkRefs.current[String(pageIndex)]; const inkEnabled = true; // hand tool: the canvas ignores drags (pan fails) but still receives taps for word lookup
   undoKeys.current = { undo: () => (zoomPad ? padInk.current?.undo() : inkRefs.current[String(pageIndex)]?.undo()), redo: () => (zoomPad ? padInk.current?.redo() : inkRefs.current[String(pageIndex)]?.redo()) };
 
+  // Layered surface (iOS, docs/ios-zoom-sharpness.md): the page image in its own layer at the page's box size, its sharp
+  // part in the viewport-space layer; renderPage below then draws the ink only.
+  const renderPaper = (pi: number, box: PageBox, tile?: PageTile) => <PdfPage uri={uri} index={pageAt(pi).index} width={box.w} height={box.h} template={doc.template} tile={tile} sharp="none" />;
+  const renderSharp = (pi: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => <PdfSharp uri={uri} index={pageAt(pi).index} tile={tile} box={box} motion={motion} />;
   // Page content at resolution `rs` (the DocumentView scales it back down; keeps ink and PDF crisp when zoomed).
   const renderPage = (pi: number, box: PageBox, rs: number, tile?: PageTile) => { const s = box.s * rs, w = box.w * rs, h = box.h * rs; const k = inkKey(doc.id, cycle, String(pi)); const pi_ = ink.pages[k]; const strokes = pi_?.strokes ?? []; const textBoxes = pi_?.textBoxes ?? []; return (
-    <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}>
-      <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} template={doc.template} renderScale={1 / rs} tile={tile} />
+    <View key={pi} style={{ width: w, height: h, backgroundColor: LAYERED_SURFACE ? 'transparent' : '#fff' }}>
+      {!LAYERED_SURFACE && <PdfPage uri={uri} index={pageAt(pi).index} width={w} height={h} template={doc.template} renderScale={1 / rs} tile={tile} />}
       {/* frame for 간편 입력창 is rendered after the ink layer (below) */}
       <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={rs > 1} density={rs} width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} opts={inkOpts} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
         onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && false && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
@@ -224,7 +230,7 @@ export default function Viewer() {
         <View style={{ flex: 1, flexDirection: splitOn && splitHoriz ? 'row' : 'column' }} collapsable={false}>
           <View style={{ width: mainW, height: mainH }} collapsable={false}>
             {!uri ? <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.primary} /><Muted variant="caption" style={{ marginTop: 8 }}>PDF를 여는 중...</Muted></View>
-            : <DocumentView active={viewerActive} ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} initialView={initialView} renderPage={renderPage} dark={dark}
+            : <DocumentView active={viewerActive} ref={docRef} key={doc.id} width={mainW} height={mainH} pages={pageSizes} mode={docMode} startOdd={prefs.twoPageStartOdd} initialPage={pageIndex} initialView={initialView} renderPage={renderPage} renderPaper={LAYERED_SURFACE ? renderPaper : undefined} renderSharp={LAYERED_SURFACE ? renderSharp : undefined} dark={dark}
                 mousePans={cfg.tool === 'hand'} doubleTapZoom={prefs.doubleTapZoomEnabled && cfg.tool !== 'select'} onPrefetch={(i, box, rank) => { if (uri && uri !== 'blank:') prefetchPage(uri, pageAt(i).index, box.w, rank); }} onPageChange={setPageIndex} onZoomSettled={setZoomPct}
                 onPullAddPage={doc.kind === 'blank' ? () => { addBlankPages(doc, 1); toast('새 페이지를 추가했어요'); } : undefined} />}
             {fullscreen && <Pressable onPress={() => setFullscreen(false)} style={{ position: 'absolute', top: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 8 }}><Ionicons name="contract-outline" size={18} color="#fff" /></Pressable>}

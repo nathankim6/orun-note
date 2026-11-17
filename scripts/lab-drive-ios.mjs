@@ -11,13 +11,22 @@ function shot(name) { execFileSync('xcrun', ['simctl', 'io', udid, 'screenshot',
 const first = await until(s => s.ready === true, 180000, 'lab ready');
 if (first.pdf === false) { console.log('LAB_LOG', (first.log ?? []).join('\n')); throw Error('pdf pipeline unavailable in the lab build'); }
 console.log('ready', JSON.stringify({ dpr: first.dpr, window: first.window, viewport: first.viewport }));
-for (const mode of ['derived', 'native', 'derived-nozoom']) {
-  await cmd({ cmd: 'mode', mode }); await sleep(3500); shot(`${mode}-z1.0-t3.5`);
-  for (const z of [2.2, 3.6]) {
-    const t0 = Date.now(); await cmd({ cmd: 'zoom', z: String(z) });
-    for (const t of mode === 'derived' ? [0.8, 2, 5] : [0.8, 2, 5, 10]) { await sleep(Math.max(0, t0 + t * 1000 - Date.now())); shot(`${mode}-z${z.toFixed(1)}-t${t}`); }
+// 1. Compositing matrix: one sharp bitmap through different layer structures (what does iOS lose, and where?).
+await cmd({ cmd: 'mode', mode: 'native' }); await sleep(2500); await cmd({ cmd: 'matrix', on: '1' }); await until(st => Array.isArray(st.matrix) && st.matrix.length > 0, 20000, 'matrix'); await sleep(2500); shot('matrix'); await cmd({ cmd: 'matrix', on: '0' }); await sleep(600);
+// 2. The production surface (layered) in every mode, then the single-layer surface as the "before" reference.
+const run = async (layered, modes, zooms, times) => {
+  await cmd({ cmd: 'layers', on: layered ? '1' : '0' }); const tag = layered ? 'layered' : 'single';
+  for (const mode of modes) {
+    await cmd({ cmd: 'mode', mode }); await sleep(3500); shot(`${tag}-${mode}-z1.0-t3.5`);
+    for (const z of zooms) { const t0 = Date.now(); await cmd({ cmd: 'zoom', z: String(z) }); for (const t of times) { await sleep(Math.max(0, t0 + t * 1000 - Date.now())); shot(`${tag}-${mode}-z${z.toFixed(1)}-t${t}`); } }
+    await cmd({ cmd: 'zoom', z: '1' }); await sleep(1200);
   }
-  await cmd({ cmd: 'zoom', z: '1' }); await sleep(1200);
-}
+};
+await run(true, ['derived', 'native', 'derived-nozoom'], [1.5, 2.2, 3.6], [1.2, 3, 7]);
+await run(false, ['derived', 'native'], [2.2], [7]);
+// 3. Ink when magnified (layered surface): thin synthetic strokes across the target.
+await cmd({ cmd: 'layers', on: '1' }); await cmd({ cmd: 'mode', mode: 'derived' }); await sleep(2500); await cmd({ cmd: 'ink' }); await sleep(800);
+for (const z of [2.2, 3.6]) { await cmd({ cmd: 'zoom', z: String(z) }); await sleep(5000); shot(`ink-z${z.toFixed(1)}`); }
+await cmd({ cmd: 'zoom', z: '1' }); await sleep(800);
 const last = read(); fs.writeFileSync(path.join(out, 'lab-log.txt'), (last?.log ?? []).join('\n') + '\n');
 console.log((last?.log ?? []).filter(l => /renderRegion|cmd|prepare/.test(l)).join('\n'));

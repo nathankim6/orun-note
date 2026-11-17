@@ -1,5 +1,6 @@
 import ExpoModulesCore
 import PDFKit
+import ImageIO
 import UIKit
 import CryptoKit
 import Security
@@ -130,6 +131,8 @@ public class PdfRendererModule: Module {
   private let timingLock = NSLock()
   private var renderTimings: [[String: Any]] = []
   private var memoryWarnings = 0 // timingLock
+  /// Decoded page rasters for cropImage (the page being magnified, and the one before it). Thread-safe; purged by iOS.
+  private let rasterCache: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.totalCostLimit = 170 << 20; return c }()
   private let maxRenderTimings = 20
 
   private func beginOperation() throws {
@@ -482,6 +485,7 @@ public class PdfRendererModule: Module {
         m.queue.async { m.cache.removeAll(); m.lru.removeAll() }
         m.readingQueue.async { m.clearReadingDocuments() }
         m.dropParsedPages()
+        m.rasterCache.removeAllObjects()
         PageBitmaps.shared.clear()
       }
       // Page images written by older builds were keyed by a per-launch random hash and can never be reused.
@@ -616,6 +620,47 @@ public class PdfRendererModule: Module {
       }, on: self.readingQueue)
     }
     Function("clearPageBitmaps") { PageBitmaps.shared.clear() }
+
+    /// A `w`×`h` px window (top-left `x`,`y`) of a page RASTER on disk (a server pre-rendered page JPEG) as it looks when
+    /// the whole page is `pageWidthPx` wide: the renderRegion contract without the PDF engine. Resampled once, with high
+    /// quality, to exactly the requested pixels, so the screen shows it 1:1. JPEG (q 0.92), cached by source + window.
+    AsyncFunction("cropImage") { (path: String, pageWidthPx: Int, x: Int, y: Int, w: Int, h: Int) throws -> String in
+      try self.beginOperation(); defer { self.endOperation() }
+      let src = self.url(from: path)
+      let bytes = self.fileSize(src)
+      let out = self.pagesDir().appendingPathComponent("\(self.cacheKey(path + "|\(bytes)"))-crop-\(pageWidthPx)-\(x)_\(y)_\(w)_\(h).jpg")
+      if FileManager.default.fileExists(atPath: out.path) { return out.absoluteString }
+      guard pageWidthPx > 0, w > 0, h > 0, bytes > 0 else { throw PdfRendererError.badPage(0) }
+      let key = src.path as NSString
+      var decoded = self.rasterCache.object(forKey: key)
+      if decoded == nil {
+        guard let source = CGImageSourceCreateWithURL(src as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw PdfRendererError.cannotOpen(path) }
+        let image = UIImage(cgImage: cg)
+        self.rasterCache.setObject(image, forKey: key, cost: cg.width * cg.height * 4)
+        decoded = image
+      }
+      guard let cg = decoded?.cgImage, cg.width > 0, cg.height > 0 else { throw PdfRendererError.cannotOpen(path) }
+      let scale = CGFloat(pageWidthPx) / CGFloat(cg.width) // output px per source px
+      let fullH = max(1, Int((CGFloat(cg.height) * scale).rounded()))
+      let x0 = min(max(0, x), pageWidthPx - 1), y0 = min(max(0, y), fullH - 1)
+      let rw = max(1, min(w, pageWidthPx - x0)), rh = max(1, min(h, fullH - y0))
+      // Source pixels covering the window (expanded to whole pixels), drawn back with the fractional offset.
+      let sx = CGFloat(x0) / scale, sy = CGFloat(y0) / scale
+      let sx0 = max(0, Int(sx.rounded(.down))), sy0 = max(0, Int(sy.rounded(.down)))
+      let sx1 = min(cg.width, Int(((CGFloat(x0 + rw)) / scale).rounded(.up))), sy1 = min(cg.height, Int(((CGFloat(y0 + rh)) / scale).rounded(.up)))
+      guard sx1 > sx0, sy1 > sy0, let part = cg.cropping(to: CGRect(x: sx0, y: sy0, width: sx1 - sx0, height: sy1 - sy0)) else { throw PdfRendererError.badPage(0) }
+      let format = UIGraphicsImageRendererFormat.default()
+      format.scale = 1; format.opaque = true; format.preferredRange = .standard
+      let image = UIGraphicsImageRenderer(size: CGSize(width: rw, height: rh), format: format).image { ctx in
+        UIColor.white.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: rw, height: rh))
+        ctx.cgContext.interpolationQuality = .high
+        UIImage(cgImage: part).draw(in: CGRect(x: (CGFloat(sx0) - sx) * scale, y: (CGFloat(sy0) - sy) * scale, width: CGFloat(sx1 - sx0) * scale, height: CGFloat(sy1 - sy0) * scale))
+      }
+      guard let data = image.jpegData(compressionQuality: 0.92) else { throw PdfRendererError.badPage(0) }
+      try data.write(to: out, options: [.atomic, .completeFileProtection])
+      return out.absoluteString
+    }.runOnQueue(self.ioQueue)
     /// Memory warnings iOS sent since the last call (each one drops every PDF cache; frequent ones mean thrashing).
     Function("takeMemoryWarnings") { () -> Int in
       self.timingLock.lock(); defer { self.timingLock.unlock() }

@@ -64,7 +64,7 @@ assert.equal(pages.zoomAvailable(info), true); assert.equal(mkPages('android').z
 
 // ---- tier selection and the vector-tile decision ----
 assert.equal(pages.zoomHabitual(), false); pages.noteZoomUse(); assert.equal(pages.zoomHabitual(), true);
-const D = load('src/features/viewer/DerivedPage.tsx', { react: { ...reactMock, useContext: () => false, createElement: () => null }, 'react-native': { View: 'View', Image: 'Image', PixelRatio: { get: () => 2 } }, './pageQuality': { PageQualityContext: {} }, './derivedPages': pages, './derivedPagesCore': core });
+const D = load('src/features/viewer/DerivedPage.tsx', { react: { ...reactMock, useContext: () => false, createElement: () => null }, 'react-native': { View: 'View', Image: 'Image', PixelRatio: { get: () => 2 } }, './pageQuality': { PageQualityContext: {} }, './derivedPages': pages, './derivedPagesCore': core, '../../../modules/pdf-renderer': { PdfRenderer: { hasCropImage: () => true, hasRenderRegion: () => true, cropImage: async () => 'crop' } } });
 const base = { reading: 'r', readingPx: 1200, detail: 'd', detailPx: 2000 };
 eq(D.derivedTiers({ ...base, detailOn: false, zoom: 'z', zoomOn: false }).map(t => t.key), ['reading'], 'a moving / off-screen page shows the reading raster only');
 eq(D.derivedTiers({ ...base, detailOn: true, zoom: null, zoomOn: true }).map(t => t.key), ['reading', 'detail'], 'zoom image not on disk yet: detail stays');
@@ -73,6 +73,42 @@ eq(D.derivedTiers({ ...base, detail: null, detailOn: true, zoom: 'z', zoomOn: tr
 eq(D.derivedTiers({ reading: 'r', readingPx: 1500, detail: 'r', detailPx: 1500, detailOn: true, zoom: null, zoomOn: false }).map(t => t.key), ['reading'], 'single-width set: no duplicate layer');
 // tablets: the detail raster is the first image (no soft-then-sharp page); phones keep the light reading raster
 assert.equal(D.detailFirst(1612, 1200), true, 'iPad 11 portrait page box'); assert.equal(D.detailFirst(2048, 1200), true); assert.equal(D.detailFirst(1170, 1200), false, 'iPhone'); assert.equal(D.detailFirst(1340, 1200), false, 'inside the sharpness margin'); assert.equal(D.detailFirst(0, 1200), false);
+// ---- iOS screen-space sharp layer: what it shows for a textbook page ----
+const plan = o => { const p = D.derivedSharpPlan({ detailPx: 2000, detailOnDisk: true, canCrop: true, canVector: true, ...o }); return p.kind + (p.tier ? ':' + p.tier : ''); };
+// 11" iPad: the page box is 1612 px, so the paper layer shows the detail raster decoded to 1612 px
+assert.equal(plan({ neededPx: ipad(1), paperPx: 1612, zoomState: 'present' }), 'none', 'un-magnified: the page layer is enough');
+assert.equal(plan({ neededPx: ipad(1.1), paperPx: 1612, zoomState: 'present' }), 'none');
+assert.equal(plan({ neededPx: ipad(1.3), paperPx: 1612, zoomState: 'coming' }), 'crop:detail', 'while the zoom image downloads the detail raster is cropped, never the PDF engine started');
+assert.equal(plan({ neededPx: ipad(2.2), paperPx: 1612, zoomState: 'coming' }), 'crop:detail');
+assert.equal(plan({ neededPx: ipad(2.2), paperPx: 1612, zoomState: 'present' }), 'crop:zoom');
+assert.equal(plan({ neededPx: ipad(2.9), paperPx: 1612, zoomState: 'present' }), 'crop:zoom');
+assert.equal(plan({ neededPx: ipad(3.6), paperPx: 1612, zoomState: 'present' }), 'vector', 'deep zoom: beyond every raster');
+assert.equal(plan({ neededPx: ipad(3.6), paperPx: 1612, zoomState: 'coming' }), 'vector');
+// no zoom tier (offline / old material): detail while it is enough, then the engine as before
+assert.equal(plan({ neededPx: ipad(1.3), paperPx: 1612, zoomState: 'none' }), 'crop:detail');
+assert.equal(plan({ neededPx: ipad(2.2), paperPx: 1612, zoomState: 'none' }), 'vector');
+// 13" iPad: the box (2008 px) already shows the whole detail raster, so there is nothing to crop from it
+assert.equal(plan({ neededPx: 2008 * 1.5, paperPx: 2000, zoomState: 'none' }), 'vector'); assert.equal(plan({ neededPx: 2008 * 1.5, paperPx: 2000, zoomState: 'coming' }), 'none', 'wait for the zoom image');
+assert.equal(plan({ neededPx: 2008 * 1.5, paperPx: 2000, zoomState: 'present' }), 'crop:zoom');
+// a binary without the crop function (JS patched over the air): the engine, as before
+assert.equal(plan({ neededPx: ipad(2.2), paperPx: 1612, zoomState: 'present', canCrop: false }), 'vector'); assert.equal(plan({ neededPx: ipad(2.2), paperPx: 1612, zoomState: 'present', canCrop: false, canVector: false }), 'none');
+assert.equal(plan({ neededPx: 0, paperPx: 1612, zoomState: 'present' }), 'none');
+
+// ---- the frame: one tile pixel = one screen pixel while the document rests, and it follows the document ----
+const F = load('src/features/viewer/SharpFrame.tsx', { react: reactMock, 'react-native': { PixelRatio: { get: () => 2 } }, 'react-native-reanimated': { __esModule: true, default: { View: 'AnimatedView' }, useAnimatedStyle: fn => fn() } });
+const box = { x: 14, y: 14, w: 806, h: 1140 }, at = { z: 2.2, tx: -310.4, ty: -905.3 };
+// a tile computed for the viewport at this transform: pxW = page width in device px, window = the visible part
+const pxW = Math.floor(806 * 2.2 * 2), tileT = { nx: 300 / pxW, ny: 1200 / pxW / (1140 / 806), nw: 1668 / pxW, nh: 2388 / (pxW * 1140 / 806) };
+const r = F.sharpTileRect(box, tileT, { w: 1668, h: 2388 }, at, 2);
+assert.equal(r.exact, true); assert.equal(r.width, 834); assert.equal(r.height, 1194, 'laid out at exactly px ÷ dpr'); assert.equal(r.left * 2, Math.round(r.left * 2)); assert.equal(r.top * 2, Math.round(r.top * 2), 'on a device pixel boundary');
+assert(Math.abs(r.left - (at.tx + (box.x + tileT.nx * box.w) * at.z)) <= 0.25, 'within half a device pixel of the true position');
+const coarse = F.sharpTileRect(box, tileT, { w: 834, h: 1194 }, at, 2); assert.equal(coarse.exact, false); assert(Math.abs(coarse.width - 834) < 1.5, 'a reduced tile keeps the true on-screen size');
+const idt = F.sharpMotionTransform(at, at.z, at.tx, at.ty, 834, 1194); assert.equal(idt.scale, 1); assert.equal(Math.abs(idt.translateX), 0); assert.equal(Math.abs(idt.translateY), 0, 'identity while the document rests where the tile was made');
+// after a pan + pinch the same content point is still under the same tile point (centre-origin scale as React Native applies it)
+const now = { z: 3.1, tx: -520, ty: -1400 }, m = F.sharpMotionTransform(at, now.z, now.tx, now.ty, 834, 1194);
+const tilePoint = { x: 200, y: 300 }, content = { x: (tilePoint.x - at.tx) / at.z, y: (tilePoint.y - at.ty) / at.z };
+const onScreen = { x: 417 + m.scale * (tilePoint.x - 417) + m.translateX, y: 597 + m.scale * (tilePoint.y - 597) + m.translateY };
+assert(Math.abs(onScreen.x - (now.tx + now.z * content.x)) < 1e-9 && Math.abs(onScreen.y - (now.ty + now.z * content.y)) < 1e-9);
 const V = D.wantsVectorTile;
 assert.equal(V({ neededPx: ipad(1), detailPx: 2000, zoomState: 'none' }), false, 'zoom 1: never the device engine');
 assert.equal(V({ neededPx: ipad(2.2), detailPx: 2000, zoomState: 'coming' }), false, 'while the zoom image downloads the engine is not started');
@@ -141,6 +177,13 @@ const mkDl = (p) => load('src/features/library/derivedDownload.ts', { 'react-nat
   // the sub window (서브교재) shows another document: it must carry that document's set, never inherit the main one
   const sub = fs.readFileSync('src/features/viewer/SubDocWindow.tsx', 'utf8');
   assert(/<DerivedPagesContext\.Provider value=\{derived\}><SubDocWindowBody/.test(sub) && /props\.mode === 'show' && props\.docId \? s\.docs\[props\.docId\] : null/.test(sub), 'own provider; none for the document picker');
+  // layered surface: paper · viewport-space sharp layer · ink, selected by renderPaper; the single-layer path is untouched
+  assert(/\{layered \? renderPaper!\(i, bx, tiles\[i\]\) : <PageSlot box=\{bx\} rs=\{rs\} render=\{\(\) => renderPage\(i, bx, rs, tiles\[i\]\)\} \/>\}/.test(docView), 'without renderPaper the page is drawn exactly as before');
+  assert(docView.indexOf('{layered && renderSharp ?') > docView.indexOf('renderPaper!(i, bx, tiles[i])') && docView.indexOf('{layered ? <Animated.View') > docView.indexOf('{layered && renderSharp ?'), 'order: paper, sharp layer, ink');
+  assert(/out\[i\] = \{ \.\.\.tile, at: \{ z: zz, tx: x0, ty: y0 \} \}/.test(docView), 'every tile records the transform it was made for');
+  const viewer = fs.readFileSync('app/viewer/[docId].tsx', 'utf8');
+  assert(/const LAYERED_SURFACE = Platform\.OS === 'ios';/.test(viewer) && /sharp="none"/.test(viewer) && /<PdfSharp uri=\{uri\}/.test(viewer) && /\{!LAYERED_SURFACE && <PdfPage/.test(viewer));
+  const pageView = fs.readFileSync('modules/pdf-renderer/ios/PdfPageView.swift', 'utf8'); assert(/minificationFilter = \.linear/.test(pageView) && !/minificationFilter = \.trilinear/.test(pageView), 'no pre-shrunk copies of the page bitmap');
   const swift = fs.readFileSync('modules/pdf-renderer/ios/PdfRendererModule.swift', 'utf8'); assert(/private let maxParsedPages = 2\b/.test(swift), 'interpreted pages are ~385 MB each on textbooks: keep two');
   const gen = fs.readFileSync('scripts/derived/generate.py', 'utf8');
   assert(/^WIDTHS = \[1200, 2000\]$/m.test(gen) && /^ZOOM_WIDTH = 3600$/m.test(gen), 'the manifest widths older apps rely on are unchanged');

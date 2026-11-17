@@ -9,6 +9,7 @@ import { createIdleQualityGate } from './idleQuality';
 import { PDF_DETAIL_IDLE_MS, IOS_DETAIL_IDLE_MS } from './pdfWork';
 import { lastLookupAt } from './InkCanvas';
 import { penSession, PALM_WINDOW_MS } from './penSession';
+import type { SharpMotion } from './SharpFrame';
 
 /**
  * Samsung Notes–style document surface.
@@ -31,6 +32,14 @@ type Props = {
   /** Stop background preparation/refinement when a different app screen covers this document. */ active?: boolean;
   width: number; height: number; pages: { width: number; height: number }[]; mode: DocMode; startOdd?: boolean; initialPage: number; /** exact spot (page + fraction + zoom) to restore on first layout; must match initialPage */ initialView?: DocView | null;
   renderPage: (i: number, box: PageBox, rs: number, tile?: PageTile) => React.ReactNode;
+  /**
+   * Layered surface (iOS): the page image is drawn by `renderPaper` at the page's own box size in a layer of its own,
+   * its sharp part by `renderSharp` in a viewport-space layer OUTSIDE the zoom transform, and `renderPage` draws only
+   * what lies above the paper (ink, frames) at density `rs`. Order: paper · sharp · ink. Without `renderPaper` the
+   * surface is the single layer it always was and `renderPage` draws everything.
+   */
+  renderPaper?: (i: number, box: PageBox, tile?: PageTile) => React.ReactNode;
+  renderSharp?: (i: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => React.ReactNode;
   /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox, rank?: number) => void;
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
   /** 캔버스 고정: no zoom / pan while locked */ locked?: boolean;
@@ -71,7 +80,7 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, initialView, renderPage, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, initialView, renderPage, renderPaper, renderSharp, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
@@ -121,7 +130,7 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
     for (let i = Math.max(0, ra); i <= rb && i < L.boxes.length; i++) {
       const bx = L.boxes[i];
       const tile = viewportPageTile({ pageW: bx.w, pageH: bx.h, zoom: zz, screenX: x0 + bx.x * zz, screenY: y0 + bx.y * zz, viewportW: W, viewportH: H, dpr });
-      if (tile) out[i] = tile;
+      if (tile) out[i] = { ...tile, at: { z: zz, tx: x0, ty: y0 } };
     }
     setTiles(out);
   }, [L, W, H]);
@@ -373,6 +382,9 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
   // ---------- render ----------
   const contentStyle = useAnimatedStyle(() => ({ transform: [{ translateX: tx.value + ((z.value - 1) * L.cw) / 2 }, { translateY: ty.value + ((z.value - 1) * L.ch) / 2 }, { scale: z.value }] }), [L]);
   const [a, b] = range;
+  const layered = !!renderPaper;
+  const sharpMotion = useMemo<SharpMotion>(() => ({ z, tx, ty, width: W, height: H }), [W, H]);
+  const quality = (i: number) => active && detailReady && visiblePages.includes(i);
   const thumbStyle = useAnimatedStyle(() => { const ch = L.ch * z.value; if (mode !== 'vertical' || ch <= H + 1) return { opacity: 0, height: 0, transform: [{ translateY: 0 }] }; const th = Math.max(40, (H * H) / ch); const frac = Math.min(1, Math.max(0, -ty.value / (ch - H))); return { opacity: thumbActive.value ? 0.85 : 0.4, height: th, transform: [{ translateY: frac * (H - th) }] }; }, [L, H, mode]);
   return (
     <GestureDetector gesture={gesture}>
@@ -380,10 +392,22 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         <Animated.View style={[{ width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
             <View key={i} style={[styles.page, IS_IOS && magnified && styles.pageZoomed, { left: bx.x, top: bx.y, width: bx.w, height: bx.h }]}>
-              {i >= a && i <= b ? <PageQualityContext.Provider value={active && detailReady && visiblePages.includes(i)}><PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /></PageQualityContext.Provider> : null}
+              {i >= a && i <= b ? <PageQualityContext.Provider value={quality(i)}>{layered ? renderPaper!(i, bx, tiles[i]) : <PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} />}</PageQualityContext.Provider> : null}
             </View>
           ))}
         </Animated.View>
+        {/* Sharp layer: viewport space, not under the zoom transform (see SharpFrame). Between the paper and the ink. */}
+        {layered && renderSharp ? <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          {L.boxes.map((bx, i) => (i >= a && i <= b ? <PageQualityContext.Provider key={i} value={quality(i)}>{renderSharp(i, bx, tiles[i], sharpMotion)}</PageQualityContext.Provider> : null))}
+        </View> : null}
+        {/* Ink layer: the same transform as the paper layer, transparent pages, everything that lies above the paper. */}
+        {layered ? <Animated.View style={[{ position: 'absolute', left: 0, top: 0, width: L.cw, height: L.ch }, contentStyle]}>
+          {L.boxes.map((bx, i) => (
+            <View key={i} style={{ position: 'absolute', left: bx.x, top: bx.y, width: bx.w, height: bx.h }}>
+              {i >= a && i <= b ? <PageQualityContext.Provider value={quality(i)}><PageSlot box={bx} rs={rs} render={() => renderPage(i, bx, rs, tiles[i])} /></PageQualityContext.Provider> : null}
+            </View>
+          ))}
+        </Animated.View> : null}
         {mode === 'vertical' && <GestureDetector gesture={thumbGesture.current ?? Gesture.Tap().enabled(false)}><Animated.View hitSlop={{ left: 14, right: 6 }} style={[styles.thumb, thumbStyle]} /></GestureDetector>}
         {pullHint > 0 && <View pointerEvents="none" style={styles.pullWrap}><View style={styles.pull}><Text style={styles.pullText}>{pullHint === 2 ? '손가락을 떼면 페이지가 추가됩니다.' : '새 페이지를 추가하려면 화면을 계속 미세요.'}</Text></View></View>}
         <ZoomBadge ref={badge} right={W > 700 ? 33 : 7} top={W > 700 ? 13 : 7} />

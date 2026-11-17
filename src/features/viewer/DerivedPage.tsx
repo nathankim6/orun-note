@@ -4,6 +4,7 @@ import { PageQualityContext } from './pageQuality';
 import { useDerivedFile, requestZoomPage, zoomAvailable, zoomRecentlyFailed, noteZoomUse, zoomHabitual } from './derivedPages';
 import { pageImagePath, zoomImagePath, tierWidth, fullResImageStyle, zoomTierWanted, vectorTileWanted, tierIsEnough, ZOOM_WIDTH, type DerivedInfo } from './derivedPagesCore';
 import type { PageTile } from './pdfTileGeometry';
+import { PdfRenderer } from '../../../modules/pdf-renderer';
 
 export type DerivedTierImage = { key: 'reading' | 'detail' | 'zoom'; uri: string; px: number };
 /**
@@ -37,6 +38,7 @@ export const detailFirst = (basePx: number, readingPx: number) => basePx > 0 && 
 type Props = {
   info: DerivedInfo; index: number; width: number; height: number; tile?: PageTile;
   /** width of the page box in device pixels without magnification */ basePx?: number;
+  /** 'none': only the page itself (reading / detail at the box size); the screen-space sharp layer adds the rest (iOS) */ sharp?: 'inline' | 'none';
   /** renders the device-engine vector tile layer (PdfPage owns TileLayer; passed in to avoid an import cycle) */
   renderTile?: () => React.ReactNode;
 };
@@ -44,7 +46,63 @@ type Props = {
  * A textbook page shown from the server's pre-rendered images only (docs/derived-pages.md): reading → detail → zoom.
  * The device PDF engine is not involved unless the magnification exceeds every server raster.
  */
-export function DerivedPdfPage({ info, index, width, height, tile, basePx = 0, renderTile }: Props) {
+export function DerivedPdfPage(props: Props) { return props.sharp === 'none' ? <DerivedPaper {...props} /> : <DerivedInlinePage {...props} />; }
+/** The page at its own box size: reading raster, plus the detail raster when the box needs it or once settled. */
+function DerivedPaper({ info, index, width, height, basePx = 0 }: Props) {
+  const allowed = useContext(PageQualityContext);
+  const reading = pageImagePath(info, index, 'reading')!, detail = pageImagePath(info, index, 'detail');
+  const readingPx = tierWidth(info, 'reading') ?? 1200, detailPx = tierWidth(info, 'detail') ?? readingPx;
+  const detailFile = useDerivedFile(detail === reading ? null : detail);
+  const [settled, setSettled] = useState(false);
+  useEffect(() => { if (allowed && !settled) setSettled(true); }, [allowed, settled]);
+  const tiers = derivedTiers({ reading, readingPx, detail: detailFile === 'present' ? detail : null, detailPx, detailOn: settled || detailFirst(basePx, readingPx), zoom: null, zoomOn: false });
+  // Plain layout at the box size: the platform decodes to (at most) the box's device pixels, and no scale below 1
+  // ever applies to these layers.
+  return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
+    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} style={{ position: 'absolute', left: 0, top: 0, width, height }} resizeMode="stretch" fadeDuration={0} />)}
+  </View>;
+}
+/**
+ * What the screen-space sharp layer shows for a textbook page (pure, unit-tested).
+ *  - 'none'   the page under it already has the pixels (un-magnified, or slightly magnified)
+ *  - 'crop'   a window of the best server raster on disk, resampled once to exact screen pixels
+ *  - 'vector' the device PDF engine: no usable raster, or the magnification exceeds every raster by the vector margin
+ * `paperPx` = pixels the page layer really shows (its raster, limited by the box). While the zoom image is still
+ * downloading the detail raster is cropped, never the engine started.
+ */
+export function derivedSharpPlan(o: { neededPx: number; paperPx: number; detailPx: number; detailOnDisk: boolean; zoomState: 'present' | 'coming' | 'none'; canCrop: boolean; canVector: boolean }): { kind: 'none' | 'crop' | 'vector'; tier?: 'detail' | 'zoom' } {
+  if (!(o.neededPx > 0) || tierIsEnough(o.paperPx, o.neededPx)) return { kind: 'none' };
+  const tier = o.zoomState === 'present' ? 'zoom' : o.detailOnDisk && o.detailPx > o.paperPx ? 'detail' : undefined;
+  const tierPx = tier === 'zoom' ? ZOOM_WIDTH : tier === 'detail' ? o.detailPx : 0;
+  const best = o.zoomState === 'none' ? Math.max(tierPx, o.paperPx) : ZOOM_WIDTH; // a coming zoom image counts: wait for it
+  if (o.canVector && (vectorTileWanted(o.neededPx, best) || (o.zoomState === 'none' && !tierIsEnough(best, o.neededPx) && !tier))) return { kind: 'vector' };
+  if (tier && !o.canCrop) return o.canVector ? { kind: 'vector' } : { kind: 'none' }; // a binary without the crop function
+  if (tier && o.canCrop) return { kind: 'crop', tier };
+  if (o.canVector && o.zoomState === 'none') return { kind: 'vector' };
+  return { kind: 'none' };
+}
+/** Source for the screen-space sharp layer of a textbook page; also fetches the zoom image when it is wanted. */
+export function useDerivedSharpSource(info: DerivedInfo | null, index: number, tile: PageTile | undefined, basePx: number) {
+  const allowed = useContext(PageQualityContext);
+  const reading = pageImagePath(info, index, 'reading'), detail = pageImagePath(info, index, 'detail'), zoom = zoomImagePath(info, index);
+  const readingPx = info ? tierWidth(info, 'reading') ?? 1200 : 0, detailPx = info ? tierWidth(info, 'detail') ?? readingPx : 0;
+  const detailFile = useDerivedFile(detail && detail !== reading ? detail : null);
+  const canZoom = zoomAvailable(info);
+  const zoomFile = useDerivedFile(canZoom ? zoom : null, 0);
+  const neededPx = tile?.pxW ?? 0;
+  const zoomWanted = canZoom && zoomTierWanted(neededPx, detailPx);
+  useEffect(() => { if (zoomWanted) noteZoomUse(); }, [zoomWanted]);
+  useEffect(() => { if (info && allowed && zoomFile !== 'present' && (zoomWanted || (canZoom && zoomHabitual()))) requestZoomPage(info, index); }, [zoomWanted, allowed, zoomFile, canZoom, info, index]);
+  if (!info) return { needed: false, source: undefined, vector: false } as const;
+  const paperPx = Math.min(detailFile === 'present' ? detailPx : readingPx, basePx > 0 ? basePx : readingPx);
+  const zoomState = !canZoom || (!!zoom && zoomFile !== 'present' && zoomRecentlyFailed(zoom)) ? 'none' : zoomFile === 'present' ? 'present' : 'coming';
+  const plan = derivedSharpPlan({ neededPx, paperPx, detailPx, detailOnDisk: detailFile === 'present', zoomState, canCrop: PdfRenderer.hasCropImage(), canVector: PdfRenderer.hasRenderRegion() });
+  if (plan.kind === 'none') return { needed: false, source: undefined, vector: false } as const;
+  if (plan.kind === 'vector') return { needed: true, source: undefined, vector: true } as const;
+  const path = plan.tier === 'zoom' ? zoom! : detail!;
+  return { needed: true, vector: false, source: { key: 'crop|' + path, render: (t: PageTile) => PdfRenderer.cropImage(path, t.pxW, t.x, t.y, t.w, t.h) } } as const;
+}
+function DerivedInlinePage({ info, index, width, height, tile, basePx = 0, renderTile }: Props) {
   const allowed = useContext(PageQualityContext), dpr = PixelRatio.get();
   const reading = pageImagePath(info, index, 'reading')!, detail = pageImagePath(info, index, 'detail'), zoom = zoomImagePath(info, index);
   const readingPx = tierWidth(info, 'reading') ?? 1200, detailPx = tierWidth(info, 'detail') ?? readingPx;

@@ -15,7 +15,8 @@ import { BlurTargetView } from 'expo-blur';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { addStylusShortcutListener, takeStylusDiagnostics } from '../../modules/stylus-shortcut';
 import { DocumentView, type DocHandle, type PageBox, type PageTile } from '../../src/features/viewer/DocumentView';
-import { PdfPage } from '../../src/features/viewer/PdfPage';
+import { PdfPage, PdfSharp, type SharpMotion } from '../../src/features/viewer/PdfPage';
+import { CompositingMatrix, type MatrixCell } from './matrix';
 import { InkCanvas } from '../../src/features/viewer/InkCanvas';
 import { Toolbar } from '../../src/features/viewer/Toolbar';
 import { StylusDial } from '../../src/features/viewer/StylusDial';
@@ -42,6 +43,8 @@ function Lab() {
   const W = win.width, H = win.height - insets.top - TOP - 22;
   const [doc, setDoc] = useState<{ uri: string; pages: { width: number; height: number }[]; derived: DerivedInfo | null; derivedNoZoom: DerivedInfo | null } | null>(null);
   const [mode, setMode] = useState<Mode>('derived');
+  // layered = the production iOS surface (paper · viewport-space sharp layer · ink); off = the single-layer surface
+  const [layered, setLayered] = useState(Platform.OS === 'ios'); const [matrix, setMatrix] = useState<{ src: string; px: { w: number; h: number } } | null>(null); const matrixCells = useRef<MatrixCell[]>([]);
   const [strokes, setStrokes] = useState<Record<number, Stroke[]>>({}); const [texts, setTexts] = useState<Record<number, TextBox[]>>({});
   const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#172033', width: 1.4, shape: 'rectangle', opacity: 1 });
   const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => ({ ...c, ...p })), []);
@@ -97,8 +100,8 @@ function Lab() {
   }, [doc, W]);
   const report = useCallback((extra: Record<string, unknown> = {}) => {
     const count = Object.values(strokes).reduce((n, list) => n + list.length, 0);
-    publish({ ready: !!doc, mode, zoom: zoomRef.current, strokes: count, panel: panelOpen.current, dial: !!dialAnchor, dpr: PixelRatio.get(), window: { w: win.width, h: win.height }, viewport: { ...origin.current, w: W, h: H }, target: targetGeometry(zoomRef.current), tool: cfg.tool, ...extra });
-  }, [doc, mode, strokes, dialAnchor, win.width, win.height, W, H, targetGeometry, cfg.tool]);
+    publish({ ready: !!doc, mode, layered, matrix: matrix ? matrixCells.current : null, zoom: zoomRef.current, strokes: count, panel: panelOpen.current, dial: !!dialAnchor, dpr: PixelRatio.get(), window: { w: win.width, h: win.height }, viewport: { ...origin.current, w: W, h: H }, target: targetGeometry(zoomRef.current), tool: cfg.tool, ...extra });
+  }, [doc, mode, layered, matrix, strokes, dialAnchor, win.width, win.height, W, H, targetGeometry, cfg.tool]);
   useEffect(() => { report(); }, [report, panelShown]);
 
   // ---- commands ----
@@ -110,6 +113,18 @@ function Lab() {
     else if (c.cmd === 'dial') openStylusDial(c.x ? { x: Number(c.x), y: Number(c.y) } : undefined);
     else if (c.cmd === 'tool') onCfg({ tool: c.tool as ToolConfig['tool'] });
     else if (c.cmd === 'clear') setStrokes({});
+    else if (c.cmd === 'layers') { docRef.current?.zoomTo(1); zoomRef.current = 1; setZoom(1); setLayered(c.on === '1'); }
+    else if (c.cmd === 'ink' && doc) { // a few thin synthetic strokes across the target, to judge ink sharpness when magnified
+      const g = LAB_TARGET.gratings; const y0 = g[0].y + g[0].h + 10; const now = Date.now();
+      const line = (i: number): Stroke => ({ id: 'lab' + i, tool: 'pen', color: '#B91C1C', width: 0.5 + i * 0.4, opacity: 1, createdAt: now, points: Array.from({ length: 40 }, (_, k) => ({ x: g[0].x + (k * (g[g.length - 1].x + g[g.length - 1].w - g[0].x)) / 39, y: y0 + i * 7 + Math.sin(k / 3) * 2 })) } as Stroke);
+      setStrokes({ 0: [line(0), line(1), line(2)] });
+    }
+    else if (c.cmd === 'matrix' && doc && doc.uri !== 'blank:') { // one sharp bitmap of the gratings, shown through different layer structures
+      if (c.on === '0') { setMatrix(null); return; }
+      const g = LAB_TARGET.gratings; const P = Math.round(LAB_TARGET.pageW * 7.5); const k = P / LAB_TARGET.pageW; const pad = 4;
+      const x = Math.floor((g[0].x - pad) * k), y = Math.floor((g[0].y - pad) * k), w = Math.ceil((g[g.length - 1].x + g[g.length - 1].w - g[0].x + 2 * pad) * k), h = Math.ceil((g[0].h + 2 * pad) * k);
+      void PdfRenderer.renderRegion(doc.uri, 0, P, x, y, w, h).then((src) => setMatrix({ src, px: { w, h } })).catch((e) => note('matrix failed ' + String(e?.message ?? e)));
+    }
     else if (c.cmd === 'diag') void takeStylusDiagnostics().then((d) => publish({ stylusDiagnostics: d }));
     setTimeout(() => report({ ack: c.id ?? c.cmd }), 60);
   }, [targetGeometry, openStylusDial, onCfg, report]);
@@ -126,23 +141,26 @@ function Lab() {
     return () => { sub.remove(); if (timer) clearInterval(timer); };
   }, []);
 
+  const renderPaper = (pi: number, box: PageBox, tile?: PageTile) => <PdfPage uri={doc!.uri} index={pi} width={box.w} height={box.h} tile={tile} sharp="none" />;
+  const renderSharp = (pi: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => <PdfSharp uri={doc!.uri} index={pi} tile={tile} box={box} motion={motion} />;
   const renderPage = (pi: number, box: PageBox, rs: number, tile?: PageTile) => {
     const s = box.s * rs, w = box.w * rs, h = box.h * rs;
-    return <View key={pi} style={{ width: w, height: h, backgroundColor: '#fff' }}>
-      <PdfPage uri={doc!.uri} index={pi} width={w} height={h} renderScale={1 / rs} tile={tile} />
+    return <View key={pi} style={{ width: w, height: h, backgroundColor: layered ? 'transparent' : '#fff' }}>
+      {!layered && <PdfPage uri={doc!.uri} index={pi} width={w} height={h} renderScale={1 / rs} tile={tile} />}
       <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={rs > 1} density={rs} width={w} height={h} s={s} strokes={strokes[pi] ?? []} textBoxes={texts[pi] ?? []}
         cfg={cfg} enabled fingerDraw={false} onStrokes={(next: Stroke[]) => setStrokes((m) => ({ ...m, [pi]: next }))} onTextBoxes={(next: TextBox[]) => setTexts((m) => ({ ...m, [pi]: next }))} />
     </View>;
   };
   const count = Object.values(strokes).reduce((n, list) => n + list.length, 0);
-  const label = `lab-ready-${doc ? 1 : 0} lab-mode-${mode} lab-strokes-${count} lab-panel-${panelShown ? 1 : 0} lab-dial-${dialAnchor ? 1 : 0} lab-tool-${cfg.tool}`;
+  const label = `lab-ready-${doc ? 1 : 0} lab-mode-${mode} lab-layered-${layered ? 1 : 0} lab-strokes-${count} lab-panel-${panelShown ? 1 : 0} lab-dial-${dialAnchor ? 1 : 0} lab-tool-${cfg.tool}`;
   return <View ref={root} style={{ flex: 1, backgroundColor: '#fff' }} onLayout={() => { void SplashScreen.hideAsync().catch(() => {}); }} collapsable={false}>
     <BlurTargetView ref={blurTarget} style={{ flex: 1, paddingTop: insets.top }}>
       <View style={{ flex: 1, marginTop: TOP }} onStartShouldSetResponderCapture={() => { if (panelOpen.current) setDismissKey((k) => k + 1); if (dialAnchor) setDialAnchor(null); return false; }}
         onLayout={() => { origin.current = { x: 0, y: insets.top + TOP }; report(); }}>
         {doc ? <DerivedPagesContext.Provider value={derivedInfo}>
-          <DocumentView key={mode} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
+          <DocumentView key={mode + (layered ? '-L' : '-S')} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} renderPaper={layered ? renderPaper : undefined} renderSharp={layered ? renderSharp : undefined} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
         </DerivedPagesContext.Provider> : <Text style={{ padding: 24 }}>Preparing synthetic lab document…</Text>}
+        {matrix ? <CompositingMatrix src={matrix.src} px={matrix.px} origin={origin.current} width={W} height={H} onCells={(cells) => { matrixCells.current = cells; report(); }} /> : null}
       </View>
       <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}>
         <Toolbar onStylusDial={(point) => openStylusDial(point)} cfg={cfg} onCfg={onCfg} onCfgReplace={setCfg} onUndo={() => {}} onRedo={() => {}} canUndo={false} canRedo={false} onClear={() => setStrokes({})} onClearAll={() => setStrokes({})}
