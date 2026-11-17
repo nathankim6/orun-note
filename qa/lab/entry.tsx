@@ -25,12 +25,12 @@ import { ZOOM_WIDTH, imageName, type DerivedInfo } from '../../src/features/view
 import { onInkContact, cancelInkForStylusShortcut } from '../../src/features/viewer/stylusShortcutState';
 import type { ToolConfig } from '../../src/features/viewer/ink';
 import type { Stroke, TextBox } from '../../src/data/types';
-import { LAB_PDF_BASE64, LAB_TARGET } from './pdf.generated';
+import { LAB_BUILD, LAB_PDF_BASE64, LAB_TARGET } from './pdf.generated';
 
 type Mode = 'native' | 'derived' | 'derived-nozoom';
 const TOP = 76; // room for the toolbar above the document surface
 const logLines: string[] = [];
-let state: Record<string, unknown> = { ready: false };
+let state: Record<string, unknown> = { ready: false, build: LAB_BUILD };
 function publish(patch: Record<string, unknown>) {
   state = { ...state, ...patch, at: Date.now() };
   console.log('LAB_JSON ' + JSON.stringify(state));
@@ -103,6 +103,7 @@ function Lab() {
     publish({ ready: !!doc, mode, layered, matrix: matrix ? matrixCells.current : null, zoom: zoomRef.current, strokes: count, panel: panelOpen.current, dial: !!dialAnchor, dpr: PixelRatio.get(), window: { w: win.width, h: win.height }, viewport: { ...origin.current, w: W, h: H }, target: targetGeometry(zoomRef.current), tool: cfg.tool, ...extra });
   }, [doc, mode, layered, matrix, strokes, dialAnchor, win.width, win.height, W, H, targetGeometry, cfg.tool]);
   useEffect(() => { report(); }, [report, panelShown]);
+  const reportRef = useRef(report); reportRef.current = report; // delayed reports must publish the CURRENT state, not the one of the render that scheduled them
 
   // ---- commands ----
   const run = useCallback((c: Record<string, string>) => {
@@ -126,7 +127,7 @@ function Lab() {
       void PdfRenderer.renderRegion(doc.uri, 0, P, x, y, w, h).then((src) => setMatrix({ src, px: { w, h } })).catch((e) => note('matrix failed ' + String(e?.message ?? e)));
     }
     else if (c.cmd === 'diag') void takeStylusDiagnostics().then((d) => publish({ stylusDiagnostics: d }));
-    setTimeout(() => report({ ack: c.id ?? c.cmd }), 60);
+    setTimeout(() => reportRef.current({ ack: c.id ?? c.cmd }), 60);
   }, [targetGeometry, openStylusDial, onCfg, report]);
   const runRef = useRef(run); runRef.current = run;
   useEffect(() => {
@@ -160,7 +161,7 @@ function Lab() {
         {doc ? <DerivedPagesContext.Provider value={derivedInfo}>
           <DocumentView key={mode + (layered ? '-L' : '-S')} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} renderPaper={layered ? renderPaper : undefined} renderSharp={layered ? renderSharp : undefined} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
         </DerivedPagesContext.Provider> : <Text style={{ padding: 24 }}>Preparing synthetic lab document…</Text>}
-        {matrix ? <CompositingMatrix src={matrix.src} px={matrix.px} origin={origin.current} width={W} height={H} onCells={(cells) => { matrixCells.current = cells; report(); }} /> : null}
+        {matrix ? <CompositingMatrix src={matrix.src} px={matrix.px} origin={origin.current} width={W} height={H} onCells={(cells) => { matrixCells.current = cells; reportRef.current(); }} /> : null}
       </View>
       <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}>
         <Toolbar onStylusDial={(point) => openStylusDial(point)} cfg={cfg} onCfg={onCfg} onCfgReplace={setCfg} onUndo={() => {}} onRedo={() => {}} canUndo={false} canRedo={false} onClear={() => setStrokes({})} onClearAll={() => setStrokes({})}

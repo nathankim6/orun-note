@@ -39,6 +39,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: viewer-lab-ios, path: lab-out/ios, if-no-files-found: warn, retention-days: 5 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with: { name: viewer-lab-ios-app, path: lab-out/ios-app, if-no-files-found: ignore, retention-days: 3, compression-level: 0 }
   android:
     if: ${{ !endsWith(github.ref_name, '-ios') }}
     runs-on: ubuntu-latest

@@ -22,6 +22,7 @@ if ! build_simulator > qa/build/ios-build.raw 2>&1; then
   else grep -E "error:" qa/build/ios-build.raw | head -40; echo lab_build_failed >&2; exit 1; fi
 fi
 APP=qa/build/app/Build/Products/Release-iphonesimulator/Paperly.app
+mkdir -p lab-out/ios-app && cp "$QA_ENTITLEMENTS" "$(dirname "$APP")/simulator.entitlements" && tar -czf lab-out/ios-app/Paperly.app.tgz -C "$(dirname "$APP")" Paperly.app simulator.entitlements || echo "app archive skipped"
 xcrun simctl install "$UDID" "$APP"
 xcrun simctl launch "$UDID" com.paperly.study
 CONTAINER=$(xcrun simctl get_app_container "$UDID" com.paperly.study data)
