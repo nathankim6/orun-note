@@ -15,10 +15,10 @@ const check = (name, ok, detail = '', soft = false) => { results.push({ name, ok
 function state() { let last = null; for (const line of adb('logcat', '-d', '-v', 'raw', '-s', 'ReactNativeJS:V').split('\n')) { const i = line.indexOf('LAB_JSON '); if (i >= 0) { try { last = JSON.parse(line.slice(i + 9).replace(/'\s*$/, '')); } catch { /* partial line */ } } } return last; }
 const logHas = text => adb('logcat', '-d', '-v', 'raw', '-s', 'ReactNativeJS:V').includes(text);
 async function until(test, ms) { const end = Date.now() + ms; for (;;) { const s = state(); if (s && test(s)) return s; if (Date.now() > end) return null; await sleep(350); } }
-const link = q => sh('am', 'start', '-W', '-a', 'android.intent.action.VIEW', '-d', `orunnote://lab?${q}`, pkg);
+const link = q => sh('am', 'start', '-W', '-a', 'android.intent.action.VIEW', '-d', `'orunnote://lab?${q}'`, pkg); // quoted: adb joins the arguments into one device shell line
 function dump() { for (let i = 0; i < 6; i++) { try { sh('uiautomator', 'dump', '/data/local/tmp/lab.xml'); return sh('cat', '/data/local/tmp/lab.xml'); } catch { /* not idle yet */ } } return ''; }
 function bounds(xml, desc) { for (const node of xml.split('<node ')) { if (!node.includes(`content-desc="${desc}"`)) continue; const m = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node); if (m) return { x: (+m[1] + +m[3]) / 2, y: (+m[2] + +m[4]) / 2 }; } return null; }
-const shot = name => { try { fs.writeFileSync(path.join(out, name + '.png'), execFileSync('adb', ['exec-out', 'screencap', '-p'], { maxBuffer: 64 << 20, timeout: 30000 })); } catch { /* optional evidence */ } };
+const shot = async name => { await sleep(900); /* the software-rendered emulator composites a frame late */ try { fs.writeFileSync(path.join(out, name + '.png'), execFileSync('adb', ['exec-out', 'screencap', '-p'], { maxBuffer: 64 << 20, timeout: 30000 })); } catch { /* optional evidence */ } };
 
 // ---- virtual stylus (evdev codes) ----
 const EV_SYN = 0, EV_KEY = 1, EV_ABS = 3, SYN_REPORT = 0, ABS_X = 0, ABS_Y = 1, ABS_PRESSURE = 24, BTN_TOOL_PEN = 320, BTN_TOUCH = 330, BTN_STYLUS = 331;
@@ -47,6 +47,7 @@ function virtualStylus(width, height) {
   };
 }
 
+try {
 adb('logcat', '-c'); sh('am', 'force-stop', pkg); sh('monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1');
 const ready = await until(s => s.ready === true, 150000);
 check('lab ready', !!ready, ready ? `pdf=${ready.pdf !== false} window=${JSON.stringify(ready.window)} dpr=${ready.dpr}` : JSON.stringify(state())?.slice(0, 600));
@@ -74,11 +75,11 @@ if (ready) {
   if (pen) {
     // pen card: long-press the pen tool button, then write with the card still open
     sh('input', 'touchscreen', 'swipe', String(Math.round(pen.x)), String(Math.round(pen.y)), String(Math.round(pen.x)), String(Math.round(pen.y)), '900');
-    const opened = await expect('long press opens the pen card', s => s.panel === true); shot('card-open');
+    const opened = await expect('long press opens the pen card', s => s.panel === true); await shot('card-open');
     if (opened) { await stroke(); expected++; await expect('first stylus contact writes AND closes the pen card', s => s.strokes === expected && s.panel === false); }
     // pen palette: tap the pen tool button, then write with the palette open
     sh('input', 'touchscreen', 'tap', String(Math.round(pen.x)), String(Math.round(pen.y)));
-    const dial = await expect('pen button opens the palette', s => s.dial === true); shot('dial-open');
+    const dial = await expect('a tap on the pen button after the long press opens the palette', s => s.dial === true); await shot('dial-open');
     if (dial) { await stroke(); expected++; await expect('first stylus contact writes AND closes the palette', s => s.strokes === expected && s.dial === false); }
   }
 
@@ -86,9 +87,13 @@ if (ready) {
   if (uinputWorks) {
     const hx = vp.w * 0.55 * d, hy = (vp.y + vp.h * 0.5) * d;
     await pencil.hover(hx, hy); await pencil.button(true);
-    const opened = await expect('barrel button while hovering opens the palette (native bridge)', s => s.dial === true); shot('button-dial');
-    await pencil.button(false); await sleep(300); check('releasing the button keeps the palette', state()?.dial === true, `dial=${state()?.dial}`);
-    await pencil.button(true); await expect('second press closes the palette', s => s.dial === false); await pencil.button(false); await pencil.leave();
+    const diagNow = async label => { const mark = state()?.at ?? 0; link('cmd=diag'); const s = await until(x => x.stylusDiagnostics != null && x.at > mark, 6000); console.log('  bridge after ' + label + ': ' + JSON.stringify(s?.stylusDiagnostics)); return s?.stylusDiagnostics; };
+    await diagNow('strokes');
+    const opened = await expect('barrel button while hovering opens the palette (native bridge)', s => s.dial === true); await shot('button-dial');
+    await diagNow('press 1');
+    await pencil.button(false); await sleep(300); check('releasing the button keeps the palette', state()?.dial === true, `dial=${state()?.dial}`); await diagNow('release 1');
+    // a real pen never rests perfectly still: hover a little, as hardware does between two presses
+    await pencil.hover(hx + 6, hy + 4); await pencil.button(true); await expect('second press closes the palette', s => s.dial === false); await diagNow('press 2'); await pencil.button(false); await pencil.leave();
     // button held while the tip touches: opens the palette, never deposits ink
     const before = count(); await pencil.hover(hx, hy); await pencil.button(true);
     { const [x0, y0, x1, y1] = line(9); await pencil.stroke(x0, y0, x1, y1); } await sleep(600);
@@ -102,9 +107,10 @@ if (ready) {
   check('bridge diagnostics', !!diag?.stylusDiagnostics, JSON.stringify(diag?.stylusDiagnostics), true);
   if (uinputWorks) check('diagnostics saw the stylus button bit (32)', Array.isArray(diag?.stylusDiagnostics?.buttonStates) && diag.stylusDiagnostics.buttonStates.includes(32) && diag.stylusDiagnostics.emitted >= 2, JSON.stringify(diag?.stylusDiagnostics));
   // magnification through the same pipeline (Android keeps its vector tile path): evidence screenshots only
-  link('cmd=zoom&z=2.2'); await sleep(6000); shot('zoom-2.2'); link('cmd=zoom&z=1'); await sleep(1200);
+  link('cmd=zoom&z=2.2'); await sleep(6000); await shot('zoom-2.2'); link('cmd=zoom&z=1'); await sleep(1200);
   pencil.close();
 }
+} catch (e) { check('driver completed', false, String(e?.message ?? e).slice(0, 300)); }
 fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ results, final: state() }, null, 1));
 fs.writeFileSync(path.join(out, 'lab-log.txt'), adb('logcat', '-d', '-v', 'raw', '-s', 'ReactNativeJS:V').split('\n').filter(l => /LAB_LOG|LAB_JSON/.test(l)).slice(-400).join('\n'));
 await sleep(700); process.exit(failed ? 1 : 0);

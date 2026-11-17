@@ -39,6 +39,9 @@ console.log('PASS: screen-space slider projection matches local endpoints at all
 const toolbar = fs.readFileSync('src/features/viewer/Toolbar.tsx', 'utf8');
 assert(!toolbar.includes('펜 다이얼') && !toolbar.includes('aperture-outline'), 'the palette must not be registered as a separate toolbar button');
 assert(toolbar.includes("toolBtn('pen', '펜', cfg.tool === 'pen', penPress"), 'the pen tool button summons the palette');
+// The long-press guard is one gesture long: it is dropped when that finger lifts, so the next tap opens the palette
+// (found on the Android emulator: after using the pen card once, the first tap on the pen did nothing).
+assert(/const penPressOut = \(\) => \{ if \(penHeld\.current\) setTimeout\(\(\) => \{ penHeld\.current = false; \}, 0\); \};/.test(toolbar) && toolbar.includes('onPressOut: penPressOut') && toolbar.includes('onPressOut={extra?.onPressOut}'), 'long-press guard released on press-out');
 assert(toolbar.includes('measureInWindow') && toolbar.includes('x: x + w / 2, y: y + h }'), 'the palette opens under the pen button it was summoned from');
 assert(toolbar.includes('{ slot: penSlot') && toolbar.includes('onLongPress: penLongPress'), 'the pen card stays reachable by long-pressing the pen button');
 assert(toolbar.includes('const summon = onStylusDial;') && toolbar.includes('if (readOnly || !summon) return false;'), 'read-only toolbars never summon the palette');

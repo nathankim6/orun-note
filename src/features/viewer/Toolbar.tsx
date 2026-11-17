@@ -105,8 +105,8 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
   const Seg = ({ items, value, onChange }: { items: { k: string; label: string; icon?: any }[]; value: string; onChange: (k: string) => void }) => <View style={styles.seg}>{items.map((it) => <Pressable key={it.k} onPress={() => onChange(it.k)} style={[styles.segItem, value === it.k && { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } }]}>{it.icon && <MaterialCommunityIcons name={it.icon} size={14} color={value === it.k ? colors.primary : colors.textMuted} />}<Text style={{ fontSize: 12, fontWeight: '700', color: value === it.k ? colors.primary : colors.textMuted }}>{it.label}</Text></Pressable>)}</View>;
   const Footer = () => <Row gap={6} style={{ marginLeft: 'auto', paddingLeft: 10 }}><Pressable onPress={cancelPanel} style={styles.ghostBtn}><Text style={{ fontSize: 12, fontWeight: '700', color: colors.textMuted }}>취소</Text></Pressable><Pressable onPress={applyPanel} style={[styles.ghostBtn, { backgroundColor: colors.primary }]}><Ionicons name="checkmark" size={14} color="#fff" /><Text style={{ fontSize: 12, fontWeight: '700', color: '#fff' }}>적용</Text></Pressable></Row>;
 
-  const toolBtn = (kind: ToolArtKind, label: string, active: boolean, onPress: () => void, color?: string, extra?: { slot?: React.RefObject<any>; onLongPress?: () => void; hint?: string }) => (
-    <Pressable key={kind} ref={extra?.slot} accessibilityLabel={label} accessibilityHint={extra?.hint} accessibilityState={{ selected: active }} onPress={onPress} onLongPress={extra?.onLongPress} delayLongPress={450} hitSlop={{ top: 6, bottom: 0, left: 2, right: 2 }} style={styles.toolSlot}>
+  const toolBtn = (kind: ToolArtKind, label: string, active: boolean, onPress: () => void, color?: string, extra?: { slot?: React.RefObject<any>; onLongPress?: () => void; onPressOut?: () => void; hint?: string }) => (
+    <Pressable key={kind} ref={extra?.slot} accessibilityLabel={label} accessibilityHint={extra?.hint} accessibilityState={{ selected: active }} onPress={onPress} onLongPress={extra?.onLongPress} onPressOut={extra?.onPressOut} delayLongPress={450} hitSlop={{ top: 6, bottom: 0, left: 2, right: 2 }} style={styles.toolSlot}>
       <View style={{ transform: [{ translateY: active ? 0 : 13 }] }}><ToolArt kind={kind} color={color} /></View>
     </Pressable>
   );
@@ -127,11 +127,15 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
     return true;
   };
   const penPress = () => {
-    if (penHeld.current) { penHeld.current = false; return; } // the long press already opened the pen card
+    if (penHeld.current) { penHeld.current = false; return; } // the release of the long press that just opened the pen card
     if (openPenPalette()) { if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); return; }
     pick('pen');
   };
   const penLongPress = () => { penHeld.current = true; if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); setPanel('pen'); };
+  // The guard above belongs to ONE gesture. React Native does not send onPress after onLongPress, so nothing cleared
+  // it and the NEXT tap on the pen was swallowed (no palette after using the pen card once). It is dropped when that
+  // finger lifts; the timeout keeps it for a press event delivered in the same release.
+  const penPressOut = () => { if (penHeld.current) setTimeout(() => { penHeld.current = false; }, 0); };
   const penColor = cfg.tool === 'pen' ? cfg.color : viewer.toolPresets?.pen?.color ?? '#1C1C1E';
   const hlColor = cfg.tool === 'highlighter' ? cfg.color : viewer.toolPresets?.highlighter?.color ?? '#FACC15';
   const pencilColor = cfg.tool === 'pencil' ? cfg.color : viewer.toolPresets?.pencil?.color ?? '#1C1C1E';
@@ -192,7 +196,7 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
           {roundBtn('다시하기', 'arrow-redo', onRedo, !canRedo)}
           {!readOnly && <>
             <View style={styles.toolTray}>
-              {toolBtn('pen', '펜', cfg.tool === 'pen', penPress, penColor, { slot: penSlot, onLongPress: penLongPress, hint: '길게 누르면 펜 설정 카드' })}
+              {toolBtn('pen', '펜', cfg.tool === 'pen', penPress, penColor, { slot: penSlot, onLongPress: penLongPress, onPressOut: penPressOut, hint: '길게 누르면 펜 설정 카드' })}
               {toolBtn('pencil', '연필', cfg.tool === 'pencil', () => pick('pencil'), pencilColor)}
               {toolBtn('highlighter', '형광펜', cfg.tool === 'highlighter', () => pick('highlighter'), hlColor)}
               {toolBtn('eraser', '지우개', isEraser, () => pick(cfg.tool === 'vectorEraser' ? 'vectorEraser' : 'eraser'))}
