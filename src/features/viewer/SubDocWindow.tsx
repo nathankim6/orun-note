@@ -13,6 +13,9 @@ import { IconButton, Muted, T } from '@/components/ui';
 import { Doc } from '@/data/types';
 import Svg, { Rect, Path } from 'react-native-svg';
 import { resizeRect, Edges } from './subDocGeometry';
+import { DerivedPagesContext } from './derivedPages';
+import { infoFor, ensureDerived } from '@/features/library/derivedDownload';
+import { useSession } from '@/store/session';
 
 const MIN_W = 280, MIN_H = 260, HEADER_H = 44, BAR_H = 40, EDGE = 14, CORNER = 30;
 /** resize hit areas: 24pt edges (centred on the border, half outside the window), 32pt corners */
@@ -32,8 +35,22 @@ const webCursor = (c: string) => (Platform.OS === 'web' ? ({ cursor: c } as any)
  * The page area is the same document engine as the main view: scroll / flick to turn pages, pinch or double-tap to zoom
  * (Ctrl+wheel on desktop); the bottom bar has the page grid (모든 페이지 한눈에), previous / next and zoom out / in.
  */
-export function SubDocWindow({ mode, docId, excludeId, onPick, onClose, docked, split = false, onToggleSplit }: { mode: 'pick' | 'show'; docId: string | null; excludeId: string; onPick: (id: string) => void; onClose: () => void;
-  /** 화면 2분할: render as a fixed pane of this size (no move / resize handles) */ docked?: { w: number; h: number } | null; split?: boolean; onToggleSplit?: () => void }) {
+type SubDocProps = { mode: 'pick' | 'show'; docId: string | null; excludeId: string; onPick: (id: string) => void; onClose: () => void;
+  /** 화면 2분할: render as a fixed pane of this size (no move / resize handles) */ docked?: { w: number; h: number } | null; split?: boolean; onToggleSplit?: () => void };
+/**
+ * The sub window shows ITS document, so it carries that document's pre-rendered page set. It used to inherit the
+ * viewer's provider, i.e. the MAIN document's set: page n of the sub document was drawn from page n of the main
+ * textbook's server image (covered later by the sub document's own vector tile). The document picker lists many
+ * documents and therefore provides none.
+ */
+export function SubDocWindow(props: SubDocProps) {
+  const doc = useDocsStore((s) => (props.mode === 'show' && props.docId ? s.docs[props.docId] : null));
+  const derived = useMemo(() => infoFor(doc), [doc?.materialId, doc?.derived?.version, doc?.derived?.pages]);
+  const cred = useSession((s) => s.cred);
+  useEffect(() => { if (doc?.materialId && doc.kind !== 'blank') void ensureDerived(cred(), doc); }, [doc?.id]);
+  return <DerivedPagesContext.Provider value={derived}><SubDocWindowBody {...props} /></DerivedPagesContext.Provider>;
+}
+function SubDocWindowBody({ mode, docId, excludeId, onPick, onClose, docked, split = false, onToggleSplit }: SubDocProps) {
   const { colors } = useTheme(); const { width: winW, height: winH } = useContentSize(); const insets = useSafeAreaInsets(); const docs = useDocsStore((s) => s.docs);
   const doc = docId ? docs[docId] : null;
   const top = insets.top, bottom = insets.bottom;

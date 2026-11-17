@@ -138,6 +138,9 @@ const mkDl = (p) => load('src/features/library/derivedDownload.ts', { 'react-nat
   const docView = fs.readFileSync('src/features/viewer/DocumentView.tsx', 'utf8'); const slot = docView.slice(docView.indexOf('function PageSlot'), docView.indexOf('const ZoomBadge'));
   assert(!/return <>\{render\(\)\}<\/>/.test(slot) && /rs === 1 \? undefined :/.test(slot), 'one wrapper at every density: no remount when the zoom crosses 120 %');
   assert(/idleMs: DETAIL_IDLE_MS/.test(docView) && /Platform\.OS === 'ios' \? IOS_DETAIL_IDLE_MS : PDF_DETAIL_IDLE_MS/.test(docView));
+  // the sub window (서브교재) shows another document: it must carry that document's set, never inherit the main one
+  const sub = fs.readFileSync('src/features/viewer/SubDocWindow.tsx', 'utf8');
+  assert(/<DerivedPagesContext\.Provider value=\{derived\}><SubDocWindowBody/.test(sub) && /props\.mode === 'show' && props\.docId \? s\.docs\[props\.docId\] : null/.test(sub), 'own provider; none for the document picker');
   const swift = fs.readFileSync('modules/pdf-renderer/ios/PdfRendererModule.swift', 'utf8'); assert(/private let maxParsedPages = 2\b/.test(swift), 'interpreted pages are ~385 MB each on textbooks: keep two');
   const gen = fs.readFileSync('scripts/derived/generate.py', 'utf8');
   assert(/^WIDTHS = \[1200, 2000\]$/m.test(gen) && /^ZOOM_WIDTH = 3600$/m.test(gen), 'the manifest widths older apps rely on are unchanged');
