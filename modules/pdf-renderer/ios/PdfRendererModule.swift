@@ -131,6 +131,21 @@ public class PdfRendererModule: Module {
   private let timingLock = NSLock()
   private var renderTimings: [[String: Any]] = []
   private var memoryWarnings = 0 // timingLock
+  private var tileWrites = 0 // timingLock
+  /// Zoom tiles belong to one viewport position, so they are almost never reused, and nothing else removed them:
+  /// an afternoon of magnified reading left hundreds of MB in Caches. Keep the most recent ones only.
+  private func noteTileWrite() {
+    timingLock.lock(); tileWrites += 1; let due = tileWrites % 120 == 0; timingLock.unlock()
+    if due { ioQueue.async { self.trimTiles(keep: 160) } }
+  }
+  private func trimTiles(keep: Int) {
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(at: pagesDir(), includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return }
+    let tiles = items.filter { let n = $0.lastPathComponent; return n.contains("-r92-") || n.contains("-crop-") }
+    guard tiles.count > keep else { return }
+    let dated = tiles.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast) }.sorted { $0.1 < $1.1 }
+    for (url, _) in dated.prefix(tiles.count - keep) { try? fm.removeItem(at: url) }
+  }
   /// Decoded page rasters for cropImage (the page being magnified, and the one before it). Thread-safe; purged by iOS.
   private let rasterCache: NSCache<NSString, UIImage> = { let c = NSCache<NSString, UIImage>(); c.totalCostLimit = 170 << 20; return c }()
   private let maxRenderTimings = 20
@@ -495,6 +510,7 @@ public class PdfRendererModule: Module {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(at: module.pagesDir(), includingPropertiesForKeys: nil) else { return }
         for f in items { let name = f.lastPathComponent; if let dash = name.firstIndex(of: "-"), name.distance(from: name.startIndex, to: dash) != 24 { try? fm.removeItem(at: f) } }
+        module.trimTiles(keep: 0) // tiles of earlier sessions
       }
     }
     OnDestroy {
@@ -659,6 +675,7 @@ public class PdfRendererModule: Module {
       }
       guard let data = image.jpegData(compressionQuality: 0.92) else { throw PdfRendererError.badPage(0) }
       try data.write(to: out, options: [.atomic, .completeFileProtection])
+      self.noteTileWrite()
       return out.absoluteString
     }.runOnQueue(self.ioQueue)
     /// Memory warnings iOS sent since the last call (each one drops every PDF cache; frequent ones mean thrashing).
@@ -768,6 +785,7 @@ public class PdfRendererModule: Module {
         try data.write(to: out, options: [.atomic, .completeFileProtection])
         let written = self.milliseconds()
         self.recordTiming(lane: "tile", page: index, width: pageWidthPx, start: start, opened: opened, drawn: drawn, encoded: encoded, written: written)
+        self.noteTileWrite()
         return out.absoluteString
         }
       }
