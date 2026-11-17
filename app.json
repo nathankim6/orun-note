@@ -103,6 +103,12 @@
     ],
     "experiments": {
       "typedRoutes": false
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e88dbb3e-6e17-4f4d-b0c9-931c13115a49"
+      }
+    },
+    "owner": "nathankim6"
   }
 }
