@@ -14,7 +14,9 @@ if [[ "${LAB_REUSE_APP:-0}" == "1" ]]; then
   npx expo export:embed --entry-file "$PWD/index.ts" --platform ios --dev false --reset-cache --minify false --bundle-output qa/build/lab.bundle.js --assets-dest "$APP" > qa/build/ios-bundle.raw 2>&1 || { tail -40 qa/build/ios-bundle.raw; echo lab_bundle_failed >&2; exit 1; }
   # bytecode like the Xcode build phase; if the compiler is unavailable Hermes still runs the plain bundle
   perl -e 'alarm 600; exec @ARGV' node_modules/hermes-compiler/hermesc/osx-bin/hermesc -O -emit-binary -max-diagnostic-width=80 -out "$APP/main.jsbundle" qa/build/lab.bundle.js || { echo "hermesc unavailable, plain bundle"; cp qa/build/lab.bundle.js "$APP/main.jsbundle"; }
-  codesign --force --sign - --entitlements "$(dirname "$APP")/simulator.entitlements" --timestamp=none "$APP"
+  # keep the signature Xcode made for the simulator (its entitlements live in the binary, not in the signature): putting
+  # the real entitlements into an ad-hoc signature makes the host refuse to start the process
+  codesign --force --sign - --preserve-metadata=identifier,entitlements,flags --timestamp=none "$APP" || echo "re-sign skipped"
   echo "reused native app, bundled $(wc -c < "$APP/main.jsbundle") bytes of JS"
 else
   export PAPERLY_IOS_QA_SIGNING=1
