@@ -24,6 +24,10 @@ import { useTheme } from '@/theme';
 export type InkHandle = { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean; /** add/replace page images as one undoable step */ commitImages?: (next: ImageBox[]) => void };
 type Props = {
   /** visible window of this page (0..1) when zoomed; with `dense` (page drawn >1x) only that window is rasterised */ region?: { nx: number; ny: number; nw: number; nh: number } | null; dense?: boolean; /** page drawn at this multiple of its 1x size */ density?: number;
+  /** iOS document surface (docs/ios-zoom-sharpness.md): draw ONLY the crisp window of finished opaque ink: no input, no base layer, no text. Lives in the viewport-space layer. */ sharpOnly?: boolean;
+  /** ...and the input canvas under the zoom transform leaves that window to it: it keeps its base layer, minus the strokes the crisp window re-draws. */ sharpElsewhere?: boolean;
+  /** screen points per point of this canvas while the document rests: both canvases then budget the same crisp window (1 unless sharpElsewhere) */ sharpScale?: number;
+  /** selection / drag in progress: the crisp window elsewhere must step aside (it only knows finished ink) */ onInteractive?: (on: boolean) => void;
   width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[]; onImages?: (next: ImageBox[]) => void; textFont?: string;
   /** Samsung-Notes handwriting options */ opts?: InkOpts;
   /** Text layer for tap-to-define; rects normalized to the page. */ words?: PdfWord[] | null; onLookup?: (text: string, abs: { x: number; y: number }, rects: { x: number; y: number; w: number; h: number }[]) => void; cfg: ToolConfig; enabled: boolean; fingerDraw: boolean; lineSnap?: boolean;
@@ -37,9 +41,27 @@ const DEFAULT_OPTS: InkOpts = { fixedWidth: true, straightHighlighter: false, er
 let CLIP: { strokes: Stroke[]; textBoxes: TextBox[]; images: ImageBox[]; b: { x: number; y: number; w: number; h: number } } | null = null;
 /** Hold the pen still this long at the end of a stroke and it snaps to a straight line (user-chosen: 0.4 s). */
 export const LINE_SNAP_DWELL_MS = 400;
+/**
+ * The window of finished ink re-drawn at full resolution while zoomed: the visible region (+20 %, less if that is too
+ * many pixels) clipped to the inked area, in canvas px (pure, unit-tested). `pxPerUnit` = device px per canvas px
+ * while the document rests, so the input canvas and the iOS crisp-ink layer (InkSharp) pick the same window.
+ */
+export function inkSharpWindow(region: { nx: number; ny: number; nw: number; nh: number } | null, inkArea: { x: number; y: number; w: number; h: number } | null, width: number, height: number, pxPerUnit: number) {
+  if (!region || !inkArea) return null;
+  const MAX_PX = 12e6; // ≤ ~48 MB
+  for (const pad of [0.2, 0.08, 0]) {
+    const px = region.nw * pad, py = region.nh * pad;
+    const x0 = Math.max(inkArea.x, (region.nx - px) * width), y0 = Math.max(inkArea.y, (region.ny - py) * height);
+    const x1 = Math.min(inkArea.x + inkArea.w, (region.nx + region.nw + px) * width), y1 = Math.min(inkArea.y + inkArea.h, (region.ny + region.nh + py) * height);
+    if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+    const b = { x: Math.floor(x0), y: Math.floor(y0), w: Math.ceil(x1 - x0), h: Math.ceil(y1 - y0) };
+    if ((x1 - x0) * (y1 - y0) * pxPerUnit * pxPerUnit <= MAX_PX || pad === 0) return b;
+  }
+  return null;
+}
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
 export let lastLookupAt = 0;
-export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1}: Props) {
+export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1, sharpOnly, sharpElsewhere, sharpScale = 1, onInteractive}: Props) {
   const { colors } = useTheme();
   const [live, setLive] = useState<Point[]>([]); const [laser, setLaser] = useState<Point[]>([]); const [lasso, setLasso] = useState<Point[]>([]); const [selection, setSelection] = useState<string[]>([]); const [editing, setEditing] = useState<string | null>(null);
   // Cursor (select) tool state: selected text boxes/images, live drag offset, text-block and marquee selections.
@@ -303,9 +325,13 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   /** base: everything, except opaque strokes lying wholly inside the sharp window (re-drawn crisp there; drawing them
    *  in both would leave a soft upscaled edge around the crisp one). sharp: opaque strokes only (translucent highlighter
    *  drawn twice would darken). Selection chrome goes on the sharp layer when there is one. */
-  const inkEls = (layer: 'base' | 'sharp') => { const withUi = layer === 'sharp' || !sharpBox;
-    const sb = layer === 'base' && sharpBox && !interactive ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
-    const skip = (st: Stroke) => { if (layer === 'sharp') return st.opacity < 0.99; if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
+  const inkEls = (layer: 'base' | 'sharp') => { const withUi = layer === 'sharp' || !sharpBox || !!sharpElsewhere;
+    // a sharpOnly canvas is mounted anew for every resting position, so it draws only the ink that meets its window
+    const win = layer === 'sharp' && sharpOnly && sharpBox ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
+    // with the crisp window drawn elsewhere (InkSharp, computed at another scale), only ink 2 px inside it is left out
+    const e = sharpElsewhere ? 2 : 0;
+    const sb = layer === 'base' && sharpBox && !interactive ? { x0: (sharpBox.x + e) / s, y0: (sharpBox.y + e) / s, x1: (sharpBox.x + sharpBox.w - e) / s, y1: (sharpBox.y + sharpBox.h - e) / s } : null;
+    const skip = (st: Stroke) => { if (layer === 'sharp') { if (st.opacity < 0.99) return true; if (!win) return false; const w = boxOf.get(st); return !w || w.x1 < win.x0 || w.x0 > win.x1 || w.y1 < win.y0 || w.y0 > win.y1; } if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
     return (<>
     
     {withUi && textSel.map((w, i) => <SvgRect key={'ts' + i} x={w.x * width} y={w.y * height} width={w.w * width} height={w.h * height} fill="rgba(47,111,237,0.22)" rx={2} />)}
@@ -326,6 +352,8 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   //  * while zoomed (dense), a sharp layer re-draws the visible window (+20 %) at full resolution once the view settles.
   const dpr = PixelRatio.get();
   const interactive = selection.length > 0 || textSel.length > 0 || selText.length > 0 || selImg.length > 0 || !!dragOff || !!dragScale;
+  const interactiveCb = useRef(onInteractive); interactiveCb.current = onInteractive;
+  useEffect(() => { interactiveCb.current?.(interactive); }, [interactive]);
   const inkArea = (() => {
     if (interactive) return { x: 0, y: 0, w: width, h: height };
     if (!inkBounds) return null;
@@ -338,19 +366,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     if (px > CAP) k *= Math.sqrt(CAP / px);
     return k;
   })();
-  const sharpBox = (() => {
-    if (!dense || !region || !inkArea) return null;
-    const MAX_PX = 12e6; // ≤ ~48 MB
-    for (const pad of [0.2, 0.08, 0]) {
-      const px = region.nw * pad, py = region.nh * pad;
-      const x0 = Math.max(inkArea.x, (region.nx - px) * width), y0 = Math.max(inkArea.y, (region.ny - py) * height);
-      const x1 = Math.min(inkArea.x + inkArea.w, (region.nx + region.nw + px) * width), y1 = Math.min(inkArea.y + inkArea.h, (region.ny + region.nh + py) * height);
-      if (x1 - x0 < 1 || y1 - y0 < 1) return null;
-      const b = { x: Math.floor(x0), y: Math.floor(y0), w: Math.ceil(x1 - x0), h: Math.ceil(y1 - y0) };
-      if (b.w * b.h * dpr * dpr <= MAX_PX || pad === 0) return b;
-    }
-    return null;
-  })();
+  const sharpBox = dense ? inkSharpWindow(region ?? null, inkArea, width, height, dpr * sharpScale) : null;
   const liveBox = (() => {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     const add = (x: number, y: number, m: number) => { if (x - m < x0) x0 = x - m; if (y - m < y0) y0 = y - m; if (x + m > x1) x1 = x + m; if (y + m > y1) y1 = y + m; };
@@ -362,6 +378,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(width, Math.ceil(x1)); y1 = Math.min(height, Math.ceil(y1));
     return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
   })();
+  if (sharpOnly) return <View pointerEvents="none" style={{ width, height }}>
+    {sharpBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: sharpBox.x, top: sharpBox.y }} width={sharpBox.w} height={sharpBox.h} viewBox={`${sharpBox.x} ${sharpBox.y} ${sharpBox.w} ${sharpBox.h}`}><G>{inkEls('sharp')}</G></Svg>}
+  </View>;
   return (
     <View style={[StyleSheet.absoluteFill, { width, height }]} pointerEvents={enabled ? 'auto' : 'none'}>
       <GestureDetector gesture={composed}>
@@ -375,7 +394,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
             : <Svg pointerEvents="none" style={{ position: 'absolute', left: inkArea.x + (inkArea.w - inkArea.w * baseK) / 2, top: inkArea.y + (inkArea.h - inkArea.h * baseK) / 2, transform: [{ scale: 1 / baseK }] }} width={inkArea.w * baseK} height={inkArea.h * baseK} viewBox={`${inkArea.x} ${inkArea.y} ${inkArea.w} ${inkArea.h}`}>
                 <G>{inkEls('base')}</G>
               </Svg>)}
-          {sharpBox && <Svg pointerEvents="none" style={{ position: 'absolute', left: sharpBox.x, top: sharpBox.y }} width={sharpBox.w} height={sharpBox.h} viewBox={`${sharpBox.x} ${sharpBox.y} ${sharpBox.w} ${sharpBox.h}`}>
+          {sharpBox && !sharpElsewhere && <Svg pointerEvents="none" style={{ position: 'absolute', left: sharpBox.x, top: sharpBox.y }} width={sharpBox.w} height={sharpBox.h} viewBox={`${sharpBox.x} ${sharpBox.y} ${sharpBox.w} ${sharpBox.h}`}>
             <G>{inkEls('sharp')}</G>
           </Svg>}
           {/* The stroke being written (and lasso / marquee / eraser cursor) lives in its own small SVG sized to what it draws,

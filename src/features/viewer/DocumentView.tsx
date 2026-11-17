@@ -40,6 +40,8 @@ type Props = {
    */
   renderPaper?: (i: number, box: PageBox, tile?: PageTile) => React.ReactNode;
   renderSharp?: (i: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => React.ReactNode;
+  /** Layered surface: finished ink at screen resolution, in a second viewport-space layer above the ink layer (InkSharp). */
+  renderInkSharp?: (i: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => React.ReactNode;
   /** warm the page cache for neighbours of the visible range */ onPrefetch?: (i: number, box: PageBox, rank?: number) => void;
   onPageChange?: (i: number) => void; onZoomSettled?: (z: number) => void; mousePans?: boolean; doubleTapZoom?: boolean; dark?: boolean;
   /** 캔버스 고정: no zoom / pan while locked */ locked?: boolean;
@@ -80,7 +82,7 @@ function computeLayout(pages: Props['pages'], W: number, H: number, mode: DocMod
 /** Pixel density for page content: re-render sharper after zooming in (kept low while zoomed out). */
 const densityFor = (z: number) => (z <= 1.2 ? 1 : z <= 2.2 ? 2 : z <= 3.4 ? 3 : 4);
 
-export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, initialView, renderPage, renderPaper, renderSharp, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
+export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({ active = true, width: W, height: H, pages, mode, startOdd = true, initialPage, initialView, renderPage, renderPaper, renderSharp, renderInkSharp, onPageChange, onZoomSettled, mousePans = false, doubleTapZoom = true, dark, locked = false, onPullAddPage, onPrefetch, noKeys, mouseDrag}, ref) {
   const L = useMemo(() => computeLayout(pages, W, H, mode, startOdd), [pages, W, H, mode, startOdd]);
   const minZ = mode === 'vertical' ? 0.5 : 1;
   const z = useSharedValue(1); const tx = useSharedValue(0); const ty = useSharedValue(0);
@@ -400,7 +402,10 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
         {layered && renderSharp ? <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           {L.boxes.map((bx, i) => (i >= a && i <= b ? <PageQualityContext.Provider key={i} value={quality(i)}>{renderSharp(i, bx, tiles[i], sharpMotion)}</PageQualityContext.Provider> : null))}
         </View> : null}
-        {/* Ink layer: the same transform as the paper layer, transparent pages, everything that lies above the paper. */}
+        {/* Ink layer: the same transform as the paper layer, transparent pages, everything that lies above the paper
+            (input, the stroke being written, translucent ink, text, selection). Same density wrapper as the single-layer
+            surface, so touch geometry is unchanged; the finished ink of a magnified page is re-drawn crisp by the layer
+            after it, because under this wrapper iOS shows it from a reduced copy. */}
         {layered ? <Animated.View style={[{ position: 'absolute', left: 0, top: 0, width: L.cw, height: L.ch }, contentStyle]}>
           {L.boxes.map((bx, i) => (
             <View key={i} style={{ position: 'absolute', left: bx.x, top: bx.y, width: bx.w, height: bx.h }}>
@@ -408,6 +413,10 @@ export const DocumentView = forwardRef<DocHandle, Props>(function DocumentView({
             </View>
           ))}
         </Animated.View> : null}
+        {/* Crisp ink: viewport space again, above the ink layer. */}
+        {layered && renderInkSharp ? <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          {L.boxes.map((bx, i) => (i >= a && i <= b ? <React.Fragment key={i}>{renderInkSharp(i, bx, tiles[i], sharpMotion)}</React.Fragment> : null))}
+        </View> : null}
         {mode === 'vertical' && <GestureDetector gesture={thumbGesture.current ?? Gesture.Tap().enabled(false)}><Animated.View hitSlop={{ left: 14, right: 6 }} style={[styles.thumb, thumbStyle]} /></GestureDetector>}
         {pullHint > 0 && <View pointerEvents="none" style={styles.pullWrap}><View style={styles.pull}><Text style={styles.pullText}>{pullHint === 2 ? '손가락을 떼면 페이지가 추가됩니다.' : '새 페이지를 추가하려면 화면을 계속 미세요.'}</Text></View></View>}
         <ZoomBadge ref={badge} right={W > 700 ? 33 : 7} top={W > 700 ? 13 : 7} />

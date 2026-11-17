@@ -18,6 +18,7 @@ import { DocumentView, type DocHandle, type PageBox, type PageTile } from '../..
 import { PdfPage, PdfSharp, type SharpMotion } from '../../src/features/viewer/PdfPage';
 import { CompositingMatrix, type MatrixCell } from './matrix';
 import { InkCanvas } from '../../src/features/viewer/InkCanvas';
+import { InkSharp, inkSharpElsewhere } from '../../src/features/viewer/InkSharp';
 import { Toolbar } from '../../src/features/viewer/Toolbar';
 import { StylusDial } from '../../src/features/viewer/StylusDial';
 import { DerivedPagesContext, registerUri, markZoomUnavailable, markPresent } from '../../src/features/viewer/derivedPages';
@@ -28,6 +29,7 @@ import type { Stroke, TextBox } from '../../src/data/types';
 import { LAB_BUILD, LAB_PDF_BASE64, LAB_TARGET } from './pdf.generated';
 
 type Mode = 'native' | 'derived' | 'derived-nozoom';
+const NO_STROKES: Stroke[] = [];
 const TOP = 76; // room for the toolbar above the document surface
 const logLines: string[] = [];
 let state: Record<string, unknown> = { ready: false, build: LAB_BUILD };
@@ -147,11 +149,14 @@ function Lab() {
 
   const renderPaper = (pi: number, box: PageBox, tile?: PageTile) => <PdfPage uri={doc!.uri} index={pi} width={box.w} height={box.h} tile={tile} sharp="none" />;
   const renderSharp = (pi: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => <PdfSharp uri={doc!.uri} index={pi} tile={tile} box={box} motion={motion} />;
+  const [inkBusy, setInkBusy] = useState<Record<number, boolean>>({});
+  const renderInkSharp = (pi: number, box: PageBox, tile: PageTile | undefined, motion: SharpMotion) => <InkSharp box={box} tile={tile} motion={motion} strokes={strokes[pi] ?? NO_STROKES} hidden={!!inkBusy[pi]} />;
   const renderPage = (pi: number, box: PageBox, rs: number, tile?: PageTile) => {
     const s = box.s * rs, w = box.w * rs, h = box.h * rs;
     return <View key={pi} style={{ width: w, height: h, backgroundColor: layered ? 'transparent' : '#fff' }}>
       {!layered && <PdfPage uri={doc!.uri} index={pi} width={w} height={h} renderScale={1 / rs} tile={tile} />}
-      <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={rs > 1} density={rs} width={w} height={h} s={s} strokes={strokes[pi] ?? []} textBoxes={texts[pi] ?? []}
+      <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={layered ? inkSharpElsewhere(tile) : rs > 1} density={rs} sharpElsewhere={layered} sharpScale={layered ? (tile?.at?.z ?? 1) / rs : 1}
+        onInteractive={layered ? (on: boolean) => setInkBusy((m) => (!!m[pi] === on ? m : { ...m, [pi]: on })) : undefined} width={w} height={h} s={s} strokes={strokes[pi] ?? []} textBoxes={texts[pi] ?? []}
         cfg={cfg} enabled fingerDraw={false} onStrokes={(next: Stroke[]) => setStrokes((m) => ({ ...m, [pi]: next }))} onTextBoxes={(next: TextBox[]) => setTexts((m) => ({ ...m, [pi]: next }))} />
     </View>;
   };
@@ -162,7 +167,7 @@ function Lab() {
       <View style={{ flex: 1, marginTop: TOP }} onStartShouldSetResponderCapture={() => { if (panelOpen.current) setDismissKey((k) => k + 1); if (dialAnchor) setDialAnchor(null); return false; }}
         onLayout={() => { origin.current = { x: 0, y: insets.top + TOP }; report(); }}>
         {doc ? <DerivedPagesContext.Provider value={derivedInfo}>
-          <DocumentView key={mode + (layered ? '-L' : '-S')} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} renderPaper={layered ? renderPaper : undefined} renderSharp={layered ? renderSharp : undefined} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
+          <DocumentView key={mode + (layered ? '-L' : '-S')} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} renderPaper={layered ? renderPaper : undefined} renderSharp={layered ? renderSharp : undefined} renderInkSharp={layered ? renderInkSharp : undefined} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
         </DerivedPagesContext.Provider> : <Text style={{ padding: 24 }}>Preparing synthetic lab document…</Text>}
         {probe && PdfPageSurface && doc && doc.uri !== 'blank:' ? <View pointerEvents="none" style={{ position: 'absolute', right: 12, bottom: 12, width: 306, height: 396, borderWidth: 2, borderColor: '#DC2626', backgroundColor: '#FEF3C7' }}>
           <PdfPageSurface source={doc.uri} index={0} pixelWidth={604} style={{ width: 302, height: 392 }} onPageReady={(e) => note('probe ready ' + JSON.stringify(e.nativeEvent))} />
