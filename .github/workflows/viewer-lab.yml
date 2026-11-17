@@ -7,6 +7,7 @@ on:
   push: { branches: ['lab/**'] }
 permissions:
   contents: read
+  actions: read
 jobs:
   ios:
     # a branch named lab/…-android (or …-ios) runs one platform only
@@ -31,14 +32,25 @@ jobs:
         run: |
           node scripts/lab-generate-pdf.mjs
           printf "import './qa/lab/entry';\n" > index.ts
-      - run: npx expo prebuild --platform ios --no-install
-      - run: cd ios && pod install
+      - name: Reuse the simulator app of an earlier lab run (qa/lab/reuse-app.txt; JS-only changes)
+        id: reuse
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: node scripts/lab-reuse-app.mjs >> "$GITHUB_OUTPUT" || echo "app=0" >> "$GITHUB_OUTPUT"
+      - if: steps.reuse.outputs.app != '1'
+        run: npx expo prebuild --platform ios --no-install
+      - if: steps.reuse.outputs.app != '1'
+        run: cd ios && pod install
       - name: Build, run the scripted magnification steps, analyse the screenshots
         timeout-minutes: 70
+        env: { LAB_REUSE_APP: '${{ steps.reuse.outputs.app }}' }
         run: bash scripts/lab-ios.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: viewer-lab-ios, path: lab-out/ios, if-no-files-found: warn, retention-days: 5 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with: { name: viewer-lab-ios-app, path: lab-out/ios-app, if-no-files-found: ignore, retention-days: 3, compression-level: 0 }
   android:
     if: ${{ !endsWith(github.ref_name, '-ios') }}
     runs-on: ubuntu-latest

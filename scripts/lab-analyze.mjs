@@ -38,4 +38,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   fs.writeFileSync(path.join(dir, 'analysis.json'), JSON.stringify(rows, null, 1));
   for (const r of rows) console.log(r.error ? `${r.shot}: ${r.error}` : `${r.shot.padEnd(34)} ${r.gratings.map(g => `${g.barPx}px:${g.modulation}`).join('  ')}`);
+  // ---- acceptance (iOS document surface). Bars at least `minBar` screen px wide must keep `min` of their contrast. ----
+  const failures = []; const need = (re, minBar, min, what) => { for (const r of rows) { if (r.error || !re.test(r.shot)) continue; const weak = r.gratings.filter(g => g.barPx >= minBar && !(g.modulation >= min)); if (!r.gratings.some(g => g.barPx >= minBar) || weak.length) failures.push(`${r.shot}: ${what} (${r.gratings.map(g => `${g.barPx}px:${g.modulation}`).join(' ')})`); } };
+  need(/^(paper-native-z1\.0-t(3\.5|9)|paper-native-back-z1\.0|paper-native-page1-again|layered-(native|derived|derived-nozoom)-z1\.0-t3\.5)$/, 2.2, 0.8, 'the un-magnified page must be visible');
+  need(/^layered-(native|derived|derived-nozoom)-z(2\.2|3\.6)-t7$/, 3, 0.9, 'the magnified page must be sharp at rest');
+  need(/^layered-(native|derived-nozoom)-z1\.5-t7$/, 2, 0.9, 'the slightly magnified page must be sharp at rest');
+  need(/^matrix:(plain|sharp-frame)$/, 2, 0.9, 'a bitmap shown 1:1 must be sharp');
+  if (failures.length) { console.log('LAB ACCEPTANCE FAILED\n' + failures.join('\n')); process.exitCode = 1; } else if (rows.length) console.log('lab acceptance ok');
 }

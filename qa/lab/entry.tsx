@@ -12,7 +12,7 @@ import { Linking, PixelRatio, Platform, Text, View, useWindowDimensions } from '
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { BlurTargetView } from 'expo-blur';
-import { PdfRenderer } from '../../modules/pdf-renderer';
+import { PdfRenderer, PdfPageSurface } from '../../modules/pdf-renderer';
 import { addStylusShortcutListener, takeStylusDiagnostics } from '../../modules/stylus-shortcut';
 import { DocumentView, type DocHandle, type PageBox, type PageTile } from '../../src/features/viewer/DocumentView';
 import { PdfPage, PdfSharp, type SharpMotion } from '../../src/features/viewer/PdfPage';
@@ -25,18 +25,19 @@ import { ZOOM_WIDTH, imageName, type DerivedInfo } from '../../src/features/view
 import { onInkContact, cancelInkForStylusShortcut } from '../../src/features/viewer/stylusShortcutState';
 import type { ToolConfig } from '../../src/features/viewer/ink';
 import type { Stroke, TextBox } from '../../src/data/types';
-import { LAB_PDF_BASE64, LAB_TARGET } from './pdf.generated';
+import { LAB_BUILD, LAB_PDF_BASE64, LAB_TARGET } from './pdf.generated';
 
 type Mode = 'native' | 'derived' | 'derived-nozoom';
 const TOP = 76; // room for the toolbar above the document surface
 const logLines: string[] = [];
-let state: Record<string, unknown> = { ready: false };
+let state: Record<string, unknown> = { ready: false, build: LAB_BUILD };
 function publish(patch: Record<string, unknown>) {
   state = { ...state, ...patch, at: Date.now() };
   console.log('LAB_JSON ' + JSON.stringify(state));
   if (Platform.OS === 'ios' && FileSystem.documentDirectory) void FileSystem.writeAsStringAsync(FileSystem.documentDirectory + 'lab-state.json', JSON.stringify({ ...state, log: logLines.slice(-200) })).catch(() => {});
 }
 function note(line: string) { logLines.push(`${Date.now()} ${line}`); console.log('LAB_LOG ' + line); }
+(globalThis as { __labNote?: (line: string) => void }).__labNote = note; // lab-branch probes inside the viewer components
 
 function Lab() {
   const insets = useSafeAreaInsets(); const win = useWindowDimensions();
@@ -44,7 +45,7 @@ function Lab() {
   const [doc, setDoc] = useState<{ uri: string; pages: { width: number; height: number }[]; derived: DerivedInfo | null; derivedNoZoom: DerivedInfo | null } | null>(null);
   const [mode, setMode] = useState<Mode>('derived');
   // layered = the production iOS surface (paper · viewport-space sharp layer · ink); off = the single-layer surface
-  const [layered, setLayered] = useState(Platform.OS === 'ios'); const [matrix, setMatrix] = useState<{ src: string; px: { w: number; h: number } } | null>(null); const matrixCells = useRef<MatrixCell[]>([]);
+  const [layered, setLayered] = useState(Platform.OS === 'ios'); const [matrix, setMatrix] = useState<{ src: string; px: { w: number; h: number } } | null>(null); const matrixCells = useRef<MatrixCell[]>([]); const [probe, setProbe] = useState(false);
   const [strokes, setStrokes] = useState<Record<number, Stroke[]>>({}); const [texts, setTexts] = useState<Record<number, TextBox[]>>({});
   const [cfg, setCfg] = useState<ToolConfig>({ tool: 'pen', color: '#172033', width: 1.4, shape: 'rectangle', opacity: 1 });
   const onCfg = useCallback((p: Partial<ToolConfig>) => setCfg((c) => ({ ...c, ...p })), []);
@@ -103,6 +104,7 @@ function Lab() {
     publish({ ready: !!doc, mode, layered, matrix: matrix ? matrixCells.current : null, zoom: zoomRef.current, strokes: count, panel: panelOpen.current, dial: !!dialAnchor, dpr: PixelRatio.get(), window: { w: win.width, h: win.height }, viewport: { ...origin.current, w: W, h: H }, target: targetGeometry(zoomRef.current), tool: cfg.tool, ...extra });
   }, [doc, mode, layered, matrix, strokes, dialAnchor, win.width, win.height, W, H, targetGeometry, cfg.tool]);
   useEffect(() => { report(); }, [report, panelShown]);
+  const reportRef = useRef(report); reportRef.current = report; // delayed reports must publish the CURRENT state, not the one of the render that scheduled them
 
   // ---- commands ----
   const run = useCallback((c: Record<string, string>) => {
@@ -125,8 +127,10 @@ function Lab() {
       const x = Math.floor((g[0].x - pad) * k), y = Math.floor((g[0].y - pad) * k), w = Math.ceil((g[g.length - 1].x + g[g.length - 1].w - g[0].x + 2 * pad) * k), h = Math.ceil((g[0].h + 2 * pad) * k);
       void PdfRenderer.renderRegion(doc.uri, 0, P, x, y, w, h).then((src) => setMatrix({ src, px: { w, h } })).catch((e) => note('matrix failed ' + String(e?.message ?? e)));
     }
+    else if (c.cmd === 'probe') setProbe(c.on === '1'); // the native page view on its own, outside the document surface
+    else if (c.cmd === 'timings') void PdfRenderer.takeRenderTimings().then((t) => { note('timings ' + JSON.stringify(t).slice(0, 2400)); reportRef.current(); });
     else if (c.cmd === 'diag') void takeStylusDiagnostics().then((d) => publish({ stylusDiagnostics: d }));
-    setTimeout(() => report({ ack: c.id ?? c.cmd }), 60);
+    setTimeout(() => reportRef.current({ ack: c.id ?? c.cmd }), 60);
   }, [targetGeometry, openStylusDial, onCfg, report]);
   const runRef = useRef(run); runRef.current = run;
   useEffect(() => {
@@ -160,7 +164,10 @@ function Lab() {
         {doc ? <DerivedPagesContext.Provider value={derivedInfo}>
           <DocumentView key={mode + (layered ? '-L' : '-S')} ref={docRef} width={W} height={H} pages={doc.pages} mode="vertical" initialPage={0} renderPage={renderPage} renderPaper={layered ? renderPaper : undefined} renderSharp={layered ? renderSharp : undefined} onZoomSettled={(z) => { zoomRef.current = z; setZoom(z); }} />
         </DerivedPagesContext.Provider> : <Text style={{ padding: 24 }}>Preparing synthetic lab document…</Text>}
-        {matrix ? <CompositingMatrix src={matrix.src} px={matrix.px} origin={origin.current} width={W} height={H} onCells={(cells) => { matrixCells.current = cells; report(); }} /> : null}
+        {probe && PdfPageSurface && doc && doc.uri !== 'blank:' ? <View pointerEvents="none" style={{ position: 'absolute', right: 12, bottom: 12, width: 306, height: 396, borderWidth: 2, borderColor: '#DC2626', backgroundColor: '#FEF3C7' }}>
+          <PdfPageSurface source={doc.uri} index={0} pixelWidth={604} style={{ width: 302, height: 392 }} onPageReady={(e) => note('probe ready ' + JSON.stringify(e.nativeEvent))} />
+        </View> : null}
+        {matrix ? <CompositingMatrix src={matrix.src} px={matrix.px} origin={origin.current} width={W} height={H} onCells={(cells) => { matrixCells.current = cells; reportRef.current(); }} /> : null}
       </View>
       <View pointerEvents="box-none" style={{ position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 40, elevation: 40 }}>
         <Toolbar onStylusDial={(point) => openStylusDial(point)} cfg={cfg} onCfg={onCfg} onCfgReplace={setCfg} onUndo={() => {}} onRedo={() => {}} canUndo={false} canRedo={false} onClear={() => setStrokes({})} onClearAll={() => setStrokes({})}

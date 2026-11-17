@@ -44,6 +44,8 @@ final class PageBitmaps {
 public final class PdfPageView: ExpoView {
   let onPageReady = EventDispatcher()
   private let imageView = UIImageView()
+  /// Plain container for the image view (see init): the image view must never be a direct subview of this view.
+  private let imageHost = UIView()
   private var shownKey: String?
   private var wantedKey: String? { get { keyLock.lock(); defer { keyLock.unlock() }; return _wanted } set { keyLock.lock(); _wanted = newValue; keyLock.unlock() } }
   private var _wanted: String?
@@ -55,19 +57,30 @@ public final class PdfPageView: ExpoView {
   public required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     backgroundColor = .white
-    clipsToBounds = true
+    // React Native gives every UIImageView that is a DIRECT subview of a clipping component view a mask made from the
+    // image view's bounds at that moment (RCTViewComponentView.invalidateLayer, "apply the mask directly to the image
+    // view's layer"). It runs when the view is mounted, before the first layout pass, while those bounds are still
+    // empty: the mask was empty, so the page bitmap was set but never visible. The page stayed white and only a zoom
+    // tile drawn above it showed anything (viewer lab, docs/ios-zoom-sharpness.md). So this view itself does not clip
+    // and the image view lives in a plain container, which React Native leaves alone.
+    imageHost.clipsToBounds = true
+    imageHost.isUserInteractionEnabled = false
+    imageHost.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     imageView.contentMode = .scaleToFill
-    // Plain bilinear sampling. With the trilinear filter Core Animation samples a pre-shrunk copy of the bitmap whenever
-    // an ancestor scales the view down, even when an outer zoom transform magnifies it again: the magnified page was
-    // then drawn from a half / quarter resolution copy (viewer lab, docs/ios-zoom-sharpness.md).
+    // Plain bilinear sampling: the bitmap is shown at about one bitmap pixel per screen pixel (the page layer is laid out
+    // at its own size, never scaled down by an ancestor), so no pre-shrunk copies of it are needed.
     imageView.layer.minificationFilter = .linear
     imageView.layer.magnificationFilter = .linear
-    addSubview(imageView)
+    imageHost.addSubview(imageView)
+    addSubview(imageHost)
   }
 
   public override func layoutSubviews() {
     super.layoutSubviews()
-    imageView.frame = bounds
+    imageHost.frame = bounds
+    imageView.frame = imageHost.bounds
+    imageView.layer.mask = nil
     if shownKey == nil { update() }
   }
 

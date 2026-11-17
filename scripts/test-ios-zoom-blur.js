@@ -85,5 +85,14 @@ const render = (retry) => { pos = 0; const out = P.TileLayer({ uri: 'doc', index
   calls[1].resolve('file://tile.jpg'); await flush();
   const images = render(1);
   assert.equal(images[0].props.source.uri, 'file://tile.jpg', 'the retried tile must be shown');
-  console.log('PASS: iOS magnified page drops the rounded clip/shadow that force a 1x offscreen composite; zoom tile mounts without the base bitmap, retries a failed region and falls back to the detail raster');
+  // 4. iOS native page view: React Native masks a UIImageView that is a direct subview of a clipping component view with
+// the image view's (still empty) bounds at mount, which left the page bitmap invisible. The view must not clip itself and
+// the image view must sit inside a plain container.
+{
+  const view = fs.readFileSync('modules/pdf-renderer/ios/PdfPageView.swift', 'utf8'); const cls = view.slice(view.indexOf('public final class PdfPageView'));
+  assert(!/^\s*clipsToBounds = true/m.test(cls), 'PdfPageView itself must not clip (React Native then masks its image view)');
+  assert(!/^\s*addSubview\(imageView\)/m.test(cls) && /imageHost\.addSubview\(imageView\)/.test(cls) && /^\s*addSubview\(imageHost\)/m.test(cls), 'the image view lives inside a plain container');
+  assert(/imageHost\.frame = bounds\s*\n\s*imageView\.frame = imageHost\.bounds\s*\n\s*imageView\.layer\.mask = nil/.test(cls), 'layout keeps the image at the view size and unmasked');
+}
+console.log('PASS: zoom tile mounts without the base bitmap, retries a failed region and falls back to the detail raster; the magnified page drops its rounded clip/shadow; the iOS native page view keeps its image out of React Native\'s image-view mask');
 })().catch((e) => { console.error(e); process.exitCode = 1; });
