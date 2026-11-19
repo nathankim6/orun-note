@@ -25,14 +25,28 @@ export function derivedFileNames(m: Pick<DerivedManifest, 'pages' | 'widths' | '
   return out;
 }
 export const pageOfName = (name: string) => { const m = /^p(\d+)-/.exec(name); return m ? Number(m[1]) : -1; };
+/** 0 = reading image (the page itself), 1 = detail image (sharper, large screens), 2 = word boxes. */
+export const fileKind = (name: string, readingWidth: number | null): 0 | 1 | 2 => /-words\.json$/.test(name) ? 2 : readingWidth != null && name.endsWith(`-${readingWidth}.jpg`) ? 0 : 1;
 /**
- * Download order: pages the reader is looking at first (current ±near, nearest first; reading image, then detail image,
- * then words), afterwards everything else in page order with the same kind order. Stable for equal keys.
+ * Download rank of one file while the reader is on page `current` (lower = sooner; pure, unit-tested):
+ *  1. the pages being read (current ± near): the current page completely (reading image, detail image, words), then
+ *     per distance the reading images, the detail images and the words; the page ahead before the page behind;
+ *  2. the reading image and the words of every other page, nearest first, ahead before behind;
+ *  3. the detail images of those pages in the same order.
+ * After (2), a small part of the bytes, EVERY page of the book opens from disk at once wherever the reader jumps;
+ * (3) only makes it sharper on large screens. The old order (everything of page 0, then page 1, …) left a jump to
+ * another chapter waiting behind hundreds of MB.
  */
-export function orderForPriority(names: string[], current: number | null, readingWidth: number | null, near = 3): string[] {
-  const kind = (n: string) => /-words\.json$/.test(n) ? 2 : readingWidth != null && n.endsWith(`-${readingWidth}.jpg`) ? 0 : 1;
-  const rank = (n: string) => { const p = pageOfName(n); if (current == null) return p * 3 + kind(n); const d = Math.abs(p - current); return d <= near ? d * 3 + kind(n) : 1e6 + p * 3 + kind(n); };
-  return names.map((n, i) => ({ n, i, r: rank(n) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.n);
+export function downloadRank(name: string, current: number | null, readingWidth: number | null, near = 2): number {
+  const p = pageOfName(name), kind = fileKind(name, readingWidth), c = current ?? 0;
+  const d = Math.abs(p - c), behind = p < c ? 1 : 0;
+  if (current != null && d <= near) return d === 0 ? kind : d * 6 + kind * 2 + behind;
+  const order = d * 2 + behind;
+  return kind === 1 ? 2e6 + order : 1e6 + order * 2 + (kind === 2 ? 1 : 0);
+}
+/** `names` in download order for a reader on `current` (see downloadRank). Stable for equal ranks. */
+export function orderForPriority(names: string[], current: number | null, readingWidth: number | null, near = 2): string[] {
+  return names.map((n, i) => ({ n, i, r: downloadRank(n, current, readingWidth, near) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.n);
 }
 export function chunk<T>(list: T[], size: number): T[][] { const out: T[][] = []; for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size)); return out; }
 /** Signed-URL batches must stay under the edge function limit and expire in 900 s, so request them per chunk right before use. */

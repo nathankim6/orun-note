@@ -55,14 +55,31 @@ export function setDownloadActive(dir: string, on: boolean) {
   for (const fn of [...dirListeners]) fn();
 }
 export const isDownloadActive = (dir: string) => activeDirs.has(dir);
+// ---------- diagnostics: states and counts only ----------
+const downloadNotes = new Map<string, string>(); // dir → last state of the download manager ("downloading 12/396", "error status=403 0/396")
+export function setDownloadNote(dir: string, note: string) { downloadNotes.set(dir, note); }
+let engineFallbacks = 0;
+/**
+ * A textbook page with a known server set is being drawn by the device PDF engine after all. Returns the report line
+ * for the 1st and the 25th such page of an app session (null otherwise): this fallback was invisible while every
+ * student's download was refused by the server.
+ */
+export function noteEngineFallback(path: string): string | null {
+  engineFallbacks++; if (engineFallbacks !== 1 && engineFallbacks !== 25) return null;
+  const dir = dirOf(path);
+  return `derived page drawn by device engine count=${engineFallbacks} reason=${isDownloadActive(dir) ? 'wait-timeout' : 'no-download-running'} download=${downloadNotes.get(dir) ?? 'never-started'}`;
+}
 export type DerivedFileState = 'present' | 'pending' | 'absent';
 /** How long a page waits for a file the download manager is expected to deliver before using the device renderer. */
 export const DERIVED_WAIT_MS = 8000;
 /** Pure decision behind `useDerivedFile` (unit-tested). */
-export function derivedFileState(o: { path: string | null; present: boolean; checked: boolean; downloading: boolean; timedOut: boolean }): DerivedFileState {
+export function derivedFileState(o: { path: string | null; present: boolean; checked: boolean; downloading: boolean; timedOut: boolean; /** this mount already answered 'absent' once */ fellBack?: boolean }): DerivedFileState {
   if (!o.path) return 'absent';
   if (o.present) return 'present';
   if (!o.checked) return 'pending';                       // the disk has not answered yet (a few ms)
+  // Sticky: a page that went to the device renderer stays there until its file is really on disk. A download (or a
+  // retry) that starts later must not swap the drawn page for a spinner.
+  if (o.fellBack) return 'absent';
   return o.downloading && !o.timedOut ? 'pending' : 'absent';
 }
 /**
@@ -72,8 +89,8 @@ export function derivedFileState(o: { path: string | null; present: boolean; che
  */
 export function useDerivedFile(path: string | null, waitMs = DERIVED_WAIT_MS): DerivedFileState {
   const [, bump] = useState(0);
-  const st = useRef({ path, checked: false, timedOut: false });
-  if (st.current.path !== path) st.current = { path, checked: false, timedOut: false };
+  const st = useRef({ path, checked: false, timedOut: false, fellBack: false });
+  if (st.current.path !== path) st.current = { path, checked: false, timedOut: false, fellBack: false };
   useEffect(() => {
     if (!path || present.has(path)) return;
     let alive = true; const cur = st.current; const again = () => { if (alive) bump((n) => n + 1); };
@@ -82,7 +99,9 @@ export function useDerivedFile(path: string | null, waitMs = DERIVED_WAIT_MS): D
     const timer = setTimeout(() => { cur.timedOut = true; again(); }, waitMs);
     return () => { alive = false; offFile(); dirListeners.delete(again); clearTimeout(timer); };
   }, [path, waitMs]);
-  return derivedFileState({ path, present: !!path && present.has(path), checked: st.current.checked, downloading: !!path && isDownloadActive(dirOf(path)), timedOut: st.current.timedOut });
+  const state = derivedFileState({ path, present: !!path && present.has(path), checked: st.current.checked, downloading: !!path && isDownloadActive(dirOf(path)), timedOut: st.current.timedOut, fellBack: st.current.fellBack });
+  if (state === 'absent' && path && st.current.checked) st.current.fellBack = true;
+  return state;
 }
 
 // ---------- zoom tier (on demand) ----------

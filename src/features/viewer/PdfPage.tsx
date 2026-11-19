@@ -12,7 +12,7 @@ import { halfTile, noteTileTiming, tileIsSlow, tileImageStyle } from './tileProg
 import { PdfImageLayers } from './PdfImageLayers';
 import { pageTileKey, type PageTile } from './pdfTileGeometry';
 import { PageQualityContext } from './pageQuality';
-import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath, useDerivedFile } from './derivedPages';
+import { DerivedPagesContext, pageImage as derivedPageImage, forUri as derivedForUri, isPresentSync, pageImagePath, useDerivedFile, noteEngineFallback } from './derivedPages';
 import { DerivedPdfPage, useDerivedSharpSource } from './DerivedPage';
 import { SharpFrame, sharpTileRect, type SharpMotion, type TileAt } from './SharpFrame';
 import { tierWidth } from './derivedPagesCore';
@@ -234,6 +234,8 @@ function RasterPdfPage(props: RasterProps) {
   const derived = useContext(DerivedPagesContext);
   const readPath = props.uri && derived ? pageImagePath(derived, props.index, 'reading') : null;
   const derivedFile = useDerivedFile(readPath);
+  // counts only: a textbook page that ends up on the device engine although the server has its image
+  useEffect(() => { if (readPath && derivedFile === 'absent') { const line = noteEngineFallback(readPath); if (line) reportError('render', line); } }, [readPath, derivedFile]);
   if (readPath && derivedFile === 'present') {
     const { uri, index, width, height, tile } = props; const tileRetry = tileFailure.attempt;
     return <DerivedPdfPage key={page} info={derived!} index={index} width={width} height={height} tile={tile} basePx={width * (props.renderScale ?? 1) * PixelRatio.get()} sharp={props.sharp}

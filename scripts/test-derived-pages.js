@@ -1,7 +1,7 @@
 // node scripts/test-derived-pages.js — pre-rendered page sets (docs/derived-pages.md): naming, ordering, batching,
 // image/word selection and the download manager's resume logic. Pure JS with mocked file system; no device claims.
 const fs = require('fs'), vm = require('vm'), ts = require('typescript'), assert = require('node:assert/strict');
-const eq = (a, b, msg) => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), msg);
+const eq = (a, b, msg = 'equal') => assert.deepEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)), msg);
 function load(file, mocks = {}) {
   const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   // run in this realm's globals so arrays/objects compare structurally with assert
@@ -23,13 +23,21 @@ assert.equal(core.wordsPath(info, 5), 'file:///docs/derived/m/v1/p5-words.json')
 // manifest parsing
 eq(core.parseManifest({ version: 1, pages: 14, widths: [1200, 2000], words: true, bytes: 123, engine: 'pdfium', sizes: [[1, 2]] }), { version: 1, pages: 14, widths: [1200, 2000], words: true, bytes: 123, generatedAt: undefined, engine: 'pdfium' });
 assert.equal(core.parseManifest({ pages: 0, widths: [1200] }), null); assert.equal(core.parseManifest(null), null); assert.equal(core.parseManifest({ pages: 3, widths: [] }), null);
-// ordering: current page first (reading before detail before words), neighbours by distance, then the rest in page order
+// ordering (downloadRank): the page being read completely; its neighbours (reading images, then detail, then words; the
+// page ahead first); then the reading image + words of EVERY other page, nearest first; the far detail images last
 const names = core.derivedFileNames({ pages: 10, widths: [1200, 2000], words: true });
 const ordered = core.orderForPriority(names, 5, 1200, 2);
-eq(ordered.slice(0, 9), ['p5-1200.jpg', 'p5-2000.jpg', 'p5-words.json', 'p4-1200.jpg', 'p6-1200.jpg', 'p4-2000.jpg', 'p6-2000.jpg', 'p4-words.json', 'p6-words.json']);
-eq(ordered.slice(9, 12), ['p3-1200.jpg', 'p7-1200.jpg', 'p3-2000.jpg']);
-assert.equal(ordered[ordered.length - 1], 'p9-words.json'); assert.equal(ordered.length, names.length);
-eq(core.orderForPriority(['p1-2000.jpg', 'p0-1200.jpg', 'p0-2000.jpg'], null, 1200), ['p0-1200.jpg', 'p0-2000.jpg', 'p1-2000.jpg']);
+eq(ordered.slice(0, 3), ['p5-1200.jpg', 'p5-2000.jpg', 'p5-words.json'], 'the current page first, completely');
+eq(ordered.slice(3, 9), ['p6-1200.jpg', 'p4-1200.jpg', 'p6-2000.jpg', 'p4-2000.jpg', 'p6-words.json', 'p4-words.json'], 'next / previous page');
+eq(ordered.slice(9, 15), ['p7-1200.jpg', 'p3-1200.jpg', 'p7-2000.jpg', 'p3-2000.jpg', 'p7-words.json', 'p3-words.json']);
+eq(ordered.slice(15, 25), ['p8-1200.jpg', 'p8-words.json', 'p2-1200.jpg', 'p2-words.json', 'p9-1200.jpg', 'p9-words.json', 'p1-1200.jpg', 'p1-words.json', 'p0-1200.jpg', 'p0-words.json'], 'then every other page can open: reading image + words, nearest first');
+eq(ordered.slice(25), ['p8-2000.jpg', 'p2-2000.jpg', 'p9-2000.jpg', 'p1-2000.jpg', 'p0-2000.jpg'], 'the far detail images last');
+assert.equal(ordered.length, names.length); assert.equal(new Set(ordered).size, names.length);
+eq(core.orderForPriority(['p1-2000.jpg', 'p0-1200.jpg', 'p0-2000.jpg', 'p1-1200.jpg'], null, 1200), ['p0-1200.jpg', 'p1-1200.jpg', 'p0-2000.jpg', 'p1-2000.jpg'], 'no known position: reading images front to back, then detail');
+// a 257-page book read at page 120: after the near window, all 257 reading images come before any far detail image
+{ const big = core.orderForPriority(core.derivedFileNames({ pages: 257, widths: [1200, 2000], words: true }), 120, 1200); const firstFarDetail = big.findIndex(n => n.endsWith('-2000.jpg') && Math.abs(core.pageOfName(n) - 120) > 2); const lastReading = big.map(n => n.endsWith('-1200.jpg')).lastIndexOf(true);
+  assert(lastReading < firstFarDetail, 'every page has its reading image before the first far detail image'); assert.equal(firstFarDetail, 15 + 252 * 2); }
+assert.equal(core.fileKind('p3-1200.jpg', 1200), 0); assert.equal(core.fileKind('p3-2000.jpg', 1200), 1); assert.equal(core.fileKind('p3-words.json', 1200), 2);
 // batching under the signed-URL limit
 assert.equal(core.URL_BATCH, 250); const batches = core.chunk(Array.from({ length: 501 }, (_, i) => i), 250); eq(batches.map(b => b.length), [250, 250, 1]); eq(core.chunk([], 5), []);
 

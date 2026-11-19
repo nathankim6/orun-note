@@ -24,7 +24,12 @@ derived/{materialId}/v1/p{index}-words.json    [{t,x,y,w,h}] normalised 0..1, to
 ## Edge function actions (`docs`)
 - `materials.derivedUploadUrl` (admin) `{materialId, files: ["manifest.json", "p0-1200.jpg", …]}` → `{ ok, uploads: [{path, url, token}] }` (signed upload URLs; batch up to 300).
 - `materials.derivedComplete` (admin) `{materialId, manifest}` → stores `materials.derived`.
-- `materials.derivedUrls` (admin or entitled student) `{materialId, files: [...]}` → `{ ok, urls: [{path, url}] }` signed download URLs (600 s, batch up to 300). Students only for materials they are assigned.
+- `materials.derivedUrls` (admin or entitled student) `{materialId, files: [...]}` → `{ ok, urls: [{path, url}] }` signed download URLs (900 s, batch up to 300). Students only for materials they are assigned.
+  **It must be handled above the function's admin-only gate.** From the first release (1.6.17) until docs v25
+  (2026-11-19) it sat below it: every student call returned 403, no student device ever downloaded a page image, and
+  each textbook page was drawn by the device PDF engine (field reports on 1.6.20: 4.6 s on a Galaxy Tab, 7.4–7.5 s on
+  iPads). Admin accounts were served, which is why it looked right in every admin test.
+  `scripts/test-docs-function-access.js` runs the real handler as a student / admin / stranger.
 - `list` / `download` responses now include `derived` on each material.
 
 ## Generator (GitHub Actions `derive-materials.yml`)
@@ -60,5 +65,28 @@ by the same generator. It exists because the device PDF engine cannot serve magn
   anything in this session. A material without the tier is detected by the first probe returning no URL and is not
   asked again in that session. At most 56 zoom files are kept per material (oldest removed down to 40). The
   Wi-Fi-only setting applies. Android keeps its own vector tiles (bitmap size limits; pdfium has no cold cost cliff).
-- Download queue: files are requested in batches of 36 (was 250) and re-ordered around the open page before every
-  batch, and the existence check after a restart also starts at the open page.
+- Download queue: see "Download queue" below.
+
+## Download queue (1.6.21)
+
+`src/features/library/derivedDownload.ts`, rules in `derivedPagesCore.downloadRank`, tests in
+`scripts/test-derived-download.js`.
+
+- **Order** (re-evaluated for every file a connection takes, so a page turn takes effect at once):
+  1. the page being read, completely (reading image, detail image, words), then its neighbours (±2);
+  2. the reading image + words of **every** other page, nearest first, ahead before behind (≈ 130 KB per page:
+     a 132-page book is openable everywhere after ≈ 17 MB);
+  3. the detail images of those pages (≈ 0.7 MB per page), same order.
+- **The page the reader just turned to** is fetched immediately, outside the six-connection pool (`prioritise` →
+  `urgent`), so a jump to another chapter never waits behind transfers that are already running.
+- Signed URLs are requested 120 names at a time, kept for 12 min (they live 15) and never reused after a failed
+  transfer.
+- A file gets three attempts per run. A run that still misses files, or cannot reach the server, ends in `error`
+  and retries itself after 5 s / 15 s / 45 s / 2 min / 5 min; a fresh request (book opened, app started) restarts
+  that schedule. 403 / 404 (not assigned any more / removed) are not retried.
+- A known set marks its directory as "being filled" before the first await; a page whose file is missing then
+  waits for it (`useDerivedFile` → `pending`, at most 8 s) instead of starting a device render. A page that did fall
+  back to the device engine stays there until its file is on disk (no spinner over a drawn page).
+- Diagnostics (`crash_reports`, kind `render`, states and counts only): `derived pages download failed status=…
+  files=done/total attempt=n` for every failed run, and `derived page drawn by device engine count=1|25 reason=…
+  download=…` when a textbook page with a server set ends up on the device engine.

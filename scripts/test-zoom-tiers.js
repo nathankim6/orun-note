@@ -129,7 +129,7 @@ const mkDl = (p) => load('src/features/library/derivedDownload.ts', { 'react-nat
   'expo-network': { NetworkStateType: { CELLULAR: 'CELLULAR' }, getNetworkStateAsync: async () => ({ type: netType }) } });
 (async () => {
   const dl = mkDl(pages); const i1 = dl.infoFor(docsState.docs.d1); const dir = i1.dir;
-  assert.equal(dl.PRIORITY_BATCH, 36);
+  assert(dl.SIGN_BATCH <= 300 && dl.URL_TTL_MS < 900_000, 'signed-URL requests stay under the server cap and URLs are never used near their 900 s expiry');
   // the base set (what every version downloads) still has exactly 9 files and no zoom image
   await dl.ensureDerived('code', docsState.docs.d1, { page: 1 });
   assert.equal([...disk.keys()].filter(k => k.includes('3600')).length, 0); assert.equal(log.length, 9);
