@@ -84,6 +84,11 @@ by the same generator. It exists because the device PDF engine cannot serve magn
 - A file gets three attempts per run. A run that still misses files, or cannot reach the server, ends in `error`
   and retries itself after 5 s / 15 s / 45 s / 2 min / 5 min; a fresh request (book opened, app started) restarts
   that schedule. 403 / 404 (not assigned any more / removed) are not retried.
+  Once the schedule is used up, a page turn starts another attempt (at most once a minute). Twelve failed
+  transfers in a row end a run early (storage down), and a failed signed-URL request is made once per run, not once
+  per connection.
+- The page images start **next to the PDF** (`preloadDerived` in `downloadMaterial`), not after it: what every page
+  needs to open is a fraction of the PDF, so the book can be leafed through when the PDF arrives.
 - A known set marks its directory as "being filled" before the first await; a page whose file is missing then
   waits for it (`useDerivedFile` → `pending`, at most 8 s) instead of starting a device render. A page that did fall
   back to the device engine stays there until its file is on disk (no spinner over a drawn page).

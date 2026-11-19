@@ -31,6 +31,10 @@ export const FILE_ATTEMPTS = 3;
 export const RETRY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000, 300_000];
 /** Downloads outside the worker pool for the page the reader just turned to. */
 const URGENT_MAX = 2;
+/** This many failed transfers in a row (none succeeding in between) end the run: the storage side is down. */
+export const FAIL_STREAK_MAX = 12;
+/** A run whose retry schedule is used up is started again by a page turn, at most this often. */
+export const KICK_INTERVAL_MS = 60_000;
 // Last credential and local directory per material, so on-demand requests (zoom images) need no viewer plumbing.
 const creds = new Map<string, string | null>(); const materialOfDir = new Map<string, string>();
 const running = new Map<string, Promise<void>>();
@@ -80,6 +84,7 @@ type Job = {
   missing: Set<string>; inflight: Set<string>; /** the server has no such file */ gone: Set<string>; tries: Map<string, number>;
   urls: Map<string, { url: string; at: number }>; signing: Promise<void> | null; extras: Set<Promise<void>>;
   done: number; bytes: number; fetched: number; urgent: number; stop: boolean; deferred: boolean; /** the book was removed meanwhile */ cancelled: boolean;
+  /** failed transfers since the last successful one */ failStreak: number;
 };
 const jobs = new Map<string, Job>();
 const pageOf = (job: Job) => priority.get(job.id) ?? job.startPage;
@@ -96,7 +101,9 @@ async function urlFor(job: Job, name: string): Promise<string | null> {
   for (let round = 0; round < 3; round++) {
     if (fresh(job, name)) return job.urls.get(name)!.url;
     if (job.gone.has(name)) return null;
-    if (job.signing) { await job.signing.catch(() => {}); continue; } // another connection is asking: wait, then look again
+    // Another connection is asking: wait, then look again. Its failure is this one's failure too (one request per
+    // failed run, not one per connection).
+    if (job.signing) { await job.signing; continue; }
     const rest = orderForPriority([...job.missing].filter((n) => n !== name && !job.gone.has(n) && !fresh(job, n)), pageOf(job), job.reading);
     const want = [name, ...rest].slice(0, SIGN_BATCH); const at = nowImpl();
     job.signing = fetchImpl(job.code, job.id, want).then(({ urls }) => {
@@ -114,8 +121,8 @@ async function fetchOne(job: Job, n: string): Promise<void> {
   job.inflight.add(n);
   try {
     const url = await urlFor(job, n); if (!url) { job.gone.add(n); return; }
-    try { job.bytes += await download(url, job.dir + n); job.missing.delete(n); job.done++; }
-    catch { job.tries.set(n, (job.tries.get(n) ?? 0) + 1); job.urls.delete(n); } // never reuse the URL of a failed transfer
+    try { job.bytes += await download(url, job.dir + n); job.missing.delete(n); job.done++; job.failStreak = 0; }
+    catch { job.tries.set(n, (job.tries.get(n) ?? 0) + 1); job.urls.delete(n); job.failStreak++; } // never reuse the URL of a failed transfer
   } finally {
     job.inflight.delete(n); job.fetched++;
     if (job.fetched % 4 === 0 || !job.missing.size) { useDerivedProgress.getState().set(job.id, { done: job.done, total: job.total, bytes: job.bytes, state: 'downloading' }); noteJob(job, 'downloading'); }
@@ -126,6 +133,8 @@ async function worker(job: Job): Promise<void> {
     if (job.stop) return;
     const n = pick(job); if (!n) return;
     try { await fetchOne(job, n); } catch (e) { job.stop = true; throw e; }
+    // nothing gets through any more: stop instead of spending three attempts on every remaining file
+    if (job.failStreak >= FAIL_STREAK_MAX) { job.stop = true; throw new Error('연속 다운로드 실패'); }
     if (job.fetched % 24 === 0 && (await onCellularOnly())) { job.deferred = true; job.stop = true; return; }
   }
 }
@@ -139,8 +148,16 @@ function urgent(job: Job, page: number) {
 }
 /** Pages around `page` download first, starting with the next file any connection takes; its own image at once. */
 export function prioritise(materialId: string, page: number | null) {
-  priority.set(materialId, page); const job = jobs.get(materialId); if (job && page != null) urgent(job, page);
+  priority.set(materialId, page); const job = jobs.get(materialId); if (job && page != null) { urgent(job, page); return; }
+  // No run, the last one failed and its retries are used up (a long time offline, a long server problem): the reader
+  // is still turning pages, so try again now and then. A refusal (403 / 404) stays final.
+  if (job || running.has(materialId) || retryTimers.has(materialId) || refused.has(materialId)) return;
+  if (useDerivedProgress.getState().byMaterial[materialId]?.state !== 'error') return;
+  const last = kickedAt.get(materialId) ?? -Infinity; if (nowImpl() - last < KICK_INTERVAL_MS) return;
+  const docId = docOf.get(materialId), doc = docId ? useDocsStore.getState().docs[docId] : undefined; if (doc?.materialId !== materialId) return;
+  kickedAt.set(materialId, nowImpl()); void ensureDerived(creds.get(materialId) ?? null, doc, { retry: true });
 }
+const refused = new Set<string>(); const kickedAt = new Map<string, number>();
 const retries = new Map<string, number>(); const retryTimers = new Map<string, unknown>();
 const docOf = new Map<string, string>(); // material → its document, once one exists (a preload runs before that)
 function scheduleRetry(id: string) {
@@ -172,7 +189,7 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
   if (doc.id) docOf.set(id, doc.id);
   // a manifest handed over by `download` saves one round trip; stored at once, also when a preload is already running
   if (!doc.derived && opts.serverDerived) { const m = parseManifest(opts.serverDerived); if (m) { if (doc.id) useDocsStore.getState().update(doc.id, { derived: m }); doc = { ...doc, derived: m }; } }
-  if (!opts.retry) { retries.delete(id); const t = retryTimers.get(id); if (t !== undefined) { cancelImpl(t); retryTimers.delete(id); } } // a fresh request restarts the schedule
+  if (!opts.retry) { retries.delete(id); refused.delete(id); const t = retryTimers.get(id); if (t !== undefined) { cancelImpl(t); retryTimers.delete(id); } } // a fresh request restarts the schedule
   const live = running.get(id); if (live) return live;
   // A known set: its directory counts as "being filled" BEFORE the first await. A page that mounts in the same frame
   // then waits for its file; without this it saw "no download running" for a moment and started a device PDF render
@@ -191,7 +208,7 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       for (const batch of chunk(orderForPriority(all, priority.get(id) ?? doc.lastPage ?? null, reading), 24)) { const ok = await Promise.all(batch.map((n) => exists(dir + n))); batch.forEach((n, i) => { if (ok[i]) done++; else missing.push(n); }); }
       if (!missing.length) { progress(id, { done: all.length, total: all.length, bytes: 0, state: 'done' }); setDownloadNote(dir, `done ${all.length}/${all.length}`); retries.delete(id); return; }
       if (await onCellularOnly()) { progress(id, { done, total: all.length, bytes: 0, state: 'deferred' }); setDownloadNote(dir, `deferred ${done}/${all.length}`); return; }
-      job = { id, code, dir, reading, startPage: doc.lastPage ?? null, total: all.length, missing: new Set(missing), inflight: new Set(), gone: new Set(), tries: new Map(), urls: new Map(), signing: null, extras: new Set(), done, bytes: 0, fetched: 0, urgent: 0, stop: false, deferred: false, cancelled: false };
+      job = { id, code, dir, reading, startPage: doc.lastPage ?? null, total: all.length, missing: new Set(missing), inflight: new Set(), gone: new Set(), tries: new Map(), urls: new Map(), signing: null, extras: new Set(), done, bytes: 0, fetched: 0, urgent: 0, stop: false, deferred: false, cancelled: false, failStreak: 0 };
       jobs.set(id, job); noteJob(job, 'downloading'); progress(id, { done, total: all.length, bytes: 0, state: 'downloading' });
       const results = await Promise.allSettled(Array.from({ length: Math.min(CONCURRENCY, missing.length) }, () => worker(job!)));
       await Promise.allSettled([...job.extras]);
@@ -209,7 +226,7 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       // First failure and the end of the retry schedule are enough: the rest would only use up the report quota.
       const attempt = (retries.get(id) ?? 0) + 1, final = status === 403 || status === 404 || attempt > RETRY_DELAYS_MS.length;
       if (attempt === 1 || final) reportImpl(`derived pages download failed status=${status || 'none'} files=${files} attempt=${attempt}${final ? ' final' : ''}`);
-      if (status !== 403 && status !== 404) scheduleRetry(id); // 403 / 404: not assigned (any more) / removed
+      if (status === 403 || status === 404) refused.add(id); else scheduleRetry(id); // 403 / 404: not assigned (any more) / removed
     } finally { running.delete(id); jobs.delete(id); if (activeDir) setDownloadActive(activeDir, false); }
   })();
   running.set(id, run); return run;
@@ -223,7 +240,7 @@ export async function ensureAllDerived(code: string | null) {
 /** Deletes the derived files of a removed document (best effort). */
 export async function removeDerived(materialId?: string) {
   if (!materialId || Platform.OS === 'web') return;
-  const job = jobs.get(materialId); if (job) { job.stop = true; job.cancelled = true; } retries.delete(materialId); docOf.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
+  const job = jobs.get(materialId); if (job) { job.stop = true; job.cancelled = true; } retries.delete(materialId); docOf.delete(materialId); refused.delete(materialId); kickedAt.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
   await running.get(materialId)?.catch(() => {}); // files still arriving would be written back after the delete
   await FileSystem.deleteAsync(docsDir() + `derived/${materialId}/`, { idempotent: true }).catch(() => {});
 }

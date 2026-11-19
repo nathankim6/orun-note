@@ -83,7 +83,17 @@ function world({ pages = 30, gate = false, lastPage = 0, known = true } = {}) {
   w = world({ pages: 3 }); w.signError = Object.assign(new Error('x'), { status: 500 }); await w.dl.ensureDerived(null, w.docs.d1);
   for (let i = 0; i < 12 && w.timers[i]; i++) { w.timers[i].fn(); await tick(40); }
   eq(w.timers.map(t => t.ms), w.dl.RETRY_DELAYS_MS, 'the schedule ends: no endless hammering of a failing server');
+  assert.equal(w.signCalls.length, 6, 'one request per failed run (six connections share it), six runs in all');
   eq(w.reports, ['derived pages download failed status=500 files=0/9 attempt=1', 'derived pages download failed status=500 files=0/9 attempt=6 final'], 'reported at the first failure and when the schedule is exhausted, not in between');
+
+  // after the schedule is used up a page turn starts another attempt, at most once a minute; a refusal stays final
+  const exhausted = w.started.length + w.signCalls.length; w.dl.prioritise('m1', 1); await tick(40); assert.equal(w.signCalls.length, 7, 'a page turn tries again');
+  w.dl.prioritise('m1', 2); await tick(40); assert.equal(w.signCalls.length, 7, 'but not on every page turn');
+  w.clock += w.dl.KICK_INTERVAL_MS + 1; w.signError = null; w.dl.prioritise('m1', 2); await tick(60); assert.equal(w.state().state, 'done', 'and succeeds once the server answers'); assert(exhausted >= 6);
+  w = world({ pages: 3 }); w.signError = Object.assign(new Error('x'), { status: 403 }); await w.dl.ensureDerived(null, w.docs.d1); w.clock += 10 * w.dl.KICK_INTERVAL_MS; w.dl.prioritise('m1', 1); await tick(40); assert.equal(w.signCalls.length, 1, '403 is not retried by page turns');
+  // storage down (URLs are signed, no transfer gets through): the run stops after a streak instead of 3 attempts per file
+  w = world({ pages: 60 }); w.transferFails = () => true; await w.dl.ensureDerived(null, w.docs.d1); assert.equal(w.state().state, 'error');
+  assert(w.started.length >= w.dl.FAIL_STREAK_MAX && w.started.length <= w.dl.FAIL_STREAK_MAX + 8, 'stopped after the streak: ' + w.started.length + ' transfers, not ' + 180 * w.dl.FILE_ATTEMPTS); assert.equal(w.timers.length, 1, 'and retried later');
 
   // ---- 6. files the server does not have are skipped, not waited for ----
   w = world({ pages: 5 }); w.serverHas = (f) => !f.endsWith('-words.json'); await w.dl.ensureDerived(null, w.docs.d1);
