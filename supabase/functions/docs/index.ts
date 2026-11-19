@@ -310,6 +310,19 @@ Deno.serve(async (req) => {
         const { data: s, error } = await supa.storage.from(BUCKET).createSignedUrl(m.storage_path, 600); if (error || !s) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
         return json({ ok: true, url: s.signedUrl, title: m.title, fileName: m.file_name, derived: m.derived ?? null });
       }
+      // Pre-rendered page images of a material (docs/derived-pages.md). Students need this for every textbook page they
+      // read, so it MUST stay above the admin-only gate below: behind it every student got 403, no page image was ever
+      // downloaded and each page was drawn by the device PDF engine (seconds per page). Same rule as "download":
+      // students only for materials assigned to them.
+      case "materials.derivedUrls": {
+        const id = String(body.materialId ?? "");
+        if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
+        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2000|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
+        if (!files.length) return json({ ok: true, urls: [] });
+        const paths = files.map((n: string) => `derived/${id}/v1/${n}`);
+        const { data, error } = await supa.storage.from(BUCKET).createSignedUrls(paths, 900); if (error || !data) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
+        return json({ ok: true, urls: data.filter((d: any) => d.signedUrl && !d.error).map((d: any) => ({ path: d.path, url: d.signedUrl })) });
+      }
     }
     if (who.role !== "admin") return fail("관리자 전용 기능입니다", 403);
     switch (action) {
@@ -368,15 +381,6 @@ Deno.serve(async (req) => {
         if (!(derived.pages > 0)) return fail("manifest.pages");
         const { data, error } = await supa.from("materials").update({ derived }).eq("id", id).select().single(); if (error) return fail(error.message);
         return json({ ok: true, material: data });
-      }
-      case "materials.derivedUrls": {
-        const id = String(body.materialId ?? "");
-        if (who.role !== "admin") { const allowed = (await materialsFor(who.student)).some((m: any) => m.id === id); if (!allowed) return fail("이 교재에 대한 권한이 없습니다", 403); }
-        const files = (Array.isArray(body.files) ? body.files : []).map((x: unknown) => String(x)).filter((x: string) => /^(manifest\.json|p\d{1,4}-(1200|2000|2400|3600)\.jpg|p\d{1,4}-words\.json)$/.test(x)).slice(0, 300);
-        if (!files.length) return json({ ok: true, urls: [] });
-        const paths = files.map((n: string) => `derived/${id}/v1/${n}`);
-        const { data, error } = await supa.storage.from(BUCKET).createSignedUrls(paths, 900); if (error || !data) return fail("다운로드 URL 생성 실패: " + (error?.message ?? ""), 500);
-        return json({ ok: true, urls: data.filter((d: any) => d.signedUrl && !d.error).map((d: any) => ({ path: d.path, url: d.signedUrl })) });
       }
       case "materials.delete": {
         const { data: m } = await supa.from("materials").select("storage_path,cover_path").eq("id", String(body.id)).maybeSingle();
