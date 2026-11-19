@@ -67,13 +67,13 @@ function world({ pages = 30, gate = false, lastPage = 0, known = true } = {}) {
   assert(new Set(w.started.filter(s => s.name === 'p3-1200.jpg').map(s => s.sign)).size === 3, 'each attempt with a newly signed URL'); eq(w.timers, []); eq(w.reports, []);
   w = world({ pages: 6 }); let broken = true; w.transferFails = (n) => broken && n === 'p4-2000.jpg';
   await w.dl.ensureDerived(null, w.docs.d1); assert.equal(w.state().state, 'error'); assert.equal(w.names().filter(n => n === 'p4-2000.jpg').length, w.dl.FILE_ATTEMPTS);
-  assert.equal(w.state().done, 17); assert.equal(w.timers.length, 1); assert.equal(w.timers[0].ms, w.dl.RETRY_DELAYS_MS[0]); assert.match(w.reports[0], /^derived pages download failed status=none files=17\/18 attempt=1$/);
+  assert.equal(w.state().done, 17); assert.equal(w.timers.length, 1); assert.equal(w.timers[0].ms, w.dl.RETRY_DELAYS_MS[0]); assert.match(w.reports[0], /^derived pages download failed status=none files=17\/18 attempt=1$/); assert.equal(w.reports.length, 1);
   assert.equal(w.pages.isDownloadActive(w.dir), false, 'between attempts nothing claims to be downloading (pages fall back at once)');
   broken = false; w.timers[0].fn(); await tick(60); assert.equal(w.state().state, 'done'); assert.equal(w.started.filter(s => s.name !== 'p4-2000.jpg').length, 17, 'the retry fetches only what is missing');
 
   // ---- 5. the server refuses or is unreachable ----
   w = world({ pages: 6 }); w.signError = Object.assign(new Error('이 교재에 대한 권한이 없습니다'), { status: 403 });
-  await w.dl.ensureDerived(null, w.docs.d1); assert.equal(w.state().state, 'error'); eq(w.timers, [], '403: not assigned, no retry'); assert.match(w.reports[0], /status=403 files=0\/18/); assert.equal(w.started.length, 0);
+  await w.dl.ensureDerived(null, w.docs.d1); assert.equal(w.state().state, 'error'); eq(w.timers, [], '403: not assigned, no retry'); assert.match(w.reports[0], /status=403 files=0\/18 attempt=1 final$/); assert.equal(w.started.length, 0);
   w = world({ pages: 6 }); w.signError = Object.assign(new Error('네트워크 연결을 확인해 주세요.'), { status: 0 });
   await w.dl.ensureDerived(null, w.docs.d1); assert.equal(w.timers.length, 1); assert.equal(w.timers[0].ms, 5000);
   w.timers[0].fn(); await tick(60); assert.equal(w.timers.length, 2); assert.equal(w.timers[1].ms, 15000, 'growing pauses');
@@ -83,6 +83,7 @@ function world({ pages = 30, gate = false, lastPage = 0, known = true } = {}) {
   w = world({ pages: 3 }); w.signError = Object.assign(new Error('x'), { status: 500 }); await w.dl.ensureDerived(null, w.docs.d1);
   for (let i = 0; i < 12 && w.timers[i]; i++) { w.timers[i].fn(); await tick(40); }
   eq(w.timers.map(t => t.ms), w.dl.RETRY_DELAYS_MS, 'the schedule ends: no endless hammering of a failing server');
+  eq(w.reports, ['derived pages download failed status=500 files=0/9 attempt=1', 'derived pages download failed status=500 files=0/9 attempt=6 final'], 'reported at the first failure and when the schedule is exhausted, not in between');
 
   // ---- 6. files the server does not have are skipped, not waited for ----
   w = world({ pages: 5 }); w.serverHas = (f) => !f.endsWith('-words.json'); await w.dl.ensureDerived(null, w.docs.d1);
@@ -94,7 +95,7 @@ function world({ pages = 30, gate = false, lastPage = 0, known = true } = {}) {
 
   // ---- 8. removing the book stops its download before the files are deleted ----
   w = world({ pages: 40, gate: true }); run = w.dl.ensureDerived(null, w.docs.d1); await tick(); const rm = w.dl.removeDerived('m1'); await tick(); const inFlight = w.started.length;
-  await w.releaseAll(); await rm; await run; assert.equal(w.started.length, inFlight, 'nothing new starts after removal'); assert([...w.disk.keys()].every(k => !k.startsWith('file:///docs/derived/m1/')), 'no file written back after the delete'); assert(w.deleted.includes('file:///docs/derived/m1/'));
+  await w.releaseAll(); await rm; await run; assert.equal(w.started.length, inFlight, 'nothing new starts after removal'); assert([...w.disk.keys()].every(k => !k.startsWith('file:///docs/derived/m1/')), 'no file written back after the delete'); assert(w.deleted.includes('file:///docs/derived/m1/')); eq(w.reports, [], 'a removal is not a failure'); eq(w.timers, []); assert.equal(w.state(), undefined);
 
   // ---- 9. a set whose manifest is not known yet: fetched first, then the same queue ----
   // (the manifest travels through downloadAsync as well: the fake disk gives that file a JSON body)

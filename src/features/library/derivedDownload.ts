@@ -79,7 +79,7 @@ type Job = {
   id: string; code: string | null; dir: string; reading: number | null; startPage: number | null; total: number;
   missing: Set<string>; inflight: Set<string>; /** the server has no such file */ gone: Set<string>; tries: Map<string, number>;
   urls: Map<string, { url: string; at: number }>; signing: Promise<void> | null; extras: Set<Promise<void>>;
-  done: number; bytes: number; fetched: number; urgent: number; stop: boolean; deferred: boolean;
+  done: number; bytes: number; fetched: number; urgent: number; stop: boolean; deferred: boolean; /** the book was removed meanwhile */ cancelled: boolean;
 };
 const jobs = new Map<string, Job>();
 const pageOf = (job: Job) => priority.get(job.id) ?? job.startPage;
@@ -179,10 +179,11 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       for (const batch of chunk(orderForPriority(all, priority.get(id) ?? doc.lastPage ?? null, reading), 24)) { const ok = await Promise.all(batch.map((n) => exists(dir + n))); batch.forEach((n, i) => { if (ok[i]) done++; else missing.push(n); }); }
       if (!missing.length) { progress(id, { done: all.length, total: all.length, bytes: 0, state: 'done' }); setDownloadNote(dir, `done ${all.length}/${all.length}`); retries.delete(id); return; }
       if (await onCellularOnly()) { progress(id, { done, total: all.length, bytes: 0, state: 'deferred' }); setDownloadNote(dir, `deferred ${done}/${all.length}`); return; }
-      job = { id, code, dir, reading, startPage: doc.lastPage ?? null, total: all.length, missing: new Set(missing), inflight: new Set(), gone: new Set(), tries: new Map(), urls: new Map(), signing: null, extras: new Set(), done, bytes: 0, fetched: 0, urgent: 0, stop: false, deferred: false };
+      job = { id, code, dir, reading, startPage: doc.lastPage ?? null, total: all.length, missing: new Set(missing), inflight: new Set(), gone: new Set(), tries: new Map(), urls: new Map(), signing: null, extras: new Set(), done, bytes: 0, fetched: 0, urgent: 0, stop: false, deferred: false, cancelled: false };
       jobs.set(id, job); noteJob(job, 'downloading'); progress(id, { done, total: all.length, bytes: 0, state: 'downloading' });
       const results = await Promise.allSettled(Array.from({ length: Math.min(CONCURRENCY, missing.length) }, () => worker(job!)));
       await Promise.allSettled([...job.extras]);
+      if (job.cancelled) { progress(id, null); return; } // removed while downloading: neither an error nor a retry
       const crashed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined; if (crashed) throw crashed.reason;
       if (job.deferred) { progress(id, { done: job.done, total: job.total, bytes: job.bytes, state: 'deferred' }); noteJob(job, 'deferred'); return; }
       const left = [...job.missing].filter((n) => !job!.gone.has(n));
@@ -192,8 +193,10 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       const status = Number(e?.status ?? 0) || 0, files = `${job?.done ?? 0}/${job?.total ?? 0}`;
       useDerivedProgress.getState().set(id, { done: job?.done ?? 0, total: job?.total ?? 0, bytes: job?.bytes ?? 0, state: 'error', error: String(e?.message ?? e) });
       if (activeDir) setDownloadNote(activeDir, `error status=${status || 'none'} ${files}`);
-      // counts and states only: a refused or failing download used to be invisible (every student got 403 for days)
-      reportImpl(`derived pages download failed status=${status || 'none'} files=${files} attempt=${(retries.get(id) ?? 0) + 1}`);
+      // States and counts only. A refused or failing download used to be invisible (every student got 403 for days).
+      // First failure and the end of the retry schedule are enough: the rest would only use up the report quota.
+      const attempt = (retries.get(id) ?? 0) + 1, final = status === 403 || status === 404 || attempt > RETRY_DELAYS_MS.length;
+      if (attempt === 1 || final) reportImpl(`derived pages download failed status=${status || 'none'} files=${files} attempt=${attempt}${final ? ' final' : ''}`);
       if (status !== 403 && status !== 404) scheduleRetry(id, doc.id); // 403 / 404: not assigned (any more) / removed
     } finally { running.delete(id); jobs.delete(id); if (activeDir) setDownloadActive(activeDir, false); }
   })();
@@ -208,7 +211,7 @@ export async function ensureAllDerived(code: string | null) {
 /** Deletes the derived files of a removed document (best effort). */
 export async function removeDerived(materialId?: string) {
   if (!materialId || Platform.OS === 'web') return;
-  const job = jobs.get(materialId); if (job) job.stop = true; retries.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
+  const job = jobs.get(materialId); if (job) { job.stop = true; job.cancelled = true; } retries.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
   await running.get(materialId)?.catch(() => {}); // files still arriving would be written back after the delete
   await FileSystem.deleteAsync(docsDir() + `derived/${materialId}/`, { idempotent: true }).catch(() => {});
 }
