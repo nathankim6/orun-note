@@ -142,13 +142,24 @@ export function prioritise(materialId: string, page: number | null) {
   priority.set(materialId, page); const job = jobs.get(materialId); if (job && page != null) urgent(job, page);
 }
 const retries = new Map<string, number>(); const retryTimers = new Map<string, unknown>();
-function scheduleRetry(id: string, docId: string) {
+const docOf = new Map<string, string>(); // material → its document, once one exists (a preload runs before that)
+function scheduleRetry(id: string) {
+  const docId = docOf.get(id); if (!docId) return; // a preload without a document: the document's own request follows
   const n = retries.get(id) ?? 0; if (n >= RETRY_DELAYS_MS.length || retryTimers.has(id)) return;
   retries.set(id, n + 1);
   retryTimers.set(id, timerImpl(() => {
     retryTimers.delete(id); const doc = useDocsStore.getState().docs[docId];
     if (doc?.materialId === id) void ensureDerived(creds.get(id) ?? null, doc, { retry: true });
   }, RETRY_DELAYS_MS[n]));
+}
+/**
+ * Starts fetching a material's page images BEFORE its document exists, i.e. while the PDF itself is still downloading.
+ * The images every page needs to open are a fraction of the PDF, so the book is usually ready to leaf through the
+ * moment the PDF arrives; the document's own `ensureDerived` then joins this run.
+ */
+export function preloadDerived(code: string | null, materialId: string, serverDerived: unknown): void {
+  const m = parseManifest(serverDerived); if (!m || !materialId || Platform.OS === 'web') return;
+  void ensureDerived(code, { id: '', materialId, kind: 'pdf', derived: m, lastPage: 0 } as unknown as Doc, { page: 0 });
 }
 /**
  * Makes sure the document's derived pages are on disk, downloading what is missing. Resolves when complete, deferred
@@ -158,6 +169,9 @@ function scheduleRetry(id: string, docId: string) {
 export function ensureDerived(code: string | null, doc: Doc, opts: { page?: number | null; serverDerived?: unknown; /** internal: scheduled retry */ retry?: boolean } = {}): Promise<void> {
   if (Platform.OS === 'web' || !doc.materialId || doc.kind === 'blank') return Promise.resolve();
   const id = doc.materialId; if (opts.page !== undefined) priority.set(id, opts.page); creds.set(id, code);
+  if (doc.id) docOf.set(id, doc.id);
+  // a manifest handed over by `download` saves one round trip; stored at once, also when a preload is already running
+  if (!doc.derived && opts.serverDerived) { const m = parseManifest(opts.serverDerived); if (m) { if (doc.id) useDocsStore.getState().update(doc.id, { derived: m }); doc = { ...doc, derived: m }; } }
   if (!opts.retry) { retries.delete(id); const t = retryTimers.get(id); if (t !== undefined) { cancelImpl(t); retryTimers.delete(id); } } // a fresh request restarts the schedule
   const live = running.get(id); if (live) return live;
   // A known set: its directory counts as "being filled" BEFORE the first await. A page that mounts in the same frame
@@ -168,8 +182,6 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
   const run = (async () => {
     const progress = useDerivedProgress.getState().set; let job: Job | null = null;
     try {
-      // a manifest handed over by `download` saves one round trip
-      if (!doc.derived && opts.serverDerived) { const m = parseManifest(opts.serverDerived); if (m) { useDocsStore.getState().update(doc.id, { derived: m }); doc = { ...doc, derived: m }; } }
       const m = await ensureManifest(code, doc); if (!m) return;
       const dir = derivedDir(id, m.version); await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
       materialOfDir.set(dir, id);
@@ -197,7 +209,7 @@ export function ensureDerived(code: string | null, doc: Doc, opts: { page?: numb
       // First failure and the end of the retry schedule are enough: the rest would only use up the report quota.
       const attempt = (retries.get(id) ?? 0) + 1, final = status === 403 || status === 404 || attempt > RETRY_DELAYS_MS.length;
       if (attempt === 1 || final) reportImpl(`derived pages download failed status=${status || 'none'} files=${files} attempt=${attempt}${final ? ' final' : ''}`);
-      if (status !== 403 && status !== 404) scheduleRetry(id, doc.id); // 403 / 404: not assigned (any more) / removed
+      if (status !== 403 && status !== 404) scheduleRetry(id); // 403 / 404: not assigned (any more) / removed
     } finally { running.delete(id); jobs.delete(id); if (activeDir) setDownloadActive(activeDir, false); }
   })();
   running.set(id, run); return run;
@@ -211,7 +223,7 @@ export async function ensureAllDerived(code: string | null) {
 /** Deletes the derived files of a removed document (best effort). */
 export async function removeDerived(materialId?: string) {
   if (!materialId || Platform.OS === 'web') return;
-  const job = jobs.get(materialId); if (job) { job.stop = true; job.cancelled = true; } retries.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
+  const job = jobs.get(materialId); if (job) { job.stop = true; job.cancelled = true; } retries.delete(materialId); docOf.delete(materialId); const t = retryTimers.get(materialId); if (t !== undefined) { cancelImpl(t); retryTimers.delete(materialId); }
   await running.get(materialId)?.catch(() => {}); // files still arriving would be written back after the delete
   await FileSystem.deleteAsync(docsDir() + `derived/${materialId}/`, { idempotent: true }).catch(() => {});
 }

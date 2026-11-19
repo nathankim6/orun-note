@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { COVER_COLORS, useDocsStore } from '@/store/docs';
 import { api } from './api';
-import { ensureDerived, removeDerived } from '@/features/library/derivedDownload';
+import { ensureDerived, preloadDerived, removeDerived } from '@/features/library/derivedDownload';
 import { Doc } from '@/data/types';
 
 // --- web (preview only): keep PDF bytes in IndexedDB so documents survive reloads. Native builds never use this path;
@@ -66,6 +66,9 @@ function xhrGetBlob(url: string, onProgress?: (p: number) => void) {
 /** Downloads a material through a short-lived signed URL and stores it encrypted like any other document. */
 export async function downloadMaterial(code: string | null, materialId: string, title: string, onProgress?: (p: number) => void, coverUrl?: string | null): Promise<Doc> {
   const r = await api.download(code, materialId);
+  // The page images start now, next to the PDF: what every page needs to open is a fraction of the PDF's size, so the
+  // book can be leafed through at once when the PDF arrives (they used to start only after it).
+  if (r.derived) preloadDerived(code, materialId, r.derived);
   const coverUri = coverUrl ? await cacheCover(coverUrl) : null;
   if (Platform.OS === 'web') { const blob = await xhrGetBlob(r.url, onProgress); const url = URL.createObjectURL(blob); const d0 = await importPdf({ uri: url, name: r.fileName || `${title}.pdf`, size: blob.size, file: blob as any, title, materialId }); if (coverUri) useDocsStore.getState().update(d0.id, { coverUri }); return { ...d0, coverUri: coverUri ?? undefined }; }
   const tmp = `${FileSystem.cacheDirectory}dl-${materialId}.pdf`;

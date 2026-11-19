@@ -103,6 +103,14 @@ function world({ pages = 30, gate = false, lastPage = 0, known = true } = {}) {
   const w9 = world({ pages: 4, known: false }); const put = w9.disk.set.bind(w9.disk); w9.disk.set = (k, v) => put(k, /manifest-\d+\.json$/.test(k) ? manifestBody : v);
   assert.equal(w9.pages.isDownloadActive(w9.dir), false); await w9.dl.ensureDerived(null, w9.docs.d1); assert.equal(w9.docs.d1.derived.pages, 4); assert.equal(w9.state().state, 'done'); eq(w9.signCalls[0], ['manifest.json']);
 
+  // ---- 9b. the page images start while the PDF itself still downloads (no document yet); the document then joins that run ----
+  w = world({ pages: 12, gate: true, known: false }); const serverManifest = { version: 1, pages: 12, widths: [1200, 2000], words: true, engine: 'x' };
+  w.dl.preloadDerived(null, 'm1', serverManifest); assert.equal(w.pages.isDownloadActive(w.dir), true); await tick(); assert.equal(w.started.length, 6, 'transfers run before the document exists'); eq(w.signCalls.map(c => c[0]), ['p0-1200.jpg'], 'no manifest round trip');
+  run = w.dl.ensureDerived(null, w.docs.d1, { page: 0, serverDerived: serverManifest }); assert.equal(w.docs.d1.derived.pages, 12, 'the manifest is stored on the document at once, although a run is already live');
+  await w.releaseAll(); await run; assert.equal(w.state().state, 'done'); assert.equal(w.started.length, 36); assert.equal(new Set(w.names()).size, 36, 'one run, each file once');
+  w = world({ pages: 3, known: false }); w.signError = Object.assign(new Error('x'), { status: 500 }); w.dl.preloadDerived(null, 'm1', serverManifest); await tick(40); eq(w.timers, [], 'a failed preload does not schedule retries for a document that does not exist');
+  await w.dl.ensureDerived(null, w.docs.d1, { serverDerived: { ...serverManifest, pages: 3 } }); assert.equal(w.timers.length, 1, 'the document does'); w.dl.preloadDerived(null, '', serverManifest); w.dl.preloadDerived(null, 'm9', null);
+
   // ---- 10. page side: waiting rule and the device-engine fallback report ----
   const S = world().pages.derivedFileState, p = 'file:///docs/derived/m1/v1/p3-1200.jpg';
   assert.equal(S({ path: null, present: false, checked: true, downloading: true, timedOut: false }), 'absent');

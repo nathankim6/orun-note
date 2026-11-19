@@ -7,6 +7,26 @@ import type { PageTile } from './pdfTileGeometry';
 import { PdfRenderer } from '../../../modules/pdf-renderer';
 
 export type DerivedTierImage = { key: 'reading' | 'detail' | 'zoom'; uri: string; px: number };
+/** A page image that is on disk should be on screen within a frame or two. Slower than this is worth knowing about. */
+export const SLOW_DERIVED_LOAD_MS = 500;
+let slowLoads = 0;
+/**
+ * States and counts only: the first two slow image loads of an app session (decode time on the device, measured from
+ * the moment the image was put on the page to its onLoad). Returns the report line, or null.
+ */
+export function slowDerivedLoadLine(tier: string, index: number, ms: number): string | null {
+  if (!(ms >= SLOW_DERIVED_LOAD_MS) || slowLoads >= 2) return null; slowLoads++;
+  return `derived image slow tier=${tier} page=${index} loadMs=${Math.round(ms)}`;
+}
+/** Per page: when each tier's image was put on the page, and the onLoad that measures it. */
+function useLoadClock(index: number) {
+  const clock = useRef<{ index: number; shown: Record<string, number>; done: Record<string, boolean> }>({ index, shown: {}, done: {} });
+  if (clock.current.index !== index) clock.current = { index, shown: {}, done: {} };
+  return {
+    shown(tier: string) { if (!(tier in clock.current.shown)) clock.current.shown[tier] = Date.now(); },
+    loaded(tier: string) { const c = clock.current; if (c.done[tier] || !(tier in c.shown)) return; c.done[tier] = true; const line = slowDerivedLoadLine(tier, index, Date.now() - c.shown[tier]); if (line) { try { require('@/lib/diag').reportError('render', line); } catch { /* diagnostics are optional */ } } },
+  };
+}
 /**
  * Which server rasters a page shows (pure, unit-tested). Lower tiers stay underneath a sharper one, so a tier that is
  * still decoding never leaves a hole and dropping the zoom image never flashes.
@@ -56,10 +76,11 @@ function DerivedPaper({ info, index, width, height, basePx = 0 }: Props) {
   const [settled, setSettled] = useState(false);
   useEffect(() => { if (allowed && !settled) setSettled(true); }, [allowed, settled]);
   const tiers = derivedTiers({ reading, readingPx, detail: detailFile === 'present' ? detail : null, detailPx, detailOn: settled || detailFirst(basePx, readingPx), zoom: null, zoomOn: false });
+  const clock = useLoadClock(index); for (const t of tiers) clock.shown(t.key);
   // Plain layout at the box size: the platform decodes to (at most) the box's device pixels, and no scale below 1
   // ever applies to these layers.
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} style={{ position: 'absolute', left: 0, top: 0, width, height }} resizeMode="stretch" fadeDuration={0} />)}
+    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} style={{ position: 'absolute', left: 0, top: 0, width, height }} resizeMode="stretch" fadeDuration={0} onLoad={() => clock.loaded(t.key)} />)}
   </View>;
 }
 /**
@@ -126,8 +147,9 @@ function DerivedInlinePage({ info, index, width, height, tile, basePx = 0, rende
   const tiers = derivedTiers({ reading, readingPx, detail: detailFile === 'present' ? detail : null, detailPx, detailOn, zoom: zoomFile === 'present' ? zoom : null, zoomOn: zoomOnRef.current });
   const zoomState = !canZoom || (!!zoom && zoomFile !== 'present' && zoomRecentlyFailed(zoom)) ? 'none' : zoomFile === 'present' ? 'present' : 'coming';
   const vector = !!tile && !!renderTile && wantsVectorTile({ neededPx, detailPx, zoomState });
+  const clock = useLoadClock(index); for (const t of tiers) clock.shown(t.key);
   return <View style={{ width, height, backgroundColor: '#fff' }} pointerEvents="none">
-    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} // The reading raster keeps the plain layout (thumbnails and page strips decode it at their own small size); the
+    {tiers.map((t) => <Image key={t.key} source={{ uri: t.uri }} onLoad={() => clock.loaded(t.key)} // The reading raster keeps the plain layout (thumbnails and page strips decode it at their own small size); the
       // sharper tiers are laid out at their pixel size so no source pixel is dropped under the zoom transform.
       style={t.key === 'reading' ? { position: 'absolute', left: 0, top: 0, width, height } : fullResImageStyle(t.px, width, height, dpr)} resizeMode="stretch" fadeDuration={0} />)}
     {vector ? <View style={{ position: 'absolute', left: 0, top: 0, width, height }}>{renderTile!()}</View> : null}

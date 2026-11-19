@@ -109,6 +109,10 @@ const now = { z: 3.1, tx: -520, ty: -1400 }, m = F.sharpMotionTransform(at, now.
 const tilePoint = { x: 200, y: 300 }, content = { x: (tilePoint.x - at.tx) / at.z, y: (tilePoint.y - at.ty) / at.z };
 const onScreen = { x: 417 + m.scale * (tilePoint.x - 417) + m.translateX, y: 597 + m.scale * (tilePoint.y - 597) + m.translateY };
 assert(Math.abs(onScreen.x - (now.tx + now.z * content.x)) < 1e-9 && Math.abs(onScreen.y - (now.ty + now.z * content.y)) < 1e-9);
+// field diagnostics: only the first two slow decodes of a session are reported, with tier / page / time only
+assert.equal(D.slowDerivedLoadLine('reading', 3, D.SLOW_DERIVED_LOAD_MS - 1), null); assert.equal(D.slowDerivedLoadLine('reading', 3, NaN), null);
+assert.equal(D.slowDerivedLoadLine('detail', 7, 812.4), 'derived image slow tier=detail page=7 loadMs=812'); assert.equal(D.slowDerivedLoadLine('reading', 8, 5000), 'derived image slow tier=reading page=8 loadMs=5000');
+assert.equal(D.slowDerivedLoadLine('reading', 9, 5000), null, 'two per session');
 const V = D.wantsVectorTile;
 assert.equal(V({ neededPx: ipad(1), detailPx: 2000, zoomState: 'none' }), false, 'zoom 1: never the device engine');
 assert.equal(V({ neededPx: ipad(2.2), detailPx: 2000, zoomState: 'coming' }), false, 'while the zoom image downloads the engine is not started');
