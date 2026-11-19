@@ -6,7 +6,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const read = () => { try { return JSON.parse(fs.readFileSync(path.join(docs, 'lab-state.json'), 'utf8')); } catch { return null; } };
 async function until(test, ms, what) { const end = Date.now() + ms; for (;;) { const s = read(); if (s && test(s)) return s; if (Date.now() > end) { console.log('STATE', JSON.stringify(s)?.slice(0, 1500)); throw Error('timeout: ' + what); } await sleep(200); } }
 let id = 0;
-async function cmd(c) { id++; const tag = `c${id}`; fs.writeFileSync(path.join(docs, 'lab-cmd.json'), JSON.stringify({ ...c, id: tag })); return until(s => s.ack === tag, 20000, 'ack ' + JSON.stringify(c)); }
+async function cmd(c) { id++; const tag = `c${id}`; const tmp = path.join(docs, 'lab-cmd.tmp'); fs.writeFileSync(tmp, JSON.stringify({ ...c, id: tag })); fs.renameSync(tmp, path.join(docs, 'lab-cmd.json')); // atomic: never visible half-written return until(s => s.ack === tag, 20000, 'ack ' + JSON.stringify(c)); }
 function shot(name) { execFileSync('xcrun', ['simctl', 'io', udid, 'screenshot', '--type=png', path.join(out, name + '.png')], { stdio: 'ignore' }); fs.writeFileSync(path.join(out, name + '.json'), JSON.stringify(read())); console.log('shot', name); }
 const first = await until(s => s.ready === true, 180000, 'lab ready');
 if (first.pdf === false) { console.log('LAB_LOG', (first.log ?? []).join('\n')); throw Error('pdf pipeline unavailable in the lab build'); }

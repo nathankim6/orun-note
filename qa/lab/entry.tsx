@@ -142,7 +142,7 @@ function Lab() {
     const file = FileSystem.documentDirectory + 'lab-cmd.json'; let busy = false;
     const timer = Platform.OS === 'ios' ? setInterval(async () => {
       if (busy) return; busy = true;
-      try { const i = await FileSystem.getInfoAsync(file); if (i.exists) { const text = await FileSystem.readAsStringAsync(file); await FileSystem.deleteAsync(file, { idempotent: true }); runRef.current(JSON.parse(text)); } } catch { /* next tick */ } finally { busy = false; }
+      try { const i = await FileSystem.getInfoAsync(file); if (i.exists) { const text = await FileSystem.readAsStringAsync(file); const parsed = JSON.parse(text); /* a half-written file throws here and is read again on the next tick */ await FileSystem.deleteAsync(file, { idempotent: true }); runRef.current(parsed); } } catch { /* next tick */ } finally { busy = false; }
     }, 250) : null;
     return () => { sub.remove(); if (timer) clearInterval(timer); };
   }, []);
