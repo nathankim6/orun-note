@@ -1,6 +1,6 @@
 {
   "name": "paperly",
-  "version": "1.6.20",
+  "version": "1.6.21",
   "main": "index.ts",
   "dependencies": {
     "@expo/metro-runtime": "~58.0.16",
