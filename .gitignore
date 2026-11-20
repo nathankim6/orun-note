@@ -17,3 +17,4 @@ expo-env.d.ts
 desktop/app
 desktop/release
 desktop/node_modules
+web-dist/

@@ -2,7 +2,9 @@
 import type { PdfInfo, PdfOutlineItem } from './types';
 let lib: any = null; const docs = new Map<string, Promise<any>>();
 import * as pdfjsLib from 'pdfjs-dist';
-async function pdfjs() { if (lib) return lib; lib = pdfjsLib as any; lib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; return lib; }
+// the web build may live under a sub-path (experiments.baseUrl)
+const webBase = () => { try { return String(require('expo-constants').default?.expoConfig?.experiments?.baseUrl ?? '').replace(/\/+$/, ''); } catch { return ''; } };
+async function pdfjs() { if (lib) return lib; lib = pdfjsLib as any; lib.GlobalWorkerOptions.workerSrc = webBase() + '/pdf.worker.min.mjs'; return lib; }
 async function open(uri: string) {
   if (!docs.has(uri)) {
     const p = (async () => { const l = await pdfjs(); const data = await (await fetch(uri)).arrayBuffer(); return l.getDocument({ data }).promise; })();

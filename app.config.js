@@ -36,6 +36,8 @@ module.exports = ({ config }) => {
           requestHeaders: { 'expo-channel-name': CHANNEL },
         }
       : { enabled: false },
+    // Web build served from a sub-path (GitHub Pages: /orun-note/app). Only the web export sets WEB_BASE_URL.
+    ...(process.env.WEB_BASE_URL ? { experiments: { ...(config.experiments || {}), baseUrl: process.env.WEB_BASE_URL } } : {}),
     extra: { ...(config.extra || {}), ...(projectId ? { eas: { ...((config.extra && config.extra.eas) || {}), projectId } } : {}) },
   };
 };

@@ -1,12 +1,15 @@
 import { Platform } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
+import Constants from 'expo-constants';
 import { supabase } from './supabase';
+/** Web: the app may live under a sub-path (experiments.baseUrl), so the return URL must include it. */
+const webBase = () => String((Constants.expoConfig as any)?.experiments?.baseUrl ?? '').replace(/\/+$/, '');
 
 WebBrowser.maybeCompleteAuthSession();
 /** Google sign-in through Supabase Auth. Native: system auth session + orunnote:// deep link (PKCE). Web: full-page redirect. */
 export async function signInWithGoogle(): Promise<{ ok: boolean; message?: string }> {
-  const redirectTo = Platform.OS === 'web' ? window.location.origin + '/auth/callback' : Linking.createURL('auth/callback');
+  const redirectTo = Platform.OS === 'web' ? window.location.origin + webBase() + '/auth/callback' : Linking.createURL('auth/callback');
   const { data, error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo, skipBrowserRedirect: Platform.OS !== 'web', queryParams: { prompt: 'select_account' } } });
   if (error) return { ok: false, message: error.message };
   if (Platform.OS === 'web') return { ok: true }; // page navigates away
