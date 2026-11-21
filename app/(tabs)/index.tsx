@@ -73,7 +73,8 @@ export default function Library() {
   const localByMaterial = useMemo(() => Object.fromEntries(Object.values(docs).filter((d) => d.materialId).map((d) => [d.materialId!, d])), [docs]);
   const pending = useMemo(() => materials.filter((mm) => !localByMaterial[mm.id]), [materials, localByMaterial]);
   const qn = q.normalize('NFC').trim().toLowerCase();
-  const pendingShown = useMemo(() => (folder === 'all' ? pending.filter((mm) => !qn || String(mm.title ?? '').normalize('NFC').toLowerCase().includes(qn)) : []), [pending, folder, qn]);
+  // Not-downloaded materials follow the chosen order too (title / newest upload); "최근 열람순" keeps them first as new arrivals.
+  const pendingShown = useMemo(() => (folder === 'all' ? pending.filter((mm) => !qn || String(mm.title ?? '').normalize('NFC').toLowerCase().includes(qn)) : []).slice().sort((a, b) => sort === 'title' ? String(a.title ?? '').normalize('NFC').localeCompare(String(b.title ?? '').normalize('NFC'), 'ko') : String(b.created_at ?? '').localeCompare(String(a.created_at ?? ''))), [pending, folder, qn, sort]);
   const list = useMemo(() => Object.values(docs).filter((d) => (folder === 'all' ? true : folder === 'fav' ? d.favorite : d.folderId === folder) && (!q || d.title.normalize('NFC').toLowerCase().includes(q.normalize('NFC').toLowerCase()) || d.fileName.normalize('NFC').toLowerCase().includes(q.normalize('NFC').toLowerCase()))).sort((a, b) => sort === 'title' ? a.title.normalize('NFC').localeCompare(b.title.normalize('NFC'), 'ko') : sort === 'added' ? (b.createdAt > a.createdAt ? 1 : -1) : ((b.lastOpenedAt ?? b.createdAt) > (a.lastOpenedAt ?? a.createdAt) ? 1 : -1)), [docs, folder, q, sort]);
   const railW = isTablet ? 96 : 0; const gap = narrow ? 16 : 22;
   const tileW = Math.floor((width - railW - m * 2 - (columns - 1) * gap) / columns);
@@ -120,14 +121,14 @@ export default function Library() {
         </View>
         {list.length === 0 && pendingShown.length === 0 ? (
           <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-            <Ionicons name={q ? 'search' : 'books-outline' as any} size={52} color={ios.gray2} />
-            <Text style={[type.title3, { color: colors.text, marginTop: 14, textAlign: 'center' }]}>{q ? '검색 결과 없음' : role === 'admin' ? '아직 교재가 없어요' : '배정된 교재가 아직 없어요'}</Text>
-            <Text style={[type.subhead, { color: colors.textMuted, textAlign: 'center', marginTop: 6, maxWidth: 360 }]}>{q ? `'${q}'와(과) 일치하는 교재가 없어요.` : role === 'admin' ? '관리자 탭에서 교재를 올리고 코드별로 배정하세요. 내 PDF를 바로 열 수도 있어요.' : '선생님이 교재를 배정하면 여기에 나타나요. 내 PDF를 직접 가져와 필기할 수도 있어요(이 기기에만 저장).'}</Text>
-            {!q && <Row style={{ marginTop: 18 }}>{role === 'admin' && <Button small title="관리자 탭으로" variant="secondary" onPress={() => router.push('/(tabs)/admin')} />}<Button small title="내 PDF 추가" icon="add" onPress={doImport} /></Row>}
+            <Ionicons name={q ? 'search' : folder === 'fav' ? 'star-outline' : folder !== 'all' ? 'folder-open-outline' : 'library-outline'} size={52} color={ios.gray2} />
+            <Text style={[type.title3, { color: colors.text, marginTop: 14, textAlign: 'center' }]}>{q ? '검색 결과 없음' : folder === 'fav' ? '즐겨찾기한 교재가 없어요' : folder !== 'all' ? '이 폴더는 비어 있어요' : role === 'admin' ? '아직 교재가 없어요' : '배정된 교재가 아직 없어요'}</Text>
+            <Text style={[type.subhead, { color: colors.textMuted, textAlign: 'center', marginTop: 6, maxWidth: 360 }]}>{q ? `'${q}'와(과) 일치하는 교재가 없어요.` : folder === 'fav' ? '교재를 길게 눌러 즐겨찾기에 추가하면 여기에 모여요.' : folder !== 'all' ? '교재를 길게 누르거나 선택해서 이 폴더로 옮길 수 있어요.' : role === 'admin' ? '관리자 탭에서 교재를 올리고 코드별로 배정하세요. 내 PDF를 바로 열 수도 있어요.' : '선생님이 교재를 배정하면 여기에 나타나요. 내 PDF를 직접 가져와 필기할 수도 있어요(이 기기에만 저장).'}</Text>
+            {!q && folder === 'all' && <Row style={{ marginTop: 18 }}>{role === 'admin' && <Button small title="관리자 탭으로" variant="secondary" onPress={() => router.push('/(tabs)/admin')} />}<Button small title="내 PDF 추가" icon="add" onPress={doImport} /></Row>}
           </View>
         ) : (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: gap, rowGap: 26 }}>
-            {pendingShown.map((mm) => <MaterialTile key={'m' + mm.id} m={mm} width={tileW} progress={dl[mm.id]} onDownload={() => doDownload(mm)} />)}
+            {pendingShown.map((mm) => <MaterialTile key={'m' + mm.id} m={mm} width={tileW} progress={dl[mm.id]} onDownload={() => (select ? showToast('받은 교재만 선택할 수 있어요 · 먼저 받아 주세요') : doDownload(mm))} />)}
             {list.map((d) => { const sel = selected.includes(d.id); const ink = strokeCount(d); const pct = d.lastOpenedAt ? Math.round(((d.lastPage + 1) / d.pageCount) * 100) : null; return (
               <Pressable key={d.id} onPress={() => (select ? toggleSel(d.id) : open(d))} onLongPress={() => (select ? toggleSel(d.id) : setMenuDoc(d))} delayLongPress={380} style={({ pressed }) => ({ width: tileW, alignItems: 'center', opacity: pressed ? 0.7 : 1 })}>
                 <Thumb doc={d} width={tileW} overlay={<>

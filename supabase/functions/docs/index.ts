@@ -7,6 +7,20 @@ const ADMIN_CODE = Deno.env.get("ADMIN_CODE") ?? "";
 const HW_URL = Deno.env.get("HW_URL") ?? ""; const HW_KEY = Deno.env.get("HW_KEY") ?? "";
 const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
 const BUCKET = "materials";
+// Starts the page-image generator (GitHub Actions "derive-materials", docs/derived-pages.md) right after an upload.
+// Its 30-minute schedule is only a fallback: GitHub ran it every 7–9 hours, so new textbooks stayed on the slow device
+// renderer for most of a day. One run handles every pending material, so a dispatch never needs a material id.
+const GH_DISPATCH_TOKEN = Deno.env.get("GH_DISPATCH_TOKEN") ?? "";
+let lastDeriveDispatch = 0;
+async function dispatchDerive(force = false): Promise<{ ok: boolean; status?: number; skipped?: string }> {
+  if (!GH_DISPATCH_TOKEN) return { ok: false, skipped: "no-token" };
+  if (!force && Date.now() - lastDeriveDispatch < 20_000) return { ok: true, skipped: "recent" }; // a burst of uploads: one run covers them all
+  lastDeriveDispatch = Date.now();
+  try {
+    const r = await fetch("https://api.github.com/repos/nathankim6/orun-note/actions/workflows/derive-materials.yml/dispatches", { method: "POST", headers: { Authorization: `Bearer ${GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "orun-note-docs" }, body: JSON.stringify({ ref: "main", inputs: { only: "", force: false } }), signal: AbortSignal.timeout(8000) });
+    return { ok: r.status === 204, status: r.status };
+  } catch { return { ok: false, status: 0 }; }
+}
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const fail = (message: string, status = 400) => json({ ok: false, error: message }, status);
@@ -355,7 +369,10 @@ Deno.serve(async (req) => {
         const { error: e2 } = await supa.from("materials").insert({ id, title, file_name: fileName, storage_path: path, ready: false }); if (e2) return fail(e2.message);
         return json({ ok: true, materialId: id, path, uploadUrl: s.signedUrl, token: s.token });
       }
-      case "materials.complete": { const { data, error } = await supa.from("materials").update({ ready: true, size: Number(body.size ?? 0), pages: Number(body.pages ?? 0) }).eq("id", String(body.materialId)).select().single(); if (error) return fail(error.message); return json({ ok: true, material: data }); }
+      case "materials.complete": { const { data, error } = await supa.from("materials").update({ ready: true, size: Number(body.size ?? 0), pages: Number(body.pages ?? 0) }).eq("id", String(body.materialId)).select().single(); if (error) return fail(error.message);
+        const derive = await dispatchDerive(); return json({ ok: true, material: data, derive }); }
+      // admin: start the page-image generator now (e.g. a material still shows "준비 중")
+      case "materials.deriveNow": { const derive = await dispatchDerive(true); return derive.ok ? json({ ok: true, derive }) : fail(derive.skipped === "no-token" ? "서버에 생성 작업 설정이 없습니다" : `생성 작업을 시작하지 못했습니다 (${derive.status ?? "?"})`, 502); }
       case "materials.coverUploadUrl": { const id = String(body.materialId ?? ""); const ext = String(body.ext ?? "jpg").replace(/[^a-z0-9]/gi, "").slice(0, 5) || "jpg"; const path = `covers/${id}.${ext}`;
         const { data, error } = await supa.storage.from(BUCKET).createSignedUploadUrl(path, { upsert: true }); if (error || !data) return fail("표지 업로드 URL 생성 실패: " + (error?.message ?? ""), 500);
         await supa.from("materials").update({ cover_path: path }).eq("id", id); return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token }); }

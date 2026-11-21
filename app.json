@@ -2,7 +2,7 @@
   "expo": {
     "name": "Paperly",
     "slug": "orun-note",
-    "version": "1.6.21",
+    "version": "1.6.22",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "orunnote",
@@ -48,7 +48,7 @@
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "allowBackup": false,
-      "versionCode": 10621
+      "versionCode": 10622
     },
     "web": {
       "bundler": "metro",

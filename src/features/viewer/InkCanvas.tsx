@@ -28,6 +28,7 @@ type Props = {
   /** ...and the input canvas under the zoom transform leaves that window to it: it keeps its base layer, minus the strokes the crisp window re-draws. */ sharpElsewhere?: boolean;
   /** screen points per point of this canvas while the document rests: both canvases then budget the same crisp window (1 unless sharpElsewhere) */ sharpScale?: number;
   /** selection / drag in progress: the crisp window elsewhere must step aside (it only knows finished ink) */ onInteractive?: (on: boolean) => void;
+  /** a text box was finished with some text in it (펜 자동 복귀) */ onTextCommit?: () => void;
   width: number; height: number; s: number; strokes: Stroke[]; textBoxes: TextBox[]; images?: ImageBox[]; onImages?: (next: ImageBox[]) => void; textFont?: string;
   /** Samsung-Notes handwriting options */ opts?: InkOpts;
   /** Text layer for tap-to-define; rects normalized to the page. */ words?: PdfWord[] | null; onLookup?: (text: string, abs: { x: number; y: number }, rects: { x: number; y: number; w: number; h: number }[]) => void; cfg: ToolConfig; enabled: boolean; fingerDraw: boolean; lineSnap?: boolean;
@@ -59,9 +60,13 @@ export function inkSharpWindow(region: { nx: number; ny: number; nw: number; nh:
   }
   return null;
 }
+/** Web: a client position inside the canvas' on-screen rectangle → canvas units (pure, unit-tested). */
+export function webCanvasPoint(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number }, width: number, height: number): [number, number] {
+  return [((clientX - rect.left) * width) / rect.width, ((clientY - rect.top) * height) / rect.height];
+}
 /** Timestamp of the last word lookup triggered by a double-tap (lets the zoom double-tap skip). */
 export let lastLookupAt = 0;
-export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1, sharpOnly, sharpElsewhere, sharpScale = 1, onInteractive}: Props) {
+export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], onImages, textFont = 'system', words, onLookup, opts = DEFAULT_OPTS, cfg, enabled, fingerDraw, lineSnap, onStrokes, onTextBoxes, onTap, onLongPress, onDoubleTap, readOnly, historyRef, onHistory, onSelectionChange , region, dense, density = 1, sharpOnly, sharpElsewhere, sharpScale = 1, onInteractive, onTextCommit}: Props) {
   const { colors } = useTheme();
   const [live, setLive] = useState<Point[]>([]); const [laser, setLaser] = useState<Point[]>([]); const [lasso, setLasso] = useState<Point[]>([]); const [selection, setSelection] = useState<string[]>([]); const [editing, setEditing] = useState<string | null>(null);
   // Cursor (select) tool state: selected text boxes/images, live drag offset, text-block and marquee selections.
@@ -211,9 +216,18 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     abort: () => { if (activeId.current != null) abortStroke(); lastPe.current = null; },
   };
   useEffect(() => onStylusShortcutCancel(() => { H.current.abort(); }), []);
-  const jsDown = useCallback((x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => H.current.down(x, y, ax, ay, pt, pr, tl), []);
-  const jsMove = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.move(x, y, ax, ay, pr, tl), []);
-  const jsUp = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => H.current.up(x, y, ax, ay, pr, tl), []);
+  // Web: the gesture library maps a pointer into the canvas with the canvas element's own CSS scale only, not its
+  // ancestors' (the document zoom and the density wrapper), so strokes landed off the pen whenever the page was zoomed.
+  // Map the client position through the canvas' on-screen rectangle instead. Native already reports view coordinates.
+  const canvasEl = useRef<any>(null); const sizeRef = useRef({ width, height }); sizeRef.current = { width, height };
+  const local = (x: number, y: number, ax: number, ay: number): [number, number] => {
+    if (Platform.OS !== 'web') return [x, y];
+    const r = canvasEl.current?.getBoundingClientRect?.(); if (!r || !(r.width > 0) || !(r.height > 0)) return [x, y];
+    return webCanvasPoint(ax, ay, r, sizeRef.current.width, sizeRef.current.height);
+  };
+  const jsDown = useCallback((x: number, y: number, ax: number, ay: number, pt: any, pr = -1, tl = -1) => { const [lx, ly] = local(x, y, ax, ay); H.current.down(lx, ly, ax, ay, pt, pr, tl); }, []);
+  const jsMove = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => { const [lx, ly] = local(x, y, ax, ay); H.current.move(lx, ly, ax, ay, pr, tl); }, []);
+  const jsUp = useCallback((x: number, y: number, ax: number, ay: number, pr: number, tl = -1) => { const [lx, ly] = local(x, y, ax, ay); H.current.up(lx, ly, ax, ay, pr, tl); }, []);
   const jsFinish = useCallback(() => H.current.finish(), []); const jsAbort = useCallback(() => H.current.abort(), []);
   const penId = useSharedValue(-1); const pressSV = useSharedValue(-1); const tiltSV = useSharedValue(-1); const handMode = useSharedValue(cfg.tool === 'hand');
   useEffect(() => { handMode.value = cfg.tool === 'hand'; }, [cfg.tool]);
@@ -384,7 +398,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
   return (
     <View style={[StyleSheet.absoluteFill, { width, height }]} pointerEvents={enabled ? 'auto' : 'none'}>
       <GestureDetector gesture={composed}>
-        <View testID="ink-canvas" style={{ width, height }} collapsable={false}>
+        <View testID="ink-canvas" ref={canvasEl} style={{ width, height }} collapsable={false}>
           {/* photos sit under the ink so pen notes drawn on a photo stay visible */}
           {images.map((im) => <ImageBoxView key={im.id} im={xfBox(im, selImg.includes(im.id))} s={s} enabled={enabled && (cfg.tool === 'hand' || cfg.tool === 'text')} onEditStart={pushHistory} onChange={(patch) => onImages?.(imagesRef.current.map((x) => (x.id === im.id ? { ...x, ...patch } : x)))} onDelete={() => commitAll({ images: imagesRef.current.filter((x) => x.id !== im.id) })} />)}
           {inkArea && (baseK >= 0.999
@@ -412,7 +426,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
           </Svg>}
         </View>
       </GestureDetector>
-      {textBoxes.map((tb) => { const sel = selText.includes(tb.id); const t2 = xfBox(tb, sel); return <TextBoxView key={tb.id} tb={dragScale && sel ? { ...t2, size: tb.size * dragScale.f } : t2} s={s} editing={editing === tb.id} onEdit={() => { if (editing !== tb.id) editBase.current = textRef.current; setEditing(tb.id); }} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); const base = editBase.current; editBase.current = null; const cur = textRef.current.find((t) => t.id === tb.id); const before = base?.find((t) => t.id === tb.id); if (!cur?.text.trim()) { onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); if (before) pushTextBase(base!); return; } if (!before || before.text !== cur.text || before.size !== cur.size || before.font !== cur.font || before.color !== cur.color || before.rect.w !== cur.rect.w) pushTextBase(base ?? textRef.current); }} onDelete={() => { const base = editBase.current; editBase.current = null; setEditing(null); const existed = !base || base.some((t) => t.id === tb.id); if (existed) pushTextBase(base ?? textRef.current); onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); }} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'select', 'lasso'].includes(cfg.tool)} />; })}
+      {textBoxes.map((tb) => { const sel = selText.includes(tb.id); const t2 = xfBox(tb, sel); return <TextBoxView key={tb.id} tb={dragScale && sel ? { ...t2, size: tb.size * dragScale.f } : t2} s={s} editing={editing === tb.id} onEdit={() => { if (editing !== tb.id) editBase.current = textRef.current; setEditing(tb.id); }} onChange={(patch) => onTextBoxes(textRef.current.map((t) => (t.id === tb.id ? { ...t, ...patch } : t)))} onCommit={() => { setEditing(null); const base = editBase.current; editBase.current = null; const cur = textRef.current.find((t) => t.id === tb.id); const before = base?.find((t) => t.id === tb.id); if (!cur?.text.trim()) { onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); if (before) pushTextBase(base!); return; } if (!before || before.text !== cur.text || before.size !== cur.size || before.font !== cur.font || before.color !== cur.color || before.rect.w !== cur.rect.w) pushTextBase(base ?? textRef.current); onTextCommit?.(); }} onDelete={() => { const base = editBase.current; editBase.current = null; setEditing(null); const existed = !base || base.some((t) => t.id === tb.id); if (existed) pushTextBase(base ?? textRef.current); onTextBoxes(textRef.current.filter((t) => t.id !== tb.id)); }} enabled={enabled && !['pen', 'highlighter', 'eraser', 'vectorEraser', 'shape', 'select', 'lasso'].includes(cfg.tool)} />; })}
       {selBounds && (selection.length > 0 || selText.length > 0 || selImg.length > 0) && !dragOff && !dragScale && (
         <View style={{ position: 'absolute', left: Math.max(0, Math.min(width - 330, selBounds.x * s - 6)), top: selBounds.y * s - 52 > 0 ? selBounds.y * s - 52 : Math.min(height - 44, (selBounds.y + selBounds.h) * s + 22), flexDirection: 'row', backgroundColor: 'rgba(23,32,51,0.94)', borderRadius: 12, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 3 } }}>
           {([['잘라내기', () => { copySel(); deleteAll(); }], ['복사', () => { copySel(); }], ...(CLIP ? [['붙여넣기', () => pasteClip()]] : []), ['삭제', deleteAll], ...(selection.length || selText.length ? [['색 변경', recolorSel]] : []), ['앞으로', () => reorderSel(true)], ['뒤로', () => reorderSel(false)], ['해제', clearSel]] as [string, () => void][]).map(([l, f], i) => <Pressable key={l} onPress={f} style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: 9, backgroundColor: pressed ? 'rgba(255,255,255,0.15)' : 'transparent', borderLeftWidth: i ? StyleSheet.hairlineWidth : 0, borderLeftColor: 'rgba(255,255,255,0.2)' })}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>{l}</Text></Pressable>)}

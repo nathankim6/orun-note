@@ -66,6 +66,9 @@ export default function Viewer() {
   useEffect(() => { setPageIndex(doc?.lastPage ?? 0); }, [doc?.id]);
   const [layout, setLayout] = useState(prefs.defaultLayoutMode); const [fullscreen, setFullscreen] = useState(false);
   const docRef = useRef<DocHandle>(null); const [zoomPct, setZoomPct] = useState(1);
+  // a page added with the bottom-bar button: go to it once the document has it
+  const jumpToNewPage = useRef<number | null>(null);
+  useEffect(() => { const to = jumpToNewPage.current; if (to != null && doc && doc.pageCount > to) { jumpToNewPage.current = null; setTimeout(() => { setPageIndex(to); docRef.current?.goto(to); }, 30); } }, [doc?.pageCount]);
   /** pages whose ink is being selected / dragged: their crisp ink layer steps aside (InkSharp only knows finished ink) */
   const [inkBusy, setInkBusy] = useState<Record<number, boolean>>({});
   const [locked, setLocked] = useState(false); const [dismissKey, setDismissKey] = useState(0); const panelOpen = useRef(false); const [zoomPad, setZoomPad] = useState(false); const padInk = useRef<any>(null); const [padHist, setPadHist] = useState({ canUndo: false, canRedo: false }); const [padRegions, setPadRegions] = useState<Record<number, PadRegion>>({});
@@ -198,12 +201,15 @@ export default function Viewer() {
       {/* frame for 간편 입력창 is rendered after the ink layer (below) */}
       <InkCanvas region={tile ? { nx: tile.nx, ny: tile.ny, nw: tile.nw, nh: tile.nh } : null} dense={LAYERED_SURFACE ? inkSharpElsewhere(tile) : rs > 1} density={rs} sharpElsewhere={LAYERED_SURFACE} sharpScale={LAYERED_SURFACE ? (tile?.at?.z ?? 1) / rs : 1}
         onInteractive={LAYERED_SURFACE ? (on) => setInkBusy((m) => (!!m[pi] === on ? m : { ...m, [pi]: on })) : undefined} width={w} height={h} s={s} strokes={strokes} textBoxes={textBoxes} images={pi_?.images ?? []} onImages={(next: ImageBox[]) => ink.setImages(k, next)} textFont={textFont} words={doc.kind === 'blank' ? null : cachedWords(uri, pageAt(pi).index)} onLookup={(text, abs, rects) => setLookup({ text, abs, rects, k })} opts={inkOpts} cfg={cfg} enabled={inkEnabled} fingerDraw={prefs.fingerDraw} lineSnap={prefs.lineSnap}
-        onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (cfg.tool === 'shape' && false && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
+        onStrokes={(next: Stroke[]) => { ink.setStrokes(k, next); if (autoReturnAfter('shape') && next.length > strokes.length) setTimeout(() => setCfg(prevPen.current), 60); }}
+        onTextCommit={() => { if (autoReturnAfter('text')) setTimeout(() => setCfg(prevPen.current), 60); }}
         onTextBoxes={(next: TextBox[]) => useInkStore.setState((st) => ({ pages: { ...st.pages, [k]: { ...(st.pages[k] ?? { strokes: [], textBoxes: [], versions: [], updatedAt: '' }), textBoxes: next } } }))}
         historyRef={{ get current() { return inkRefs.current[String(pi)]; }, set current(v) { inkRefs.current[String(pi)] = v; } } as any} onHistory={(h) => pi === pageIndex && setHist(h)} />
       {zoomPad && pi === pageIndex && <PadFrame region={padRegion(pi)} regionH={padRegionH(padRegion(pi))} s={s} pageW={pageAt(pi).width} pageH={pageAt(pi).height} setRegion={(r) => setPadRegions((m) => ({ ...m, [pi]: r }))} />}
     </View>); };
 
+  // 펜 자동 복귀 (viewer settings): after a finished shape / text box the previous pen comes back
+  const autoReturnAfter = (tool: 'shape' | 'text') => !!prefs.penAutoReturn && cfg.tool === tool && INK_PENS.includes(prevPen.current.tool);
   const zoomBy = (f: number) => docRef.current?.zoomBy(f);
   const resetZoom = () => docRef.current?.fit();
   const pages = Array.from({ length: doc.pageCount }, (_, i) => i);
@@ -258,8 +264,8 @@ export default function Viewer() {
         <IconButton icon="chevron-back" size={18} onPress={() => goto(pageIndex - 1)} disabled={pageIndex === 0} label="이전 페이지" />
         <Pressable onPress={() => setSheet('goto')} style={{ paddingHorizontal: 8 }}><Text style={{ fontWeight: '700', color: colors.text, fontSize: 13 }}>{pageIndex + 1} <Text style={{ color: colors.textMuted, fontWeight: '500' }}>/ {doc.pageCount}</Text></Text></Pressable>
         <IconButton icon="chevron-forward" size={18} onPress={() => goto(pageIndex + 1)} disabled={pageIndex >= doc.pageCount - 1} label="다음 페이지" />
-        {doc.kind === 'blank' && <IconButton icon="add-circle-outline" size={20} color={colors.primary} onPress={() => { addBlankPages(doc, 1); setTimeout(() => goto(doc.pageCount), 50); }} label="페이지 추가" />}
-        <View style={{ flex: 1, height: 4, backgroundColor: colors.surfaceAlt, borderRadius: 2, marginHorizontal: 8 }}><View style={{ width: `${((pageIndex + 1) / doc.pageCount) * 100}%`, height: 4, backgroundColor: colors.primary, borderRadius: 2 }} /></View>
+        {doc.kind === 'blank' && <IconButton icon="add-circle-outline" size={20} color={colors.primary} onPress={() => { jumpToNewPage.current = doc.pageCount; addBlankPages(doc, 1); }} label="페이지 추가" />}
+        <PageScrubber page={pageIndex} count={doc.pageCount} onPage={goto} track={colors.surfaceAlt} fill={colors.primary} />
         <IconButton icon={doc.bookmarks.includes(pageIndex) ? 'bookmark' : 'bookmark-outline'} size={18} active={doc.bookmarks.includes(pageIndex)} onPress={() => store.toggleBookmark(doc.id, pageIndex)} label="북마크" />
         <Pressable onPress={resetZoom} style={{ paddingHorizontal: 6 }}><Text style={{ fontSize: 11, color: colors.textMuted, fontWeight: '600' }}>{Math.round(zoomPct * 100)}%</Text></Pressable>
         <IconButton icon="remove-circle-outline" size={18} onPress={() => zoomBy(1 / 1.25)} label="축소" /><IconButton icon="add-circle-outline" size={18} onPress={() => zoomBy(1.25)} label="확대" />
@@ -312,4 +318,17 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => Pro
       </View>
     </View>
   );
+}
+
+/** Bottom-bar page bar: shows the position and jumps on a tap or drag (finger, pen or mouse). */
+function pageForScrub(x: number, width: number, count: number) { if (!(width > 0) || !(count > 0)) return 0; return Math.max(0, Math.min(count - 1, Math.floor((x / width) * count))); }
+function PageScrubber({ page, count, onPage, track, fill }: { page: number; count: number; onPage: (i: number) => void; track: string; fill: string }) {
+  const w = useRef(0); const last = useRef(-1);
+  const at = (x: number) => { const i = pageForScrub(x, w.current, count); if (i !== last.current) { last.current = i; onPage(i); } };
+  return <View accessibilityRole="adjustable" accessibilityLabel="페이지 이동" accessibilityValue={{ min: 1, max: count, now: page + 1 }} onLayout={(e) => { w.current = e.nativeEvent.layout.width; }}
+    onStartShouldSetResponder={() => true} onMoveShouldSetResponder={() => true} onResponderTerminationRequest={() => false}
+    onResponderGrant={(e) => { last.current = -1; at(e.nativeEvent.locationX); }} onResponderMove={(e) => at(e.nativeEvent.locationX)}
+    style={{ flex: 1, height: 28, justifyContent: 'center', marginHorizontal: 8 }}>
+    <View pointerEvents="none" style={{ height: 4, backgroundColor: track, borderRadius: 2 }}><View style={{ width: `${((page + 1) / count) * 100}%`, height: 4, backgroundColor: fill, borderRadius: 2 }} /></View>
+  </View>;
 }

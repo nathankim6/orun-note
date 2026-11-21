@@ -60,7 +60,7 @@ const VALID = ['manifest.json', 'p0-1200.jpg', 'p0-2000.jpg', 'p0-3600.jpg', 'p0
   h = harness(); r = await h.call({ action: 'download', token: 'student-token', materialId: 'mat-assigned' }); assert.equal(r.status, 200); assert(r.json.derived && r.json.derived.pages === 3, 'download hands the manifest over');
   r = await h.call({ action: 'download', token: 'student-token', materialId: 'mat-other' }); assert.equal(r.status, 403);
   // ---- admin-only actions stay closed to students, and change nothing ----
-  for (const action of ['roster', 'assign.toggle', 'materials.uploadUrl', 'materials.complete', 'materials.derivedUploadUrl', 'materials.derivedComplete', 'materials.delete', 'requests.decide', 'stats', 'no.such.action']) {
+  for (const action of ['roster', 'assign.toggle', 'materials.uploadUrl', 'materials.complete', 'materials.derivedUploadUrl', 'materials.derivedComplete', 'materials.deriveNow', 'materials.delete', 'requests.decide', 'stats', 'no.such.action']) {
     h = harness(); r = await h.call({ action, token: 'student-token', materialId: 'mat-assigned', id: 'mat-assigned', files: ['p0-1200.jpg'], manifest: { pages: 3 } });
     assert.equal(r.status, 403, action + ' is admin-only'); assert.deepEqual(r.wrote, [], action + ' wrote nothing'); assert.equal(h.calls.signed.length + h.calls.signedOne.length, 0, action + ' signed nothing');
   }
