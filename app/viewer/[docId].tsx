@@ -3,6 +3,8 @@ import { StylusDial } from '@/features/viewer/StylusDial';
 import { addStylusShortcutListener, takeStylusDiagnostics, stylusDiagnosticsSummary } from '../../modules/stylus-shortcut';
 import { PdfRenderer } from '../../modules/pdf-renderer';
 import { cancelInkForStylusShortcut, onInkContact } from '@/features/viewer/stylusShortcutState';
+import { penSession } from '@/features/viewer/penSession';
+import { shortcutWhileWriting } from '@/features/viewer/stylusShortcutState';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Modal, View, ScrollView, Pressable, Text, Platform, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator, StyleSheet } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, usePathname, useRouter, router as rootRouter } from 'expo-router';
@@ -43,6 +45,7 @@ import { resolveUri } from '@/lib/files';
 import { fmtBytes, fmtDate } from '@/utils/format';
 
 let stylusDiagnosticsSent = false; let memoryReports = 0;
+let ignoredShortcuts = 0;
 /** iOS draws the page images outside the density wrapper and their sharp part outside the zoom transform. */
 const LAYERED_SURFACE = Platform.OS === 'ios';
 const NO_STROKES: Stroke[] = [];
@@ -92,6 +95,9 @@ export default function Viewer() {
   const shortcutFocused = useRef(false); const hasDerived = useRef(false); hasDerived.current = !!doc?.derived;
   const openStylusDial = useCallback((point?: { x?: number; y?: number }) => {
     const st = shortcutState.current; if (!st.allowed || !shortcutFocused.current || AppState.currentState === 'background') return;
+    // Squeeze / double-tap from the grip WHILE writing (or between the strokes of a word) is not a request for tools:
+    // it used to end the stroke and open the dial under the pen, whose next contact then hit a tool (eraser) and wiped ink.
+    if (shortcutWhileWriting(penSession.value, Date.now())) { ignoredShortcuts++; return; }
     cancelInkForStylusShortcut(); setDismissKey((k) => k + 1);
     const place = (ox = 0, oy = 0) => {
       if (!shortcutFocused.current || !shortcutState.current.allowed) return;
@@ -109,7 +115,7 @@ export default function Viewer() {
       // It is the only way to learn which form a pen-button press takes on a device we cannot hold.
       // iOS memory warnings while this document was open (each one drops every PDF cache): at most two reports a session.
       const warnings = PdfRenderer.takeMemoryWarnings(); if (warnings > 0 && memoryReports < 2) { memoryReports++; reportError('render', `ios memory warnings=${warnings} while viewing (derived=${hasDerived.current})`); }
-      if (!stylusDiagnosticsSent) void takeStylusDiagnostics().then((d) => { const text = stylusDiagnosticsSummary(d, Platform.OS); if (text && !stylusDiagnosticsSent) { stylusDiagnosticsSent = true; reportError('render', text); } });
+      if (!stylusDiagnosticsSent) void takeStylusDiagnostics().then((d) => { const text = stylusDiagnosticsSummary(d, Platform.OS); if (text && !stylusDiagnosticsSent) { stylusDiagnosticsSent = true; reportError('render', `${text} ignoredWhileWriting=${ignoredShortcuts}`); } });
       shortcutFocused.current = false; sub.remove(); offContact(); bg.remove(); setDialAnchor(null);
     };
   }, [openStylusDial]));

@@ -54,7 +54,7 @@ assert(Math.abs(pr.left - (-310.37 + 14 * 2.2)) <= 0.25 && Math.abs(pr.top - (-9
 // 4. wiring contracts
 const canvas = fs.readFileSync('src/features/viewer/InkCanvas.tsx', 'utf8'), doc = fs.readFileSync('src/features/viewer/DocumentView.tsx', 'utf8'), viewer = fs.readFileSync('app/viewer/[docId].tsx', 'utf8');
 assert(/if \(layer === 'sharp'\) \{ if \(st\.opacity < 0\.99\) return true; if \(!win\) return false;/.test(canvas), 'the crisp layer draws opaque ink only, and only what meets its window');
-assert(/const e = sharpElsewhere \? 2 : 0;/.test(canvas) && /const sb = layer === 'base' && sharpBox && !interactive \? \{ x0: \(sharpBox\.x \+ e\) \/ s/.test(canvas), 'the input canvas leaves out only finished, unselected ink, 2 px inside the window');
+assert(/const sb = layer === 'base' && sharpBox && !interactive && !sharpElsewhere \?/.test(canvas), 'with InkSharp the input canvas keeps drawing every stroke (never invisible in between)');
 assert(/\{sharpBox && !sharpElsewhere && <Svg/.test(canvas), 'the input canvas draws no crisp window of its own when InkSharp does');
 assert(/const withUi = layer === 'sharp' \|\| !sharpBox \|\| !!sharpElsewhere;/.test(canvas), 'selection chrome stays on the input canvas');
 assert(/const sharpBox = dense \? inkSharpWindow\(region \?\? null, inkArea, width, height, dpr \* sharpScale\) : null;/.test(canvas));

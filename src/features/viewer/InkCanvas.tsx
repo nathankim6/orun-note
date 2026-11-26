@@ -215,7 +215,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     finish: () => { if (activeId.current == null) return; const pe = lastPe.current; activeId.current = null; if (pe) endAt(pe); else abortStroke(); lastPe.current = null; },
     abort: () => { if (activeId.current != null) abortStroke(); lastPe.current = null; },
   };
-  useEffect(() => onStylusShortcutCancel(() => { H.current.abort(); }), []);
+  // A pen shortcut (Pencil squeeze / double-tap, S Pen button) during a stroke ENDS it, it never deletes it: field reports
+  // (Pencil Pro: up to 19 squeezes a session, mostly from the grip while writing) — the stroke being written vanished.
+  useEffect(() => onStylusShortcutCancel(() => { H.current.finish(); }), []);
   // Web: the gesture library maps a pointer into the canvas with the canvas element's own CSS scale only, not its
   // ancestors' (the document zoom and the density wrapper), so strokes landed off the pen whenever the page was zoomed.
   // Map the client position through the canvas' on-screen rectangle instead. Native already reports view coordinates.
@@ -257,7 +259,7 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     .onTouchesMove((e, sm) => {
       'worklet';
       const id = penId.value; if (id === -1) return;
-      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { if (((t as any).buttons & PEN_BUTTON_BITS) !== 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.end(); else sm.fail(); return; } const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
+      for (let i = 0; i < e.allTouches.length; i++) { const t = e.allTouches[i]; if (t.id === id) { if (((t as any).buttons & PEN_BUTTON_BITS) !== 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsFinish)(); if (manual) sm.end(); else sm.fail(); return; } const tp = (t as any).pressure, tt = (t as any).tilt; if (typeof tp === 'number' && tp > 0) pressSV.value = tp; if (typeof tt === 'number' && tt >= 0) tiltSV.value = tt; runOnJS(jsMove)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value); return; } }
     })
     .onTouchesUp((e, sm) => {
       'worklet';
@@ -268,9 +270,14 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
         runOnJS(jsUp)(t.x, t.y, t.absoluteX, t.absoluteY, pressSV.value, tiltSV.value);
         if (manual) sm.end(); // clear ownership first: ending can synchronously cancel remaining palm pointers
         return; } }
+      // Every contact is gone but the pen's own "up" was not among them (a lost touch id): end the stroke anyway, or the
+      // canvas keeps a stroke "in progress" forever and ignores the pen from then on.
+      if (e.numberOfTouches === 0) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsFinish)(); if (manual) sm.end(); }
     })
-    .onTouchesCancelled((_e, sm) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsAbort)(); if (manual) sm.fail(); } })
-    .onFinalize((_e, success) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; if (success) runOnJS(jsFinish)(); else runOnJS(jsAbort)(); } });
+    // The system took the touch away (another gesture, a palm, an alert): the stroke ends where it was, it is never
+    // deleted — "방금 쓴 획이 날아감" (2026-11-26 field report).
+    .onTouchesCancelled((_e, sm) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsFinish)(); if (manual) sm.fail(); } })
+    .onFinalize((_e, _success) => { 'worklet'; if (penId.value !== -1) { penId.value = -1; penSession.value = { ...penSession.value, writing: false, at: Date.now() }; runOnJS(jsFinish)(); } });
     return inkGesture;
   }, [enabled]);
   const longPress = useMemo(() => Gesture.LongPress().enabled(enabled && !!onLongPress).minDuration(450).runOnJS(true).onStart((e) => onLongPress?.(toPage(e.x, e.y))), [enabled, onLongPress, s]);
@@ -344,7 +351,9 @@ export function InkCanvas({ width, height, s, strokes, textBoxes, images = [], o
     const win = layer === 'sharp' && sharpOnly && sharpBox ? { x0: sharpBox.x / s, y0: sharpBox.y / s, x1: (sharpBox.x + sharpBox.w) / s, y1: (sharpBox.y + sharpBox.h) / s } : null;
     // with the crisp window drawn elsewhere (InkSharp, computed at another scale), only ink 2 px inside it is left out
     const e = sharpElsewhere ? 2 : 0;
-    const sb = layer === 'base' && sharpBox && !interactive ? { x0: (sharpBox.x + e) / s, y0: (sharpBox.y + e) / s, x1: (sharpBox.x + sharpBox.w - e) / s, y1: (sharpBox.y + sharpBox.h - e) / s } : null;
+    // With the crisp window drawn by another layer (iOS InkSharp) nothing is left out here: that layer re-mounts at each
+    // resting position and is skipped during selections, and ink must never be invisible in between ("획이 날아감").
+    const sb = layer === 'base' && sharpBox && !interactive && !sharpElsewhere ? { x0: (sharpBox.x + e) / s, y0: (sharpBox.y + e) / s, x1: (sharpBox.x + sharpBox.w - e) / s, y1: (sharpBox.y + sharpBox.h - e) / s } : null;
     const skip = (st: Stroke) => { if (layer === 'sharp') { if (st.opacity < 0.99) return true; if (!win) return false; const w = boxOf.get(st); return !w || w.x1 < win.x0 || w.x0 > win.x1 || w.y1 < win.y0 || w.y0 > win.y1; } if (!sb || st.opacity < 0.99) return false; const b = boxOf.get(st); return !!b && b.x0 >= sb.x0 && b.y0 >= sb.y0 && b.x1 <= sb.x1 && b.y1 <= sb.y1; };
     return (<>
     

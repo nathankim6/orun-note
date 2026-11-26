@@ -26,7 +26,7 @@ g.callbacks.onTouchesMove(event([],[t(3,1)]),g.sm); assert.equal(g.events[1][0],
 g.callbacks.onTouchesUp(event([t(3,1)],[t(4)]),g.sm); assert.equal(g.ctx.penId.value,-1);assert.equal(g.ctx.penSession.value.writing,false);assert.deepEqual(g.transitions,['begin','activate','end']);assert.equal(g.events[2][0],'up');
 // Repeated strokes: no delayed end/finalize may close the next stroke.
 g.callbacks.onFinalize({},true);g.callbacks.onTouchesDown(event([t(5,1)],[t(5,1)],1),g.sm);assert.equal(g.ctx.penId.value,5);
-g.callbacks.onTouchesCancelled({},g.sm);assert.equal(g.events.at(-1)[0],'abort');assert.equal(g.transitions.at(-1),'fail');assert.equal(g.ctx.penId.value,-1);
+g.callbacks.onTouchesCancelled({},g.sm);assert.equal(g.events.at(-1)[0],'finish','a cancelled pen stroke is kept, never deleted');assert.equal(g.transitions.at(-1),'fail');assert.equal(g.ctx.penId.value,-1);
 g=create('android');assert.equal(g.kind,'pan');g.callbacks.onTouchesDown(event([t(1)],[t(1)]),g.sm);assert.equal(g.events.length,0);g.callbacks.onTouchesDown(event([t(2,1)],[t(1),t(2,1)],1),g.sm);assert.deepEqual(g.transitions,['activate']);g.callbacks.onTouchesUp(event([t(2,1)],[t(1)],1),g.sm);assert.deepEqual(g.transitions,['activate']);
 // A barrel button reported through the generic secondary bit (some pens, web) must not ink either; a tip-only contact (bit 1) still writes.
 g=create('android');g.callbacks.onTouchesDown(event([{...t(8,1),buttons:2}],[{...t(8,1),buttons:2}],1),g.sm);assert.equal(g.events.length,0);assert.deepEqual(g.transitions,['fail']);
@@ -35,5 +35,16 @@ console.log('PASS: finger-only passthrough, mixed-contact Pencil identification,
 
 // A held S Pen button never deposits ink, including a stationary button change mid-stroke.
 g=create('android'); const barrel={...t(8,1),buttons:32};g.callbacks.onTouchesDown(event([barrel],[barrel],1),g.sm);assert.equal(g.events.length,0);assert.deepEqual(g.transitions,['fail']);
-g=create('android');g.callbacks.onTouchesDown(event([t(9,1)],[t(9,1)],1),g.sm);g.callbacks.onTouchesMove(event([],[{...t(9,1),buttons:32}],1),g.sm);assert.equal(g.events.at(-1)[0],'abort');assert.equal(g.ctx.penId.value,-1);g.callbacks.onTouchesUp(event([t(9,1)],[],1),g.sm);assert(!g.events.some(e=>e[0]==='up'));
-console.log('PASS: barrel-button contact rejects dot and mid-stroke button cancels without committing');
+g=create('android');g.callbacks.onTouchesDown(event([t(9,1)],[t(9,1)],1),g.sm);g.callbacks.onTouchesMove(event([],[{...t(9,1),buttons:32}],1),g.sm);assert.equal(g.events.at(-1)[0],'finish','a button press mid-stroke ends the stroke, keeps it');assert.equal(g.ctx.penId.value,-1);g.callbacks.onTouchesUp(event([t(9,1)],[],1),g.sm);assert(!g.events.some(e=>e[0]==='up'));
+console.log('PASS: barrel-button contact rejects dot and mid-stroke button ends the stroke and keeps it');
+// 2026-11-26 field report "필기 도중 방금 쓴 획이 날아감": no cancellation path deletes the stroke being written
+{ const src = fs.readFileSync('src/features/viewer/InkCanvas.tsx', 'utf8'); const pan = src.slice(src.indexOf('const pan = useMemo('), src.indexOf('const longPress = useMemo('));
+  assert(!/runOnJS\(jsAbort\)/.test(pan), 'no gesture path aborts (deletes) a pen stroke');
+  assert(/onStylusShortcutCancel\(\(\) => \{ H\.current\.finish\(\); \}\)/.test(src), 'a pen shortcut ends the stroke, keeps it');
+  assert(/if \(e\.numberOfTouches === 0\) \{ penId\.value = -1;[^\n]*runOnJS\(jsFinish\)\(\)/.test(pan), 'a lost pen-up still ends the stroke');
+  const st = {}; vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/features/viewer/stylusShortcutState.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports: st, Set });
+  const W = st.exports ? st.exports.shortcutWhileWriting : st.shortcutWhileWriting;
+  assert.equal(W({ writing: true, at: 0 }, 5000), true); assert.equal(W({ writing: false, at: 4500 }, 5000), true, 'between the strokes of a word');
+  assert.equal(W({ writing: false, at: 3000 }, 5000), false, 'a deliberate squeeze after a pause still opens the dial'); assert.equal(W({ writing: false, at: 0 }, 5000), false);
+  const viewer = fs.readFileSync('app/viewer/[docId].tsx', 'utf8'); assert(/if \(shortcutWhileWriting\(penSession\.value, Date\.now\(\)\)\) \{ ignoredShortcuts\+\+; return; \}/.test(viewer));
+  console.log('PASS: strokes are never deleted by cancellation, pen shortcuts or a lost pen-up; shortcuts while writing are ignored'); }

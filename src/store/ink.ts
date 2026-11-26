@@ -27,4 +27,13 @@ export const useInkStore = create<InkState>()(persist((set, get) => ({
   snapshot: (k, label) => set((st) => { const p = st.pages[k]; if (!p || (p.strokes.length === 0 && p.textBoxes.length === 0)) return {}; const last = p.versions[p.versions.length - 1]; if (last && last.strokes.length === p.strokes.length && last.textBoxes.length === p.textBoxes.length) return {}; const v: InkVersion = { id: uid(), createdAt: nowIso(), strokes: p.strokes, textBoxes: p.textBoxes, label: label ?? `${p.strokes.length}획` }; return { pages: { ...st.pages, [k]: { ...p, versions: [...p.versions.slice(-19), v] } } }; }),
   restore: (k, versionId) => set((st) => { const p = st.pages[k]; const v = p?.versions.find((x) => x.id === versionId); if (!p || !v) return {}; return { pages: { ...st.pages, [k]: { ...p, strokes: v.strokes, textBoxes: v.textBoxes, updatedAt: nowIso() } } }; }),
   clearPackage: (prefix) => set((st) => ({ pages: Object.fromEntries(Object.entries(st.pages).filter(([k]) => !k.startsWith(prefix))) })),
-}), persistOpts('ink')));
+}), { ...persistOpts<InkState>('ink'), onRehydrateStorage: () => (state, error) => {
+  // States and sizes only: the ink of every document lives in one stored value; on Android a value beyond the platform
+  // limits could not be read back (plugins/withInkStorageLimits.js). This shows whether a device is near them.
+  try {
+    const report = (line: string) => { try { require('@/lib/diag').reportError('render', line); } catch { /* optional */ } };
+    if (error) { report(`ink storage read failed: ${String((error as any)?.message ?? error).slice(0, 120)}`); return; }
+    const pages = state?.pages ?? {}; const n = Object.keys(pages).length; if (!n) return;
+    const bytes = JSON.stringify(pages).length; if (bytes > 1_500_000) report(`ink storage large bytes=${bytes} pages=${n}`);
+  } catch { /* diagnostics must not affect loading */ }
+} }));
