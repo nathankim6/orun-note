@@ -38,14 +38,16 @@ console.log('PASS: screen-space slider projection matches local endpoints at all
 // The palette itself is never a top-bar item: the pen tool button is its only on-screen trigger.
 const toolbar = fs.readFileSync('src/features/viewer/Toolbar.tsx', 'utf8');
 assert(!toolbar.includes('펜 다이얼') && !toolbar.includes('aperture-outline'), 'the palette must not be registered as a separate toolbar button');
-assert(toolbar.includes("toolBtn('pen', '펜', cfg.tool === 'pen', penPress"), 'the pen tool button summons the palette');
+assert(toolbar.includes("toolBtn('pen', '펜', cfg.tool === 'pen', penPress"), 'the pen tool button is wired');
 // The long-press guard is one gesture long: it is dropped when that finger lifts, so the next tap opens the palette
 // (found on the Android emulator: after using the pen card once, the first tap on the pen did nothing).
 assert(/const penPressOut = \(\) => \{ if \(penHeld\.current\) setTimeout\(\(\) => \{ penHeld\.current = false; \}, 0\); \};/.test(toolbar) && toolbar.includes('onPressOut: penPressOut') && toolbar.includes('onPressOut={extra?.onPressOut}'), 'long-press guard released on press-out');
 assert(toolbar.includes('measureInWindow') && toolbar.includes('x: x + w / 2, y: y + h }'), 'the palette opens under the pen button it was summoned from');
-assert(toolbar.includes('{ slot: penSlot') && toolbar.includes('onLongPress: penLongPress'), 'the pen card stays reachable by long-pressing the pen button');
+assert(toolbar.includes('{ slot: penSlot') && toolbar.includes('onLongPress: penLongPress'), 'the palette is reachable by long-pressing the pen button');
 assert(toolbar.includes('const summon = onStylusDial;') && toolbar.includes('if (readOnly || !summon) return false;'), 'read-only toolbars never summon the palette');
-assert(toolbar.includes("if (openPenPalette()) { if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); return; }") && toolbar.includes("pick('pen');"), 'pen press still selects the pen, and keeps the card path when no palette host exists');
+{ const press = toolbar.slice(toolbar.indexOf('const penPress = () => {'), toolbar.indexOf('const penLongPress')); const longp = toolbar.slice(toolbar.indexOf('const penLongPress'), toolbar.indexOf('const penPressOut'));
+  assert(press.includes("pick('pen');") && !press.includes('openPenPalette'), 'a tap on the pen selects it / opens the pen settings card like every tool, never the palette');
+  assert(longp.includes('openPenPalette()') && longp.includes("setPanel('pen')"), 'a long press opens the palette (card when there is no palette host)'); }
 assert(viewer.includes('onStylusDial={(point) => openStylusDial(point)}'), 'the viewer receives the pen button position');
 assert(viewer.includes('{dialAnchor && <StylusDial'), 'the palette renders only after a summon');
 console.log('PASS: palette is summoned from the pen tool button only, never rendered as a top-bar item');

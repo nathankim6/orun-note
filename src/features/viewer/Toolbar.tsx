@@ -110,9 +110,9 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
       <View style={{ transform: [{ translateY: active ? 0 : 13 }] }}><ToolArt kind={kind} color={color} /></View>
     </Pressable>
   );
-  // The translucent semicircle pen palette is not an item of the top bar: pressing the pen tool button is the only
-  // on-screen way to summon it (a hardware pen button still opens it through the stylus shortcut). The palette covers
-  // the pen card, so a long press on the pen button keeps that card reachable.
+  // The pen button works like every other tool: a tap selects the pen, a tap on the selected pen opens the pen settings
+  // card (user, 2026-11-27: "펜 선택했을 때 펜 설정 옵션창이 아니라 반원창이 뜬다"). The translucent semicircle palette is
+  // a shortcut: a LONG press on the pen button, or the hardware pen button (Pencil squeeze / double-tap, S Pen button).
   const penSlot = useRef<any>(null);
   const penHeld = useRef(false);
   const openPenPalette = () => {
@@ -127,11 +127,14 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
     return true;
   };
   const penPress = () => {
-    if (penHeld.current) { penHeld.current = false; return; } // the release of the long press that just opened the pen card
-    if (openPenPalette()) { if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); return; }
+    if (penHeld.current) { penHeld.current = false; return; } // the release of the long press that just opened the palette
     pick('pen');
   };
-  const penLongPress = () => { penHeld.current = true; if (cfg.tool !== 'pen') onCfg({ tool: 'pen' }); setPanel('pen'); };
+  const penLongPress = () => {
+    penHeld.current = true; if (cfg.tool !== 'pen') onCfg({ tool: 'pen' });
+    if (!openPenPalette()) setPanel('pen'); // no palette host (read-only / web without it): the card instead
+    else setPanel(null);
+  };
   // The guard above belongs to ONE gesture. React Native does not send onPress after onLongPress, so nothing cleared
   // it and the NEXT tap on the pen was swallowed (no palette after using the pen card once). It is dropped when that
   // finger lifts; the timeout keeps it for a press event delivered in the same release.
@@ -196,7 +199,7 @@ export function Toolbar({ onStylusDial, cfg, onCfg, onCfgReplace, onUndo, onRedo
           {roundBtn('다시하기', 'arrow-redo', onRedo, !canRedo)}
           {!readOnly && <>
             <View style={styles.toolTray}>
-              {toolBtn('pen', '펜', cfg.tool === 'pen', penPress, penColor, { slot: penSlot, onLongPress: penLongPress, onPressOut: penPressOut, hint: '길게 누르면 펜 설정 카드' })}
+              {toolBtn('pen', '펜', cfg.tool === 'pen', penPress, penColor, { slot: penSlot, onLongPress: penLongPress, onPressOut: penPressOut, hint: '한 번 더 누르면 펜 설정, 길게 누르면 반원 팔레트' })}
               {toolBtn('pencil', '연필', cfg.tool === 'pencil', () => pick('pencil'), pencilColor)}
               {toolBtn('highlighter', '형광펜', cfg.tool === 'highlighter', () => pick('highlighter'), hlColor)}
               {toolBtn('eraser', '지우개', isEraser, () => pick(cfg.tool === 'vectorEraser' ? 'vectorEraser' : 'eraser'))}
