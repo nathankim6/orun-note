@@ -6,7 +6,7 @@ export function Logo({ size = 32, withText = true }: { size?: number; withText?:
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: size * 0.3 }}>
       <Image source={require('../../assets/icon.png')} style={{ width: size, height: size, borderRadius: size * 0.22 }} />
-      {withText && <Text style={{ fontSize: size * 0.62, fontWeight: '800', color: colors.text, letterSpacing: -0.5 }}>옳은Note</Text>}
+      {withText && <Text style={{ fontSize: size * 0.62, fontWeight: '800', color: colors.text, letterSpacing: -0.5 }}>옳은노트</Text>}
     </View>
   );
 }

@@ -28,5 +28,5 @@ jobs:
         run: |
           VER=$(node -p "require('./desktop/package.json').version")
           TAG="v${VER}-windows"
-          NOTES="옳은Note Windows 10/11 (64비트) 설치 파일입니다. 서명되지 않은 설치 파일이라 SmartScreen 경고가 뜨면 '추가 정보' → '실행'을 누르세요."
-          gh release create "$TAG" desktop/release/*.exe --title "옳은Note ${VER} (Windows)" --notes "$NOTES" || gh release upload "$TAG" desktop/release/*.exe --clobber
+          NOTES="옳은노트 Windows 10/11 (64비트) 설치 파일입니다. 서명되지 않은 설치 파일이라 SmartScreen 경고가 뜨면 '추가 정보' → '실행'을 누르세요."
+          gh release create "$TAG" desktop/release/*.exe --title "옳은노트 ${VER} (Windows)" --notes "$NOTES" || gh release upload "$TAG" desktop/release/*.exe --clobber

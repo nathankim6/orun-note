@@ -38,4 +38,4 @@ jobs:
         env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
         run: |
           VER=$(node -p "require('./desktop/package.json').version"); TAG="v${VER}-mac"
-          gh release create "$TAG" desktop/release/*.dmg --title "옳은Note ${VER} (macOS)" --notes "옳은Note macOS 설치 파일 (Apple Silicon·Intel 공용, macOS 11 이상). Apple 개발자 서명이 없는 앱이라 처음 열 때 Finder에서 앱을 우클릭 → '열기'를 누르세요." || gh release upload "$TAG" desktop/release/*.dmg --clobber
+          gh release create "$TAG" desktop/release/*.dmg --title "옳은노트 ${VER} (macOS)" --notes "옳은노트 macOS 설치 파일 (Apple Silicon·Intel 공용, macOS 11 이상). Apple 개발자 서명이 없는 앱이라 처음 열 때 Finder에서 앱을 우클릭 → '열기'를 누르세요." || gh release upload "$TAG" desktop/release/*.dmg --clobber

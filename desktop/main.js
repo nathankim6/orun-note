@@ -12,7 +12,7 @@ function openHomework(url) {
   const m = /#orunnote-session=([^&]+)/.exec(url); let session = null;
   try { if (m) session = Buffer.from(decodeURIComponent(m[1]), 'base64').toString('utf8'); JSON.parse(session || '{}'); } catch { session = null; }
   if (!hwWin || hwWin.isDestroyed()) {
-    hwWin = new BrowserWindow({ width: 1200, height: 860, minWidth: 700, minHeight: 500, title: '홈워크 · 옳은Note', icon: path.join(__dirname, 'build', 'icon.ico'), autoHideMenuBar: true, show: false, backgroundColor: '#ffffff',
+    hwWin = new BrowserWindow({ width: 1200, height: 860, minWidth: 700, minHeight: 500, title: '홈워크 · 옳은노트', icon: path.join(__dirname, 'build', 'icon.ico'), autoHideMenuBar: true, show: false, backgroundColor: '#ffffff',
       webPreferences: { partition: 'persist:orunhomework', contextIsolation: true, nodeIntegration: false, sandbox: true } });
     hwWin.webContents.session.setPermissionRequestHandler((_wc, perm, cb) => cb(['media', 'microphone', 'camera', 'clipboard-sanitized-write', 'fullscreen'].includes(perm)));
     hwWin.webContents.setWindowOpenHandler(({ url: u }) => { if (/^https:\/\//.test(u)) shell.openExternal(u); return { action: 'deny' }; });
@@ -24,7 +24,7 @@ function openHomework(url) {
   })().catch(() => {});
 }
 
-const doneHtml = '<!doctype html><meta charset="utf-8"><title>옳은Note</title><body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0;background:#eef3fa;color:#172033"><div style="text-align:center"><h2>로그인이 완료됐어요</h2><p>이 창을 닫고 옳은Note 앱으로 돌아가세요.</p></div></body>';
+const doneHtml = '<!doctype html><meta charset="utf-8"><title>옳은노트</title><body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0;background:#eef3fa;color:#172033"><div style="text-align:center"><h2>로그인이 완료됐어요</h2><p>이 창을 닫고 옳은Note 앱으로 돌아가세요.</p></div></body>';
 
 function serve(req, res) {
   const u = new URL(req.url, 'http://localhost');
@@ -52,7 +52,7 @@ function listen(i = 0) {
 function isAppUrl(u) { try { const x = new URL(u); return x.hostname === 'localhost' && Number(x.port) === port; } catch { return false; } }
 
 async function createWindow() {
-  win = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, backgroundColor: '#EEF3FA', title: '옳은Note', icon: path.join(__dirname, 'build', 'icon.ico'), autoHideMenuBar: true, show: false,
+  win = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, backgroundColor: '#EEF3FA', title: '옳은노트', icon: path.join(__dirname, 'build', 'icon.ico'), autoHideMenuBar: true, show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, devTools: false, spellcheck: false } });
   // Windows: no menu bar. macOS: keep a minimal menu, otherwise Cmd+C/V/X/Z and Cmd+Q stop working in text fields.
   if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { label: '창', submenu: [{ role: 'minimize' }, { role: 'togglefullscreen' }, { role: 'close' }] }]));
@@ -74,6 +74,6 @@ async function createWindow() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-  app.whenReady().then(async () => { try { await listen(); await createWindow(); } catch (e) { require('electron').dialog.showErrorBox('옳은Note', String(e.message || e)); app.quit(); } });
+  app.whenReady().then(async () => { try { await listen(); await createWindow(); } catch (e) { require('electron').dialog.showErrorBox('옳은노트', String(e.message || e)); app.quit(); } });
   app.on('window-all-closed', () => app.quit());
 }

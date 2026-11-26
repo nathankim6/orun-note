@@ -61,4 +61,4 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo 'A published version is immutable. Increment version instead of silently replacing it.'; exit 1
           fi
-          gh release create "$TAG" orun-note-galaxytab-arm64.apk --target "$GITHUB_SHA" --title "옳은Note ${VER} (Android)" --notes-file release-notes.txt
+          gh release create "$TAG" orun-note-galaxytab-arm64.apk --target "$GITHUB_SHA" --title "옳은노트 ${VER} (Android)" --notes-file release-notes.txt

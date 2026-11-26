@@ -84,4 +84,4 @@ jobs:
           VER=$(node -p "require('./app.json').expo.version")
           TAG="v${VER}-android"
           cp android/app/build/outputs/apk/release/*.apk orun-note-galaxytab-arm64.apk
-          gh release create "$TAG" orun-note-galaxytab-arm64.apk --title "옳은Note ${VER} (Android)" --notes "옳은Note Android 설치 파일(arm64). 기존 버전 위에 덮어쓰기 설치할 수 있어요." || gh release upload "$TAG" orun-note-galaxytab-arm64.apk --clobber
+          gh release create "$TAG" orun-note-galaxytab-arm64.apk --title "옳은노트 ${VER} (Android)" --notes "옳은노트 Android 설치 파일(arm64). 기존 버전 위에 덮어쓰기 설치할 수 있어요." || gh release upload "$TAG" orun-note-galaxytab-arm64.apk --clobber

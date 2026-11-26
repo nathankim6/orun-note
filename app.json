@@ -18,7 +18,7 @@
       "bundleIdentifier": "com.paperly.study",
       "requireFullScreen": false,
       "infoPlist": {
-        "CFBundleDisplayName": "옳은Note",
+        "CFBundleDisplayName": "옳은노트",
         "ITSAppUsesNonExemptEncryption": false,
         "UIFileSharingEnabled": false,
         "LSSupportsOpeningDocumentsInPlace": false,
@@ -54,8 +54,8 @@
       "bundler": "metro",
       "output": "single",
       "favicon": "./assets/favicon.png",
-      "name": "옳은Note",
-      "shortName": "옳은Note"
+      "name": "옳은노트",
+      "shortName": "옳은노트"
     },
     "plugins": [
       [
@@ -77,7 +77,7 @@
       [
         "./plugins/withAppDisplayName.js",
         {
-          "name": "옳은Note"
+          "name": "옳은노트"
         }
       ],
       "expo-web-browser",

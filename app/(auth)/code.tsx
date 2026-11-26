@@ -33,7 +33,7 @@ export default function Gate() {
             <View style={{ width: '100%', maxWidth: isTablet ? 420 : 400, alignItems: 'stretch' }}>
               <View style={{ alignItems: 'center', marginBottom: 26 }}>
                 <View style={styles.iconShadow}><Image source={require('../../assets/icon.png')} style={{ width: 96, height: 96, borderRadius: 22 }} /></View>
-                <Text style={[type.largeTitle, { color: colors.text, marginTop: 18 }]}>옳은Note</Text>
+                <Text style={[type.largeTitle, { color: colors.text, marginTop: 18 }]}>옳은노트</Text>
                 <Text style={[type.subhead, { color: colors.textMuted, marginTop: 4 }]}>ORUN ACADEMY · 옳은영어</Text>
               </View>
               {!signedIn && !adminMode && <>
