@@ -32,7 +32,7 @@
       "package": "com.paperly.study",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#EAF2FC"
+        "backgroundColor": "#BEE2FD"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
@@ -69,7 +69,7 @@
         {
           "image": "./assets/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#EAF2FC",
+          "backgroundColor": "#BEE2FD",
           "imageWidth": 220
         }
       ],
